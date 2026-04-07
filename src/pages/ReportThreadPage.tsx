@@ -81,7 +81,6 @@ export default function ReportThreadPage() {
       setPendingMessages([]);
     }
     // Only react to serverMessages changes, not pendingMessages
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverMessages]);
 
   // Feedback mutation

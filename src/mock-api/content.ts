@@ -135,7 +135,7 @@ export const MOCK_CONTENT: Record<string, ContentItem[]> = {
       publishedAt: '2024-03-17T10:00:00Z', type: 'competitor',
       relevanceScore: 0.68, llmScore: 0.65, finalScore: 0.67, status: 'included',
       snippet: 'NovaTech Solutions has released an open-source AI orchestration tool that competes with proprietary solutions.',
-      body: 'NovaTech Solutions has released \"NovaFlow\", an open-source AI orchestration tool that provides many of the features found in proprietary solutions like TechCorp\'s AI-Flow Engine. The tool is available under the Apache 2.0 license and has already garnered 2,000+ stars on GitHub.',
+      body: 'NovaTech Solutions has released "NovaFlow", an open-source AI orchestration tool that provides many of the features found in proprietary solutions like TechCorp\'s AI-Flow Engine. The tool is available under the Apache 2.0 license and has already garnered 2,000+ stars on GitHub.',
       inclusionReason: 'Open-source competitive threat to AI-Flow Engine product line.',
       linkedReportIds: ['th-2'],
     },

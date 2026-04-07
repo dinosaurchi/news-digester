@@ -4,7 +4,6 @@ import {
   Briefcase,
   Rss,
   FileText,
-  MessageSquare,
   PlayCircle,
   ThumbsUp,
   Settings,

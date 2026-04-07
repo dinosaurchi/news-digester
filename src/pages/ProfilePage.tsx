@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useParams, useBlocker } from 'react-router-dom';
-import { useForm } from 'react-hook-form';
+import { useForm, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { profileSchema, type ProfileFormValues } from '@/lib/schemas/profile';
 import { PageHeader } from '@/components/ui/page-header';
@@ -34,7 +34,7 @@ export default function ProfilePage() {
   });
 
   const { register, handleSubmit, setValue, watch, reset, formState: { errors, isDirty } } = useForm<ProfileFormValues>({
-    resolver: zodResolver(profileSchema) as any,
+    resolver: zodResolver(profileSchema) as Resolver<ProfileFormValues>,
     defaultValues: {
       businessName: '',
       description: '',
@@ -120,7 +120,7 @@ export default function ProfilePage() {
         description="Define the context for your intelligence reports."
         actions={
           <button
-            onClick={handleSubmit(onSubmit as any)}
+            onClick={handleSubmit(onSubmit as (data: ProfileFormValues) => void)}
             disabled={!isDirty || mutation.isPending}
             className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-lg font-medium transition-all shadow-sm disabled:cursor-not-allowed"
           >
@@ -130,7 +130,7 @@ export default function ProfilePage() {
         }
       />
 
-      <form onSubmit={handleSubmit(onSubmit as any)} className="space-y-6">
+      <form onSubmit={handleSubmit(onSubmit as (data: ProfileFormValues) => void)} className="space-y-6">
         {/* Business Identity */}
         <section className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-5">
           <div>

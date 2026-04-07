@@ -68,7 +68,7 @@ export default function WorkspaceOverviewPage() {
   const errorFeeds = feeds?.filter((f) => f.status === 'error').length || 0;
   const includedContent = content?.filter((c) => c.status === 'included').length || 0;
   const excludedContent = content?.filter((c) => c.status === 'excluded').length || 0;
-  const pendingContent = content?.filter((c) => c.status === 'pending').length || 0;
+  const _pendingContent = content?.filter((c) => c.status === 'pending').length || 0;
   const activeReports = reports?.filter((r) => r.status === 'published').length || 0;
   const lastRun = runs?.[0];
 

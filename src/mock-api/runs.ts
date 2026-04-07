@@ -138,7 +138,7 @@ export const MOCK_RUNS: Record<string, RunSummary[]> = {
   ],
 };
 
-function generateSteps(runId: string, runStatus: 'success' | 'failed' | 'running', totalDurationMs?: number): RunStep[] {
+function generateSteps(runId: string, runStatus: 'success' | 'failed' | 'running', _totalDurationMs?: number): RunStep[] {
   const steps: RunStep[] = [];
   const baseTime = new Date('2024-03-20T07:55:00Z');
   let elapsed = 0;
@@ -241,7 +241,7 @@ export async function getRunDetail(workspaceId: string, runId: string): Promise<
 export async function triggerRun(workspaceId: string): Promise<RunSummary> {
   await delay(randomBetween(1500, 2500));
 
-  const runCount = Object.keys(MOCK_RUNS).reduce((sum, wsId) => sum + (MOCK_RUNS[wsId]?.length || 0), 0);
+  const _runCount = Object.keys(MOCK_RUNS).reduce((sum, wsId) => sum + (MOCK_RUNS[wsId]?.length || 0), 0);
   const newRun: RunSummary = {
     id: `run-manual-${Date.now().toString(36)}`,
     workspaceId,

@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useParams, useBlocker } from 'react-router-dom';
-import { useForm, Controller } from 'react-hook-form';
+import { useForm, Controller, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { settingsSchema, type SettingsFormValues } from '@/lib/schemas/settings';
 import { PageHeader } from '@/components/ui/page-header';
@@ -53,7 +53,7 @@ export default function SettingsPage() {
   });
 
   const mutation = useMutation({
-    mutationFn: (values: SettingsFormValues) => api.settings.update(workspaceId, values as any),
+    mutationFn: (values: SettingsFormValues) => api.settings.update(workspaceId, values as unknown as Parameters<typeof api.settings.update>[1]),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings', workspaceId] });
       toast.success('Settings saved successfully!');
@@ -64,7 +64,7 @@ export default function SettingsPage() {
   });
 
   const { register, handleSubmit, control, reset, watch, setValue, formState: { errors, isDirty } } = useForm<SettingsFormValues>({
-    resolver: zodResolver(settingsSchema) as any,
+    resolver: zodResolver(settingsSchema) as Resolver<SettingsFormValues>,
     defaultValues: {
       schedule: { enabled: false, frequency: 'daily', timeOfDay: '08:00', timezone: 'UTC' },
       reportStyle: 'detailed',
@@ -150,7 +150,7 @@ export default function SettingsPage() {
         description="Configure operational parameters and system behavior."
         actions={
           <button
-            onClick={handleSubmit(onSubmit as any)}
+            onClick={handleSubmit(onSubmit as (data: SettingsFormValues) => void)}
             disabled={!isDirty || mutation.isPending}
             className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-lg font-medium transition-all shadow-sm disabled:cursor-not-allowed"
           >
@@ -160,7 +160,7 @@ export default function SettingsPage() {
         }
       />
 
-      <form onSubmit={handleSubmit(onSubmit as any)} className="space-y-6">
+      <form onSubmit={handleSubmit(onSubmit as (data: SettingsFormValues) => void)} className="space-y-6">
         {/* Section 1: Schedule Configuration */}
         <SettingsSection
           title="Schedule Configuration"

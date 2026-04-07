@@ -1,10 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useParams } from 'react-router-dom';
-import { Plus, Rss, Globe, Trash2, Edit2, Search, AlertCircle, CheckCircle2, X, Loader2 } from 'lucide-react';
+import { Plus, Rss, Globe, Trash2, Edit2, Search, AlertCircle, Loader2 } from 'lucide-react';
 import { formatDate, cn } from '@/lib/utils';
 import { useState, useMemo } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { feedSchema, type FeedFormValues } from '@/lib/schemas/feeds';
 import { PageHeader } from '@/components/ui/page-header';
@@ -94,7 +94,7 @@ export default function FeedsPage() {
   });
 
   const { register, handleSubmit, reset, formState: { errors }, setValue, watch } = useForm<FeedFormValues>({
-    resolver: zodResolver(feedSchema) as any,
+    resolver: zodResolver(feedSchema) as Resolver<FeedFormValues>,
     defaultValues: {
       type: 'rss',
       cadence: 'daily',
@@ -321,7 +321,7 @@ export default function FeedsPage() {
         title={editingFeed ? 'Edit Feed Source' : 'Add Feed Source'}
         description={editingFeed ? 'Update the feed source configuration.' : 'Add a new news source or RSS feed to monitor.'}
       >
-        <form onSubmit={handleSubmit(onSubmit as any)} className="space-y-5">
+        <form onSubmit={handleSubmit(onSubmit as (data: FeedFormValues) => void)} className="space-y-5">
           <div className="space-y-1.5">
             <label className="text-sm font-semibold text-slate-700">Feed Name <span className="text-red-400">*</span></label>
             <input

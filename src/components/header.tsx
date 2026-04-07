@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Bell, Play, LogOut, User, ChevronDown, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Bell, Play, LogOut, ChevronDown, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useAppStore } from '@/lib/store';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { api } from '@/lib/api';

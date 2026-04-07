@@ -1,0 +1,17 @@
+node_modules
+dist
+.vite
+.git
+.gitignore
+.DS_Store
+*.log
+.env*
+.secrets
+data
+coverage
+docs
+*.md
+.eslintrc.json
+eslint.config.mjs
+.vscode
+.idea

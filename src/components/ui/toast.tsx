@@ -55,7 +55,7 @@ const variantStyles: Record<ToastVariant, { bg: string; border: string; text: st
 };
 
 function ToastItem({ toast: t, onDismiss }: { toast: Toast; onDismiss: () => void }) {
-  const [isExiting, setIsExiting] = useState(false);
+  const [_isExiting, setIsExiting] = useState(false);
   const styles = variantStyles[t.variant];
   const Icon = styles.icon;
 

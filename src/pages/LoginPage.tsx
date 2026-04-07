@@ -36,7 +36,7 @@ export default function LoginPage() {
       setUser(mockUser);
       setLoggedIn(true);
       navigate('/workspaces');
-    } catch (err) {
+    } catch (_err) {
       setError('An error occurred. Please try again.');
     } finally {
       setIsLoading(false);
