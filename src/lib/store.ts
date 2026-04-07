@@ -11,21 +11,29 @@ export interface User {
 interface AppState {
   user: User | null;
   setUser: (user: User | null) => void;
+  isLoggedIn: boolean;
+  setLoggedIn: (loggedIn: boolean) => void;
   currentWorkspace: Workspace | null;
   setCurrentWorkspace: (workspace: Workspace | null) => void;
   isSidebarOpen: boolean;
   toggleSidebar: () => void;
-  isLoggedIn: boolean;
-  setLoggedIn: (loggedIn: boolean) => void;
+  setSidebarOpen: (open: boolean) => void;
+  logout: () => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
   user: null,
   setUser: (user) => set({ user }),
+  isLoggedIn: false,
+  setLoggedIn: (loggedIn) => set({ isLoggedIn: loggedIn }),
   currentWorkspace: null,
   setCurrentWorkspace: (workspace) => set({ currentWorkspace: workspace }),
   isSidebarOpen: true,
   toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
-  isLoggedIn: false,
-  setLoggedIn: (loggedIn) => set({ isLoggedIn: loggedIn }),
+  setSidebarOpen: (open) => set({ isSidebarOpen: open }),
+  logout: () => set({
+    user: null,
+    isLoggedIn: false,
+    currentWorkspace: null,
+  }),
 }));
