@@ -7,6 +7,7 @@ export type { ContentFilters } from './content';
 export { listReports, getReportSummary, MOCK_THREADS } from './reports';
 export { getThread, getMessages, sendFeedback, voteMessage, MOCK_MESSAGES } from './reportThreads';
 export { listRuns, getRunDetail, triggerRun, MOCK_RUNS } from './runs';
+export type { RunFilters } from './runs';
 export { listFeedback, getFeedbackSummary, MOCK_FEEDBACK } from './feedback';
 export { getSettings, updateSettings, MOCK_SETTINGS } from './settings';
 export { delay, randomBetween } from './helpers';

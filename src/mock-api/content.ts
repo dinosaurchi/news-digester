@@ -174,6 +174,23 @@ export const MOCK_CONTENT: Record<string, ContentItem[]> = {
       body: 'As enterprises increasingly adopt multi-cloud strategies, managing costs across different providers has become a critical challenge. This article examines cost optimization strategies employed by leading companies.',
       inclusionReason: 'Cost optimization is a growing concern for CloudStack Pro customers.',
     },
+    {
+      id: 'c-19', workspaceId: 'ws-1', title: 'AWS Re:Invent 2024 Keynote Announces New AI Chip Trainium2',
+      source: 'AWS Blog', sourceUrl: 'https://aws.amazon.com/blogs/aws/reinvent-2024-trainium2',
+      publishedAt: '2024-03-15T14:00:00Z', type: 'social',
+      relevanceScore: 0.62, llmScore: 0.58, finalScore: 0.60, status: 'pending', clusterId: 'cl-6',
+      snippet: 'AWS announced Trainium2, its next-generation AI training chip, at Re:Invent 2024 with 4x performance improvements.',
+      body: 'At Re:Invent 2024, AWS unveiled Trainium2, its next-generation purpose-built AI training chip. The chip promises 4x the training performance of its predecessor and is designed to compete directly with NVIDIA\'s H100.',
+    },
+    {
+      id: 'c-20', workspaceId: 'ws-1', title: 'TechCorp CEO Discusses Enterprise AI Strategy at Davos Forum',
+      source: 'LinkedIn', sourceUrl: 'https://linkedin.com/posts/techcorp-ceo-davos-2024',
+      publishedAt: '2024-03-14T10:00:00Z', type: 'social',
+      relevanceScore: 0.55, llmScore: 0.50, finalScore: 0.53, status: 'pending',
+      snippet: 'TechCorp CEO shared the company\'s vision for responsible enterprise AI deployment at the World Economic Forum.',
+      body: 'Speaking at a panel on AI governance at Davos, TechCorp\'s CEO outlined the company\'s three-pillar approach to enterprise AI: transparency, compliance, and human oversight.',
+      exclusionReason: 'Self-referential content. Low analytical value for competitive intelligence.',
+    },
   ],
   'ws-2': [
     {
@@ -428,6 +445,14 @@ export async function getContentDetail(workspaceId: string, contentId: string): 
   // Fallback: convert from content item
   const item = MOCK_CONTENT[workspaceId]?.find(i => i.id === contentId);
   if (!item) return undefined;
+
+  // Find cluster siblings
+  const clusterItems = item.clusterId
+    ? MOCK_CONTENT[workspaceId]?.filter(
+        i => i.clusterId === item.clusterId && i.id !== item.id,
+      ) || []
+    : [];
+
   return {
     ...item,
     body: item.body || item.snippet,
@@ -437,5 +462,6 @@ export async function getContentDetail(workspaceId: string, contentId: string): 
       freshness: 0.85,
       sourceAuthority: 0.80,
     },
+    clusterItems: clusterItems.length > 0 ? clusterItems : undefined,
   };
 }

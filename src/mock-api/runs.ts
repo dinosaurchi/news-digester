@@ -1,4 +1,4 @@
-import type { RunSummary, RunDetail, RunStep } from '@/types';
+import type { RunSummary, RunDetail, RunStep, RunType, RunStatus } from '@/types';
 import { delay, randomBetween } from './helpers';
 
 const STEP_TEMPLATES: { name: string; baseDurationMs: number }[] = [
@@ -173,9 +173,23 @@ function generateSteps(runId: string, runStatus: 'success' | 'failed' | 'running
   return steps;
 }
 
-export async function listRuns(workspaceId: string): Promise<RunSummary[]> {
+export interface RunFilters {
+  type?: RunType;
+  status?: RunStatus;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export async function listRuns(workspaceId: string, filters?: RunFilters): Promise<RunSummary[]> {
   await delay(randomBetween(300, 700));
-  return MOCK_RUNS[workspaceId] ? [...MOCK_RUNS[workspaceId]] : [];
+  let runs = MOCK_RUNS[workspaceId] ? [...MOCK_RUNS[workspaceId]] : [];
+  if (filters) {
+    if (filters.type) runs = runs.filter(r => r.type === filters.type);
+    if (filters.status) runs = runs.filter(r => r.status === filters.status);
+    if (filters.dateFrom) runs = runs.filter(r => r.startedAt >= filters.dateFrom!);
+    if (filters.dateTo) runs = runs.filter(r => r.startedAt <= filters.dateTo!);
+  }
+  return runs;
 }
 
 export async function getRunDetail(workspaceId: string, runId: string): Promise<RunDetail | undefined> {
