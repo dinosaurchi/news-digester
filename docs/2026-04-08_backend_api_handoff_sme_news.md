@@ -78,6 +78,9 @@ Do not make these the first priority:
 
 These can come later.
 
+However, removing frontend fake login/session behavior does require a minimal session/auth boundary.
+That minimal boundary is in scope for initial integration even though full auth is not.
+
 ---
 
 ## Recommended stack
@@ -136,6 +139,7 @@ If the codebase already has a strong justified variant, keep the spirit:
 - make it easy to replace one frontend mock domain at a time
 - do not leave frontend pages/components coupled to mock modules once a real slice exists
 - move unavoidable early stub behavior behind backend endpoints rather than keeping it in client code
+- keep backend persistence models free to differ from DB/storage naming, but freeze the frontend wire contract explicitly
 - include tests at every pass
 - keep manual QA instructions alongside automated tests
 
@@ -408,48 +412,89 @@ Suggested fields:
 
 ## State models
 
+The backend may keep richer internal states if needed, but the initial frontend wire contract should match the current frontend DTOs unless and until an explicit adapter is introduced.
+
 ## Workspace status
-Suggested:
+Wire contract for current frontend:
 - active
 - paused
 - archived
 
 ## Feed status
-Suggested:
+Wire contract for current frontend:
 - healthy
 - warning
 - error
 - disabled
 
 ## Content status
-Suggested:
-- fetched
-- parsed
-- deduped
-- filtered_out
-- shortlisted
-- included_in_report
+Wire contract for current frontend:
+- included
+- excluded
+- pending
+
+Internal backend states may be richer, but must map explicitly to these values for the current UI contract.
 
 ## Report status
-Suggested:
+Wire contract for current frontend:
 - draft
-- generated
-- reviewed
 - published
+- archived
 
 ## Run status
-Suggested:
-- queued
+Wire contract for current frontend:
 - running
-- succeeded
+- success
 - failed
 
+Internal backend states such as `queued` are allowed, but must not leak into the current frontend DTO without an explicit frontend adapter/update.
+
+## Message role
+Wire contract for current frontend:
+- system
+- user
+- agent
+
 ## Message type
-Suggested:
+Suggested internal or extended backend classification:
 - report
 - user_feedback
 - agent_response
 - system_status
+
+---
+
+## Frontend wire contract freeze
+
+Unless there is an explicit adapter layer, the initial API responses used by the current frontend should follow the field names and enum values already present in `src/types`.
+
+Rules:
+
+- use camelCase field names in wire DTOs consumed by the current frontend
+- backend persistence/schema names may remain snake_case internally
+- do not silently substitute semantically similar names on the wire
+
+Examples that should match the current frontend contract:
+
+- Workspace DTO:
+  - `customer`, not `customer_name`
+  - `createdAt` and `updatedAt`, not `created_at` / `updated_at`
+  - `feedCount`, `lastReportAt`, `nextRunAt`
+- Run DTO:
+  - `type`, not `run_type`
+  - `completedAt`, not `finished_at`
+  - `error`, not `error_summary`
+  - `affectedCounts`
+- Content DTO:
+  - `source`, `sourceUrl`, `publishedAt`
+  - `relevanceScore`, `llmScore`, `finalScore`
+  - `inclusionReason`, `exclusionReason`
+- Report/thread DTO:
+  - `createdAt`, `updatedAt`, `periodStart`, `periodEnd`, `runId`
+  - message field `role`, not `author_type`
+  - message field `content`, not `markdown_body`
+
+If the backend prefers different external DTOs, the handoff must explicitly assign ownership for a frontend adapter layer before implementation starts.
 
 ---
 
@@ -468,6 +513,37 @@ Suggested:
 
 ## Required API surface
 
+## Session / auth minimum boundary
+
+Full auth is not the priority, but the backend/frontend integration must remove frontend-side fake login and fake session state.
+
+Choose one of these approaches explicitly and document it in implementation:
+
+- preferred: minimal real session endpoints
+- fallback: explicit backend-served dev-only stub session
+
+Required minimum API if using session endpoints:
+
+### POST /api/session/login
+Accept credentials, establish session, and return current user/session payload.
+
+### GET /api/session/me
+Return current authenticated user/session payload for route gating and header rendering.
+
+### POST /api/session/logout
+Invalidate the session.
+
+Minimum user/session payload should support the current frontend store shape:
+
+- `id`
+- `username`
+- `displayName`
+- `role`
+
+If this is intentionally stubbed in early phases, the stub must still be backend-served and documented. The frontend must not synthesize a user object locally for production flows.
+
+---
+
 ## Workspaces
 
 ### GET /api/workspaces
@@ -477,7 +553,11 @@ Return workspace summaries.
 Create workspace.
 
 ### GET /api/workspaces/{workspace_id}
-Return workspace detail / overview payload.
+Return the base Workspace DTO used by the current frontend.
+
+Do not overload this endpoint with dashboard aggregates unless the response shape is explicitly defined and the frontend adapter is updated accordingly.
+
+The current frontend overview page composes its dashboard from multiple endpoints rather than from one aggregate payload.
 
 ### PATCH /api/workspaces/{workspace_id}
 Update workspace summary metadata.
@@ -584,6 +664,11 @@ Response should return:
 - optionally a mocked or generated agent response message for early phase
 - thread updated metadata
 
+If a wrapper object is returned, define it explicitly and keep it stable, for example:
+- `userMessage`
+- `agentMessage` nullable
+- `thread`
+
 ### POST /api/report-messages/{message_id}/thumb
 Persist thumb up/down feedback for a report message.
 
@@ -614,7 +699,14 @@ Later this will trigger real pipeline jobs.
 ## Feedback
 
 ### GET /api/workspaces/{workspace_id}/feedback
-List feedback events and preference summaries.
+List feedback events only.
+
+This should support the current feedback timeline UI.
+
+### GET /api/workspaces/{workspace_id}/feedback/summary
+Return aggregated feedback summary and preference rollups.
+
+This should support the current feedback summary cards and preference panels.
 
 ### POST /api/workspaces/{workspace_id}/feedback
 Persist free-form or structured feedback event.
@@ -645,6 +737,7 @@ In addition to DTO alignment, enforce frontend boundary alignment:
 - page and component code must not import runtime DTOs or helpers from `src/mock-api`
 - shared DTO/filter types should live in a neutral location such as `src/types` or a dedicated shared contract module
 - `src/lib/api.ts` should become the sole frontend API boundary and should point to real HTTP calls once a slice is integrated
+- session/login behavior must be driven by backend responses rather than frontend-created user/session objects
 
 ---
 
@@ -664,7 +757,7 @@ Do not jump to later passes if earlier passes are unstable.
 # Pass 1 — Backend skeleton, schema, and workspace foundation
 
 ## Scope
-Set up backend project structure, database, migrations, core models, and workspace CRUD/profile/settings foundation.
+Set up backend project structure, database, migrations, core models, minimal session boundary, and workspace CRUD/profile/settings foundation.
 
 ## Implementation tasks
 - create backend service structure
@@ -676,7 +769,11 @@ Set up backend project structure, database, migrations, core models, and workspa
   - WorkspaceProfile
   - WorkspaceSettings
 - implement DTOs and validation
+- implement minimal session/user DTOs
 - implement endpoints:
+  - POST /api/session/login
+  - GET /api/session/me
+  - POST /api/session/logout
   - GET /api/workspaces
   - POST /api/workspaces
   - GET /api/workspaces/{id}
@@ -691,6 +788,7 @@ Set up backend project structure, database, migrations, core models, and workspa
 - add clear config/env handling
 
 ## Automated tests
+- session login/me/logout tests
 - model creation tests
 - workspace CRUD API tests
 - profile/settings validation tests
@@ -699,6 +797,9 @@ Set up backend project structure, database, migrations, core models, and workspa
 - invalid payload tests
 
 ## Manual test plan
+- login
+- refresh authenticated app state
+- logout
 - create workspace
 - edit workspace
 - view workspace detail
@@ -710,6 +811,7 @@ Set up backend project structure, database, migrations, core models, and workspa
 ## Acceptance criteria
 - backend boots cleanly
 - migrations run cleanly
+- minimal session endpoints work or an explicit backend-served stub session is documented and working
 - workspace/profile/settings endpoints work
 - responses are typed and stable
 - validation failures are handled clearly
@@ -775,6 +877,7 @@ Make reports and report-thread UX real from a persistence/API perspective.
   - POST /api/report-threads/{thread_id}/messages
   - POST /api/report-messages/{message_id}/thumb
   - GET /api/workspaces/{id}/feedback
+  - GET /api/workspaces/{id}/feedback/summary
   - POST /api/workspaces/{id}/feedback
 - preserve report-thread semantics clearly
 - implement persisted thumbs up/down
@@ -789,6 +892,7 @@ Make reports and report-thread UX real from a persistence/API perspective.
 - thread detail tests
 - message creation tests
 - thumb feedback tests
+- feedback summary tests
 - feedback list/create tests
 - invalid thread/report/message id tests
 
@@ -797,6 +901,7 @@ Make reports and report-thread UX real from a persistence/API perspective.
 - open report thread
 - post feedback message
 - thumb up/down a report message
+- open feedback page summary
 - verify stored messages and feedback events
 - verify thread reload shows persisted history
 
@@ -805,6 +910,7 @@ Make reports and report-thread UX real from a persistence/API perspective.
 - thumbs and free-text feedback are persisted
 - reports list/detail APIs are stable
 - feedback page can be wired to real backend
+- feedback summary contract is stable
 - tests pass
 
 ---
@@ -938,6 +1044,7 @@ After the core slices are wired to the real backend, remove remaining frontend-r
 - `src/lib/api.ts` no longer imports from `@/mock-api`
 - frontend pages/components do not import from `src/mock-api`
 - no client-side fake business logic remains in production flows
+- login/session state is sourced from backend responses or an explicit backend-served stub session
 - any remaining stubbed behavior exists only behind backend endpoints and is explicitly documented
 - `src/mock-api/` is removed or excluded from production builds
 - tests pass
