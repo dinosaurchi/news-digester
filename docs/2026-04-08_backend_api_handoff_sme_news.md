@@ -14,6 +14,7 @@ This backend pass should focus first on:
 - feedback persistence
 - workspace/feed/settings management
 - gradual mock-to-real integration
+- explicit frontend mock removal as each real API slice lands
 
 Do **not** start by overbuilding the ML/LLM/news-processing pipeline first.  
 The immediate goal is to make the app real and integratable in **thin vertical slices**.
@@ -34,6 +35,13 @@ The product is an Admin UI for managing customer workspaces that:
 
 The frontend is already built as a **frontend-only Vite app** with a **mock API contract layer**.  
 This backend implementation must now provide the real API and persistence to replace those mocks gradually.
+
+The desired end state is not just "backend exists". The desired end state is:
+
+- frontend no longer imports runtime data/actions from `src/mock-api`
+- frontend no longer contains page-level demo behavior for production flows
+- any temporary stubbed behavior lives behind backend endpoints, not in frontend runtime logic
+- `src/mock-api/` is removed or made strictly dev-only and excluded from production builds once replacement is complete
 
 ---
 
@@ -126,6 +134,8 @@ If the codebase already has a strong justified variant, keep the spirit:
 - support debugging and traceability
 - keep API shapes stable and easy to inspect
 - make it easy to replace one frontend mock domain at a time
+- do not leave frontend pages/components coupled to mock modules once a real slice exists
+- move unavoidable early stub behavior behind backend endpoints rather than keeping it in client code
 - include tests at every pass
 - keep manual QA instructions alongside automated tests
 
@@ -630,6 +640,12 @@ The backend should either:
 
 Do not let implicit mismatches accumulate.
 
+In addition to DTO alignment, enforce frontend boundary alignment:
+
+- page and component code must not import runtime DTOs or helpers from `src/mock-api`
+- shared DTO/filter types should live in a neutral location such as `src/types` or a dedicated shared contract module
+- `src/lib/api.ts` should become the sole frontend API boundary and should point to real HTTP calls once a slice is integrated
+
 ---
 
 ## Implementation strategy
@@ -861,12 +877,15 @@ Create a usable run-now backend action and start replacing frontend mock domains
   - feedback
 - add adapter/mapping only where necessary
 - preserve frontend behavior and UX
+- remove the replaced frontend mock imports and mock runtime logic for each integrated slice
+- keep temporary stub behavior on the backend side only where the real pipeline is not ready yet
 
 ## Automated tests
 - run-now endpoint tests
 - run creation + run event tests
 - integration tests for key slices
 - API contract tests for frontend-critical payloads
+- frontend integration tests or smoke checks verifying the real client path is used instead of `src/mock-api`
 
 ## Manual test plan
 - create workspace
@@ -875,11 +894,52 @@ Create a usable run-now backend action and start replacing frontend mock domains
 - verify run is created
 - verify report/thread appears if stubbed
 - verify feedback and thread interactions persist
+- verify replaced frontend pages no longer depend on `src/mock-api`
 
 ## Acceptance criteria
 - frontend can replace major mock slices with real backend
 - run-now works and is traceable
 - no critical contract mismatch remains
+- replaced frontend slices no longer import from `src/mock-api`
+- replaced frontend slices do not contain client-side fake business logic for those flows
+- tests pass
+
+---
+
+# Pass 5.5 — Frontend mock removal and production-boundary cleanup
+
+## Scope
+After the core slices are wired to the real backend, remove remaining frontend-resident mock/demo logic so the production frontend is cleanly separated from backend behavior.
+
+## Implementation tasks
+- update `src/lib/api.ts` to use real HTTP-backed modules rather than `@/mock-api`
+- remove page/component imports from `src/mock-api`
+- move shared filter/DTO types out of `src/mock-api` into neutral shared modules if still needed by the frontend
+- remove or replace demo-only client logic in production flows, including:
+  - mock login acceptance of arbitrary credentials
+  - client-created fake user/session objects for production auth flow
+  - demo-only success toasts/actions that imply non-persistent backend behavior
+- if authentication is still intentionally deferred, document a clear temporary approach and keep any stub at the backend/API boundary rather than hidden in page logic
+- remove `src/mock-api/` entirely when no longer needed, or gate it to local dev/testing only and exclude it from production builds
+- update README and run instructions to reflect the real backend dependency and any remaining explicit temporary limitations
+
+## Automated tests
+- tests verifying `src/lib/api.ts` uses the real client path
+- tests or checks preventing imports from `src/mock-api` in production frontend code
+- smoke tests for login, workspace CRUD, feeds, reports/thread, content, runs, and feedback against the real backend
+
+## Manual test plan
+- inspect the built frontend bundle path and verify it uses the real backend
+- verify login behavior is no longer "any non-empty credentials" unless explicitly documented as a backend-served temporary stub
+- verify archive/settings/run-now/report feedback actions persist through the backend
+- verify no demo-only UI copy remains in production-facing flows
+
+## Acceptance criteria
+- `src/lib/api.ts` no longer imports from `@/mock-api`
+- frontend pages/components do not import from `src/mock-api`
+- no client-side fake business logic remains in production flows
+- any remaining stubbed behavior exists only behind backend endpoints and is explicitly documented
+- `src/mock-api/` is removed or excluded from production builds
 - tests pass
 
 ---
@@ -1108,6 +1168,11 @@ These scenarios should pass before calling the backend foundation ready.
 - verify no regression in UX flow
 - verify loading/error states remain correct
 
+### Scenario 6 — Frontend production-boundary audit
+- confirm no frontend runtime imports from `src/mock-api`
+- confirm no demo-only login/auth shortcuts remain in production codepaths
+- confirm remaining stubbed behavior, if any, is served by backend endpoints and documented
+
 ---
 
 ## Acceptance bar for “move to next step”
@@ -1121,6 +1186,8 @@ You can move past the backend foundation stage when all of the following are tru
 - content/runs APIs are stable
 - run-now works
 - frontend can replace core mock slices with real API
+- frontend no longer contains production-path mock/demo business logic
+- frontend no longer depends on `src/mock-api` at runtime
 - automated tests pass
 - manual end-to-end scenarios pass
 
