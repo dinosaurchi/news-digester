@@ -1,0 +1,5 @@
+{
+  "name": "SME News Admin",
+  "description": "Admin interface for managing customer workspaces, news feeds, and automated reporting.",
+  "requestFramePermissions": []
+}
