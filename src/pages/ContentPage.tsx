@@ -119,7 +119,7 @@ export default function ContentPage() {
                 <td className="px-6 py-4 text-right">
                   <div className="flex items-center justify-end gap-2">
                     <a 
-                      href={item.url} 
+                      href={item.sourceUrl} 
                       target="_blank" 
                       rel="noopener noreferrer"
                       className="p-1.5 hover:bg-slate-200 text-slate-600 rounded transition-colors"
