@@ -8,7 +8,7 @@ from typing import Optional
 
 class ScheduleSchema(BaseModel):
     enabled: bool = False
-    frequency: str = "daily"
+    frequency: str = Field("daily", pattern=r"^(daily|twice_daily|weekly|monthly)$")
     time_of_day: str = Field("08:00", alias="timeOfDay")
     timezone: str = "UTC"
 
@@ -72,7 +72,7 @@ class WorkspaceOut(BaseModel):
 
 
 class WorkspaceProfileIn(BaseModel):
-    business_name: Optional[str] = Field(None, alias="businessName")
+    business_name: Optional[str] = Field(None, alias="businessName", min_length=2)
     description: Optional[str] = None
     products: list[str] = Field(default_factory=list)
     competitors: list[str] = Field(default_factory=list)
