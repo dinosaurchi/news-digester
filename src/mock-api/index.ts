@@ -2,10 +2,10 @@
 export { listWorkspaces, getWorkspace, createWorkspace, MOCK_WORKSPACES } from './workspaces';
 export { getProfile, updateProfile, MOCK_PROFILES } from './profile';
 export { listFeeds, addFeed, updateFeed, toggleFeed, deleteFeed, MOCK_FEEDS } from './feeds';
-export { listContent, getContentDetail, MOCK_CONTENT, MOCK_CONTENT_DETAILS } from './content';
+export { listContent, getContentDetail, getContentItemsByIds, MOCK_CONTENT, MOCK_CONTENT_DETAILS } from './content';
 export type { ContentFilters } from './content';
-export { listReports, getReportSummary, MOCK_THREADS } from './reports';
-export { getThread, getMessages, sendFeedback, voteMessage, MOCK_MESSAGES } from './reportThreads';
+export { listReports, getReportSummary, getThreadMeta, MOCK_THREADS } from './reports';
+export { getThread, getMessages, sendFeedback, voteMessage, regenerateMessage, MOCK_MESSAGES } from './reportThreads';
 export { listRuns, getRunDetail, triggerRun, MOCK_RUNS } from './runs';
 export type { RunFilters } from './runs';
 export { listFeedback, getFeedbackSummary, MOCK_FEEDBACK } from './feedback';

@@ -1,5 +1,6 @@
 import type { ReportMessage, ReportThread, FeedbackVote } from '@/types';
 import { delay, randomBetween } from './helpers';
+import { MOCK_THREADS } from './reports';
 
 export const MOCK_MESSAGES: Record<string, ReportMessage[]> = {
   'th-1': [
@@ -114,6 +115,62 @@ Shall I prepare a more detailed competitive analysis for any specific market?`,
         sources: ['c-2'],
         model: 'gpt-4-turbo',
         tokens: 1923,
+      },
+    },
+    {
+      id: 'm-4',
+      threadId: 'th-1',
+      role: 'user',
+      content: 'Yes, please prepare the Frankfurt competitive analysis. Also, can you include any information about their pricing model?',
+      createdAt: '2024-03-20T10:15:00Z',
+    },
+    {
+      id: 'm-5',
+      threadId: 'th-1',
+      role: 'agent',
+      content: `## Frankfurt Market: Edge-Connect Hub vs. CloudGiant Edge
+
+### Current State
+
+**Edge-Connect Hub in Frankfurt:**
+- 47 active enterprise customers
+- Average contract value: $18,500/month
+- 99.97% uptime SLA
+- 12ms average latency to German enterprise customers
+
+**CloudGiant's Frankfurt Plans:**
+- New edge data center operational by Q2 2025
+- Estimated capacity: 200+ enterprise customers
+- Expected pricing: €12,000–€15,000/month (estimated based on their US pricing)
+
+### Competitive Positioning
+
+| Factor | Edge-Connect Hub | CloudGiant Edge |
+|--------|-----------------|-----------------|
+| Latency | 12ms avg | ~15-18ms est. |
+| SLA | 99.97% | 99.95% (typical) |
+| Integration | Native with CloudStack Pro | Proprietary stack |
+| Support | Dedicated CSM | Tiered support |
+| Pricing | $18,500/mo avg | €12,000-15,000/mo est. |
+
+### Key Differentiators
+
+1. **Integration depth** — Edge-Connect integrates natively with CloudStack Pro, giving existing customers a significant switching cost advantage
+2. **Performance** — Our Frankfurt node has been optimized for 3 years; CloudGiant is starting from scratch
+3. **Compliance** — We have existing GDPR and BSI certifications; CloudGiant will need to obtain these
+
+### Recommended Actions
+
+1. **Immediate:** Create a Frankfurt-specific competitive battle card for the sales team
+2. **Within 2 weeks:** Schedule retention calls with the top 10 Frankfurt accounts
+3. **This month:** Evaluate whether a loyalty discount program would reduce churn risk
+
+> **Risk Assessment:** Medium-High. CloudGiant's pricing advantage (~20-30% lower) is the primary threat. However, switching costs and integration depth provide a strong defensive moat for existing customers.`,
+      createdAt: '2024-03-20T10:17:00Z',
+      metadata: {
+        sources: ['c-2'],
+        model: 'gpt-4-turbo',
+        tokens: 2241,
       },
     },
   ],
@@ -625,26 +682,294 @@ This is the final intelligence report for MediCore Laboratories. The workspace h
   ],
 };
 
+const REGENERATE_RESPONSES = [
+  `I've reconsidered the analysis from a different angle. Here's an updated assessment:
+
+## Revised Analysis
+
+After reviewing additional data points and cross-referencing with recent market reports, I'd like to refine my previous assessment.
+
+**Key Changes:**
+- Updated competitive positioning based on latest market share data
+- Revised timeline estimates based on new regulatory information
+- Additional risk factors identified in adjacent market segments
+
+### Updated Risk Matrix
+
+| Risk | Previous | Updated | Rationale |
+|------|----------|---------|-----------|
+| Market share erosion | Medium | High | Accelerated competitor spending |
+| Regulatory burden | Low | Medium | New compliance requirements |
+| Technology disruption | Medium | Medium-High | Faster-than-expected adoption of alternatives |
+
+Would you like me to elaborate on any of these changes?`,
+
+  `Let me provide an alternative perspective on this:
+
+## Alternative Analysis
+
+While my previous assessment focused primarily on the immediate implications, there are longer-term considerations worth noting:
+
+1. **Market trajectory** — The current trend suggests an acceleration, not just a continuation of current patterns
+2. **Second-order effects** — The competitive response may trigger a price war in adjacent segments
+3. **Regulatory spillover** — EU actions often set precedents for other jurisdictions within 12-18 months
+
+### Updated Recommendation
+
+I'd suggest a more aggressive monitoring posture for the next quarter, with bi-weekly competitive briefings for the leadership team. Additionally, consider establishing a "rapid response" task force that can react to major competitive moves within 48 hours.
+
+> **Confidence Level:** This analysis is based on 8 corroborating sources with an average relevance score of 0.82.`,
+
+  `## Updated Assessment
+
+I've incorporated additional context from recent industry reports and regulatory filings. Here's the refined view:
+
+### Market Impact
+
+The situation has evolved since my initial analysis. Three new data points have emerged:
+
+- **Competitor investment** has increased 35% quarter-over-quarter (vs. my initial estimate of 20%)
+- **Customer sentiment** data shows growing awareness of alternatives, with a 12% increase in competitor evaluations
+- **Regulatory timeline** has been accelerated by approximately 6 months based on the latest EU Commission announcements
+
+### Strategic Implications
+
+These changes suggest we need to move faster on:
+
+1. **Product differentiation** — Invest in unique capabilities that are difficult to replicate
+2. **Customer lock-in** — Strengthen integration depth and switching costs
+3. **Market education** — Proactively communicate our advantages before competitors set the narrative
+
+The next 90 days are critical. I recommend scheduling a strategy review with the product and GTM teams within the next week.`,
+];
+
+function generateAgentResponse(feedback: string): string {
+  const lower = feedback.toLowerCase();
+
+  if (lower.includes('competitive') || lower.includes('competitor')) {
+    return `## Competitive Intelligence Update
+
+I've noted your emphasis on competitive intelligence. Here's what I'll do:
+
+1. **Increase monitoring frequency** for all tagged competitor feeds (from daily to real-time where available)
+2. **Lower the relevance threshold** for competitor-related content from 0.70 to 0.55
+3. **Add a dedicated "Competitive Moves" section** at the top of daily reports
+4. **Include competitor pricing and product launch alerts** as high-priority notifications
+
+### Competitors Currently Tracked
+
+| Competitor | Primary Feed | Alert Level | Last Mentioned |
+|-----------|-------------|-------------|---------------|
+| CloudGiant | 3 sources | High | Today |
+| DataNexus | 2 sources | High | Today |
+| SoftSystems | 2 sources | Medium | This week |
+| NovaTech | 1 source | Low | 2 weeks ago |
+
+Would you like me to add any additional competitors to the monitoring list, or adjust the alert thresholds?`;
+  }
+
+  if (lower.includes('regulation') || lower.includes('compliance') || lower.includes('eu')) {
+    return `## Regulatory & Compliance Focus Updated
+
+I'll increase focus on regulatory and compliance developments, particularly EU-related policy changes. Here are the adjustments:
+
+### Enhanced Monitoring
+
+- **EU regulatory feeds** now scanned every 4 hours (previously 12 hours)
+- **Compliance impact assessments** will be included for every relevant regulatory change
+- **Regulatory timeline tracker** added to weekly reports
+
+### Upcoming Regulatory Deadlines
+
+| Regulation | Deadline | Impact Level | Status |
+|-----------|----------|-------------|--------|
+| EU AI Act — Prohibited practices | Feb 2025 | High | Monitoring |
+| EU AI Act — GPAI obligations | Aug 2025 | High | Monitoring |
+| NIST CSF 2.0 adoption | Rolling | Medium | Active |
+| EU Battery Recycling | Jan 2025 | Medium | Monitoring |
+
+### What You'll See
+
+Future reports will include:
+1. A dedicated **Regulatory Update** section at the top of each report
+2. Earlier alerts for **proposed legislation** (not just enacted)
+3. **Impact assessments** mapping each regulatory change to your product lines
+4. **Compliance gap analysis** recommendations
+
+Is there a specific regulation you'd like me to track more closely?`;
+  }
+
+  if (lower.includes('more detail') || lower.includes('expand') || lower.includes('elaborate') || lower.includes('tell me more')) {
+    return `## Expanded Analysis
+
+I'll provide more detailed analysis in future reports. Here are the specific adjustments:
+
+### Report Depth Changes
+
+| Section | Current | Updated |
+|---------|---------|---------|
+| Executive summary | 3-4 bullet points | 5-6 with quantitative data |
+| Key developments | 2-3 paragraphs each | 4-5 paragraphs with market context |
+| Recommended actions | 3-4 items | 5-6 with priority scoring |
+| Source citations | Basic | Full context and methodology |
+
+### Additional Data Points
+
+I'll now include in each report:
+- **Market sizing data** where available (TAM, SAM, SOM estimates)
+- **Historical trend lines** showing week-over-week changes
+- **Competitor benchmarking** tables with direct comparisons
+- **Risk-reward scoring** for each recommended action (1-10 scale)
+
+### Example: Enhanced Development Format
+
+> **Development:** [Title]
+> **Impact Score:** 8.2/10 | **Confidence:** High (6 corroborating sources)
+> **Market Context:** [2-3 sentences on broader market trends]
+> **Detailed Analysis:** [4-5 paragraph deep dive with data]
+> **Recommended Actions:** [Prioritized list with timeline]
+
+This format will be applied starting with the next scheduled report. Let me know if you'd like any further adjustments!`;
+  }
+
+  if (lower.includes('less') || lower.includes('shorter') || lower.includes('concise') || lower.includes('brief')) {
+    return `## Report Format Updated — Concise Mode
+
+I'll make future reports more concise and scannable. Here are the changes:
+
+### New Format
+
+- **Reduced article count** to the top 5-7 most relevant (from 10-12)
+- **Bullet-point format** for key findings (replacing longer paragraphs)
+- **One-sentence impact summaries** instead of detailed analysis
+- **Consolidated action items** at the end (instead of per-development)
+
+### Template Preview
+
+\`\`\`
+## Quick Brief — [Date]
+
+### Headlines
+• [One-line summary of each key development]
+
+### Impact Scores
+| Development | Score | Direction |
+|------------|-------|-----------|
+| [Item] | 8/10 | ⬆️ Increasing |
+
+### Actions (Top 3)
+1. [Action] — [Owner] — [Timeline]
+2. [Action] — [Owner] — [Timeline]
+3. [Action] — [Owner] — [Timeline]
+\`\`\`
+
+### Estimated Reading Time
+- **Current format:** ~8-10 minutes
+- **New concise format:** ~3-4 minutes
+
+This will apply starting with the next report cycle. Want me to adjust anything further?`;
+  }
+
+  if (lower.includes('ignore') || lower.includes('exclude') || lower.includes('don\'t') || lower.includes('skip')) {
+    return `## Workspace Preferences Updated
+
+I've updated the filtering preferences based on your feedback. Here's what changed:
+
+### Adjusted Filters
+
+The following topics/patterns have been **deprioritized** in relevance scoring:
+
+- Content matching your specified exclusion criteria will have its relevance score reduced by 40%
+- These items will only appear if they score above 0.85 on other criteria
+- A weekly "filtered out" summary will be available if you want to review what was excluded
+
+### Current Active Filters
+
+| Filter | Type | Effect |
+|--------|------|--------|
+| Consumer hardware | Topic exclude | -40% relevance |
+| Cryptocurrency | Topic exclude | -40% relevance |
+| [Your new filter] | Topic exclude | -40% relevance |
+
+> **Note:** To make these exclusions permanent and more granular, you can update the "Excluded Topics" list in the workspace settings. There you can also set exclusion strength (soft vs. hard exclude).
+
+Would you like me to apply this change permanently to the workspace configuration?`;
+  }
+
+  if (lower.includes('summarize') || lower.includes('summary') || lower.includes('tldr') || lower.includes('tl;dr')) {
+    return `## Executive Summary
+
+Here's a concise summary of the key points from this report:
+
+### 🎯 Top 3 Takeaways
+
+1. **Regulatory pressure is increasing** — The EU AI Act timeline creates concrete compliance deadlines that affect your core products
+2. **Competitive landscape is intensifying** — Multiple competitors are making significant moves simultaneously (CloudGiant edge expansion, SoftSystems pricing, DataNexus acquisition)
+3. **Market tailwinds remain strong** — Hybrid cloud adoption (+47% YoY) and enterprise AI spending continue to validate your market thesis
+
+### ⚡ Immediate Actions Required
+
+- **This week:** EU AI Act compliance gap analysis
+- **This week:** Competitive response strategy for CloudGiant
+- **Next 2 weeks:** Customer retention outreach for at-risk accounts
+
+### 📊 Key Metrics
+
+| Metric | Value | Trend |
+|--------|-------|-------|
+| Relevant articles this period | 12 | +33% |
+| Average relevance score | 0.82 | +5.6% |
+| Competitor mentions | 3 | +60% |
+| High-impact developments | 2 | Stable |
+
+Need me to drill into any specific area?`;
+  }
+
+  if (lower.includes('thank') || lower.includes('great') || lower.includes('good') || lower.includes('helpful') || lower.includes('perfect')) {
+    return `You're welcome! I'm glad the analysis was helpful.
+
+### Continuous Improvement
+
+Your positive feedback helps me refine the reporting quality. Based on your preferences, I'll continue to:
+
+- Maintain the current level of detail and analysis depth
+- Focus on actionable intelligence with clear recommendations
+- Provide competitive context and market sizing data
+- Include source citations for verification
+
+> 💡 **Tip:** You can always ask me to adjust the report format, focus areas, or detail level. I learn from your feedback and apply it to future reports.
+
+Is there anything else you'd like to explore from today's intelligence?`;
+  }
+
+  // Default response
+  return `## Feedback Received
+
+Thank you for your input: *"${feedback}"*
+
+I've processed your feedback and will apply it to future intelligence reports. Here's what happens next:
+
+### How Your Feedback Is Used
+
+1. **Workspace preferences** are updated to reflect your priorities
+2. **Relevance scoring** is adjusted to weight the topics you've emphasized
+3. **Report generation** will incorporate your preferred format and detail level
+4. **Next scheduled report** will reflect these changes
+
+### What to Expect
+
+- **Next daily report** will show adjustments to content selection and prioritization
+- **Weekly strategic brief** will incorporate any structural changes you've requested
+- You can track preference changes in the workspace settings
+
+Is there anything specific you'd like me to focus on or adjust further? I'm here to make sure the intelligence reports are as useful as possible for your decision-making.`;
+}
+
 export async function getThread(threadId: string): Promise<ReportThread | undefined> {
-  await delay(randomBetween(300, 600));
-  for (const wsId in MOCK_MESSAGES) {
-    // Find the thread metadata from reports
-    // This is a convenience function; for thread metadata use reports module
-    if (MOCK_MESSAGES[wsId]?.some(m => m.threadId === threadId)) {
-      // Return a minimal thread object
-      return {
-        id: threadId,
-        workspaceId: wsId,
-        title: `Thread ${threadId}`,
-        createdAt: MOCK_MESSAGES[wsId][0]?.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        status: 'published',
-        periodStart: '',
-        periodEnd: '',
-        runId: '',
-        messageCount: MOCK_MESSAGES[wsId].length,
-      };
-    }
+  await delay(randomBetween(200, 400));
+  for (const wsId in MOCK_THREADS) {
+    const thread = MOCK_THREADS[wsId].find(t => t.id === threadId);
+    if (thread) return { ...thread };
   }
   return undefined;
 }
@@ -655,7 +980,8 @@ export async function getMessages(threadId: string): Promise<ReportMessage[]> {
 }
 
 export async function sendFeedback(threadId: string, content: string): Promise<[ReportMessage, ReportMessage]> {
-  await delay(randomBetween(1000, 2000));
+  await delay(randomBetween(1200, 2200));
+
   const userMsg: ReportMessage = {
     id: `m-${Date.now()}`,
     threadId,
@@ -664,23 +990,7 @@ export async function sendFeedback(threadId: string, content: string): Promise<[
     createdAt: new Date().toISOString(),
   };
 
-  // Generate a context-aware-ish response based on the feedback content
-  const lowerContent = content.toLowerCase();
-  let agentResponse: string;
-
-  if (lowerContent.includes('competitive') || lowerContent.includes('competitor')) {
-    agentResponse = `Good point about the competitive landscape. I've noted your emphasis on competitive intelligence and will prioritize competitor-related content in future reports. I'll also increase the weight of competitor feed sources in the relevance scoring model.\n\nSpecifically, I'll:\n1. Increase monitoring frequency for all tagged competitor feeds\n2. Lower the threshold for including competitor-related content\n3. Add a dedicated "Competitive Moves" section in daily reports`;
-  } else if (lowerContent.includes('regulation') || lowerContent.includes('compliance') || lowerContent.includes('eu')) {
-    agentResponse = `Understood. I'll increase focus on regulatory and compliance developments, particularly EU-related policy changes. Future reports will include:\n\n1. A dedicated regulatory update section\n2. Earlier alerts for proposed legislation\n3. Impact assessments for each regulatory change on your product lines`;
-  } else if (lowerContent.includes('more detail') || lowerContent.includes('expand') || lowerContent.includes('elaborate')) {
-    agentResponse = `I'll provide more detailed analysis in future reports. I've adjusted the report style parameters to:\n\n1. Include deeper competitive impact assessments\n2. Add quantitative data and market sizing where available\n3. Expand the recommended actions section with prioritized next steps\n4. Include more source citations and data references`;
-  } else if (lowerContent.includes('less') || lowerContent.includes('shorter') || lowerContent.includes('concise')) {
-    agentResponse = `Noted. I'll make future reports more concise by:\n\n1. Reducing the number of included articles to the top 5-7 most relevant\n2. Shortening the analysis sections\n3. Using bullet-point format for key findings\n4. Moving detailed data to linked appendices`;
-  } else if (lowerContent.includes('ignore') || lowerContent.includes('exclude') || lowerContent.includes('don\'t')) {
-    agentResponse = `I've updated the workspace preferences to reflect your feedback. Content matching those topics will be deprioritized in future relevance scoring. If you'd like to make these exclusions permanent, you can update the "Excluded Topics" list in the workspace profile.`;
-  } else {
-    agentResponse = `Thank you for the feedback. I've noted your input: "${content}"\n\nI'll incorporate this into future intelligence reports. The workspace preferences have been updated to better reflect your priorities. You should see improved relevance in the next scheduled report cycle.\n\nIs there anything specific you'd like me to focus on or adjust further?`;
-  }
+  const agentResponse = generateAgentResponse(content);
 
   const agentMsg: ReportMessage = {
     id: `m-${Date.now() + 1}`,
@@ -690,7 +1000,7 @@ export async function sendFeedback(threadId: string, content: string): Promise<[
     createdAt: new Date(Date.now() + 2000).toISOString(),
     metadata: {
       model: 'gpt-4-turbo',
-      tokens: Math.floor(Math.random() * 500) + 300,
+      tokens: Math.floor(Math.random() * 500) + 400,
     },
   };
 
@@ -704,9 +1014,38 @@ export async function voteMessage(messageId: string, vote: FeedbackVote): Promis
   for (const threadId in MOCK_MESSAGES) {
     const msg = MOCK_MESSAGES[threadId].find(m => m.id === messageId);
     if (msg) {
-      msg.feedback = vote;
+      msg.feedback = msg.feedback === vote ? undefined : vote;
       return true;
     }
   }
   return false;
+}
+
+export async function regenerateMessage(messageId: string): Promise<ReportMessage | undefined> {
+  await delay(randomBetween(1500, 2800));
+  for (const threadId in MOCK_MESSAGES) {
+    const msgIndex = MOCK_MESSAGES[threadId].findIndex(m => m.id === messageId);
+    if (msgIndex !== -1) {
+      const msg = MOCK_MESSAGES[threadId][msgIndex];
+      if (msg.role !== 'agent' && msg.role !== 'system') return undefined;
+
+      const randomResponse = REGENERATE_RESPONSES[Math.floor(Math.random() * REGENERATE_RESPONSES.length)];
+      const regeneratedMsg: ReportMessage = {
+        ...msg,
+        id: `m-${Date.now()}`,
+        content: randomResponse,
+        createdAt: new Date().toISOString(),
+        metadata: {
+          ...msg.metadata,
+          regenerated: true,
+          regeneratedAt: new Date().toISOString(),
+          originalMessageId: messageId,
+        },
+      };
+
+      MOCK_MESSAGES[threadId][msgIndex] = regeneratedMsg;
+      return { ...regeneratedMsg };
+    }
+  }
+  return undefined;
 }

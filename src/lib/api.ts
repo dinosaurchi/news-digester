@@ -5,10 +5,9 @@ export * from '@/mock-api';
 import { listWorkspaces, getWorkspace, createWorkspace } from '@/mock-api/workspaces';
 import { getProfile, updateProfile } from '@/mock-api/profile';
 import { listFeeds, addFeed, updateFeed, toggleFeed, deleteFeed } from '@/mock-api/feeds';
-import { listContent, getContentDetail } from '@/mock-api/content';
-import { listReports, getReportSummary } from '@/mock-api/reports';
-import { getThread, getMessages, sendFeedback, voteMessage } from '@/mock-api/reportThreads';
-import { listRuns, getRunDetail, triggerRun } from '@/mock-api/runs';
+import { listContent, getContentDetail, getContentItemsByIds } from '@/mock-api/content';
+import { listReports, getReportSummary, getThreadMeta } from '@/mock-api/reports';
+import { getMessages, sendFeedback, voteMessage, regenerateMessage } from '@/mock-api/reportThreads';import { listRuns, getRunDetail, triggerRun } from '@/mock-api/runs';
 import { listFeedback, getFeedbackSummary } from '@/mock-api/feedback';
 import { getSettings, updateSettings } from '@/mock-api/settings';
 
@@ -32,13 +31,17 @@ export const api = {
   content: {
     list: listContent,
     getDetail: getContentDetail,
+    getByIds: getContentItemsByIds,
   },
   reports: {
     list: listReports,
     getSummary: getReportSummary,
+    getThreadMeta,
     getThread: getMessages,
+    getMessages,
     sendFeedback,
     vote: voteMessage,
+    regenerate: regenerateMessage,
   },
   runs: {
     list: listRuns,

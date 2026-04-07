@@ -28,6 +28,9 @@ export interface ReportMessage {
     reportId?: string;
     model?: string;
     tokens?: number;
+    regenerated?: boolean;
+    regeneratedAt?: string;
+    originalMessageId?: string;
   };
   isSending?: boolean;
   error?: string;

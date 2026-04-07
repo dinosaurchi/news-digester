@@ -173,6 +173,15 @@ export async function listReports(workspaceId: string): Promise<ReportThread[]> 
   return MOCK_THREADS[workspaceId] ? [...MOCK_THREADS[workspaceId]] : [];
 }
 
+export async function getThreadMeta(threadId: string): Promise<ReportThread | undefined> {
+  await delay(randomBetween(100, 300));
+  for (const wsId in MOCK_THREADS) {
+    const thread = MOCK_THREADS[wsId].find(t => t.id === threadId);
+    if (thread) return { ...thread };
+  }
+  return undefined;
+}
+
 export async function getReportSummary(threadId: string): Promise<ReportSummary | undefined> {
   await delay(randomBetween(300, 600));
   for (const wsId in MOCK_THREADS) {

@@ -465,3 +465,39 @@ export async function getContentDetail(workspaceId: string, contentId: string): 
     clusterItems: clusterItems.length > 0 ? clusterItems : undefined,
   };
 }
+
+export async function getContentItemsByIds(ids: string[]): Promise<ContentItem[]> {
+  await delay(randomBetween(100, 250));
+  const results: ContentItem[] = [];
+  const foundIds = new Set<string>();
+
+  for (const wsId in MOCK_CONTENT) {
+    for (const item of MOCK_CONTENT[wsId]) {
+      if (ids.includes(item.id) && !foundIds.has(item.id)) {
+        results.push(item);
+        foundIds.add(item.id);
+      }
+    }
+  }
+
+  for (const id of ids) {
+    if (!foundIds.has(id)) {
+      results.push({
+        id,
+        workspaceId: 'unknown',
+        title: `Source ${id}`,
+        source: 'Monitoring Feed',
+        sourceUrl: '',
+        publishedAt: new Date().toISOString(),
+        type: 'article',
+        relevanceScore: 0.75,
+        llmScore: 0.70,
+        finalScore: 0.73,
+        status: 'included',
+        snippet: 'Content details are available in the full monitoring feed. This preview shows limited information.',
+      });
+    }
+  }
+
+  return results;
+}
