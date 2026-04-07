@@ -44,10 +44,10 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950 flex items-center justify-center p-4">
       <div className="w-full max-w-md space-y-8">
         <div className="text-center">
-          <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl shadow-indigo-500/20">
+          <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl shadow-indigo-500/25">
             <Briefcase className="w-10 h-10 text-white" />
           </div>
           <h1 className="text-3xl font-bold text-white">SME News Admin</h1>
@@ -99,10 +99,14 @@ export default function LoginPage() {
 
           <div className="mt-8 pt-6 border-t border-slate-700 text-center">
             <p className="text-sm text-slate-500">
-              Demo mode: any non-empty credentials will work.
+              Demo mode — any non-empty credentials will work.
             </p>
           </div>
         </div>
+
+        <p className="text-center text-xs text-slate-600 mt-6">
+          SME News Admin v1.0
+        </p>
       </div>
     </div>
   );

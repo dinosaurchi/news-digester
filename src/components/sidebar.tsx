@@ -46,7 +46,7 @@ export function Sidebar() {
         { name: 'Content', href: `/workspaces/${workspaceId}/content`, icon: FileText },
         { name: 'Reports', href: `/workspaces/${workspaceId}/reports`, icon: FileBarChart },
         { name: 'Runs', href: `/workspaces/${workspaceId}/runs`, icon: PlayCircle },
-        { name: 'Feedback', href: `/workspaces/${workspaceId}/feedback`, icon: MessageSquare },
+        { name: 'Feedback', href: `/workspaces/${workspaceId}/feedback`, icon: ThumbsUp },
         { name: 'Settings', href: `/workspaces/${workspaceId}/settings`, icon: Settings },
       ]
     : [];

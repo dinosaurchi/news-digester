@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { formatDateRange, timeAgo, cn } from '@/lib/utils';
+import { PageHeader } from '@/components/ui/page-header';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { Skeleton, CardSkeleton } from '@/components/ui/loading-skeleton';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -113,12 +114,10 @@ export default function ReportsPage() {
   return (
     <div className="space-y-8">
       {/* Page Header */}
-      <div>
-        <h2 className="text-2xl font-bold text-slate-900">Intelligence Reports</h2>
-        <p className="text-slate-500 mt-1">
-          Conversational report threads — review, discuss, and refine intelligence with your AI analyst.
-        </p>
-      </div>
+      <PageHeader
+        title="Intelligence Reports"
+        description="Conversational report threads — review, discuss, and refine intelligence with your AI analyst."
+      />
 
       {/* Filter Bar */}
       <div className="flex flex-wrap items-center gap-3">
