@@ -12,6 +12,7 @@ from app.models.workspace import (  # noqa: F401 — ensure models are registere
     WorkspaceProfile,
     WorkspaceSettings,
 )
+from app.models.feed import FeedSource  # noqa: F401 — ensure model is registered with Base
 from app.main import app
 from app.db.session import get_db
 

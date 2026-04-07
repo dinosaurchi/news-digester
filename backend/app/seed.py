@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from app.db.session import SessionLocal
 from app.models.workspace import Workspace, WorkspaceProfile, WorkspaceSettings
+from app.models.feed import FeedSource
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +339,144 @@ SETTINGS = [
     },
 ]
 
+FEEDS = [
+    # ws-1: TechCorp Strategy
+    {
+        "id": "feed-1",
+        "workspace_id": "ws-1",
+        "name": "TechCrunch RSS",
+        "url": "https://techcrunch.com/feed/",
+        "type": "rss",
+        "status": "healthy",
+        "cadence": "daily",
+        "tags": ["tech", "startups"],
+        "last_fetched_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
+        "created_at": datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "feed-2",
+        "workspace_id": "ws-1",
+        "name": "Ars Technica",
+        "url": "https://feeds.arstechnica.com/arstechnica/index",
+        "type": "rss",
+        "status": "healthy",
+        "cadence": "daily",
+        "tags": ["tech", "science"],
+        "last_fetched_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
+        "created_at": datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "feed-3",
+        "workspace_id": "ws-1",
+        "name": "The Verge",
+        "url": "https://www.theverge.com/rss/index.xml",
+        "type": "website",
+        "status": "healthy",
+        "cadence": "hourly",
+        "tags": ["tech", "culture"],
+        "last_fetched_at": datetime(2024, 3, 20, 9, 0, 0, tzinfo=timezone.utc),
+        "created_at": datetime(2024, 2, 1, 10, 0, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 3, 20, 9, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "feed-4",
+        "workspace_id": "ws-1",
+        "name": "Wired Blog",
+        "url": "https://www.wired.com/feed/rss",
+        "type": "blog",
+        "status": "healthy",
+        "cadence": "daily",
+        "tags": ["tech", "innovation"],
+        "last_fetched_at": datetime(2024, 3, 19, 8, 0, 0, tzinfo=timezone.utc),
+        "created_at": datetime(2024, 2, 10, 10, 0, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 3, 19, 8, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "feed-5",
+        "workspace_id": "ws-1",
+        "name": "Competitor AI News",
+        "url": "https://competitor.example.com/feed",
+        "type": "competitor",
+        "status": "disabled",
+        "cadence": "weekly",
+        "tags": ["competitor", "ai"],
+        "last_fetched_at": None,
+        "last_error": None,
+        "created_at": datetime(2024, 1, 20, 10, 0, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 2, 15, 12, 0, 0, tzinfo=timezone.utc),
+    },
+    # ws-2: GreenEnergy Insights
+    {
+        "id": "feed-6",
+        "workspace_id": "ws-2",
+        "name": "Clean Energy Wire",
+        "url": "https://www.cleanenergywire.org/rss",
+        "type": "rss",
+        "status": "healthy",
+        "cadence": "daily",
+        "tags": ["renewable", "policy"],
+        "last_fetched_at": datetime(2024, 3, 20, 7, 0, 0, tzinfo=timezone.utc),
+        "created_at": datetime(2024, 2, 20, 9, 0, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 3, 20, 7, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "feed-7",
+        "workspace_id": "ws-2",
+        "name": "Solar Power World",
+        "url": "https://www.solarpowerworldonline.com/feed/",
+        "type": "website",
+        "status": "healthy",
+        "cadence": "daily",
+        "tags": ["solar", "industry"],
+        "last_fetched_at": datetime(2024, 3, 20, 7, 0, 0, tzinfo=timezone.utc),
+        "created_at": datetime(2024, 2, 20, 9, 0, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 3, 20, 7, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "feed-8",
+        "workspace_id": "ws-2",
+        "name": "Tesla Energy Blog",
+        "url": "https://www.tesla.com/blog/rss",
+        "type": "competitor",
+        "status": "healthy",
+        "cadence": "weekly",
+        "tags": ["competitor", "battery"],
+        "last_fetched_at": datetime(2024, 3, 18, 8, 0, 0, tzinfo=timezone.utc),
+        "created_at": datetime(2024, 3, 1, 10, 0, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 3, 18, 8, 0, 0, tzinfo=timezone.utc),
+    },
+    # ws-3: RetailWatch
+    {
+        "id": "feed-9",
+        "workspace_id": "ws-3",
+        "name": "Retail Dive",
+        "url": "https://www.retaildive.com/rss/feed",
+        "type": "rss",
+        "status": "error",
+        "cadence": "daily",
+        "tags": ["retail", "ecommerce"],
+        "last_fetched_at": datetime(2024, 3, 15, 8, 0, 0, tzinfo=timezone.utc),
+        "last_error": "Connection timed out",
+        "created_at": datetime(2023, 11, 10, 14, 0, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 3, 15, 8, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "feed-10",
+        "workspace_id": "ws-3",
+        "name": "Shopify Blog",
+        "url": "https://www.shopify.com/blog/rss",
+        "type": "blog",
+        "status": "healthy",
+        "cadence": "daily",
+        "tags": ["ecommerce", "platform"],
+        "last_fetched_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
+        "created_at": datetime(2023, 11, 10, 14, 0, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
+    },
+]
+
 
 def seed() -> None:
     """Seed the database with fixture data."""
@@ -366,6 +505,12 @@ def seed() -> None:
             sett = WorkspaceSettings(**sett_data)
             db.add(sett)
         logger.info("Created %d settings", len(SETTINGS))
+
+        # Create feeds
+        for feed_data in FEEDS:
+            feed = FeedSource(**feed_data)
+            db.add(feed)
+        logger.info("Created %d feeds", len(FEEDS))
 
         db.commit()
         logger.info("Seed completed successfully.")

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.models.feed import FeedSource
 from app.schemas.workspace import (
     WorkspaceCreate,
     WorkspaceUpdate,
@@ -16,8 +17,13 @@ from app.services import workspace as ws_service
 router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 
 
-def _ws_to_out(ws) -> dict:
+def _ws_to_out(ws, db: Session = None) -> dict:
     """Convert a Workspace ORM object to WorkspaceOut-compatible dict with camelCase keys."""
+    feed_count = 0
+    if db is not None:
+        feed_count = (
+            db.query(FeedSource).filter(FeedSource.workspace_id == ws.id).count()
+        )
     return {
         "id": ws.id,
         "name": ws.name,
@@ -25,7 +31,7 @@ def _ws_to_out(ws) -> dict:
         "status": ws.status,
         "createdAt": ws.created_at.isoformat() if ws.created_at else None,
         "updatedAt": ws.updated_at.isoformat() if ws.updated_at else None,
-        "feedCount": 0,  # computed — will be 0 until feeds table exists
+        "feedCount": feed_count,
         "lastReportAt": None,  # computed — will be None until reports table exists
         "nextRunAt": None,  # computed — will be None until runs table exists
     }
@@ -88,7 +94,7 @@ def _settings_to_out(s) -> dict:
 @router.get("", response_model=list[WorkspaceOut])
 def list_workspaces(db: Session = Depends(get_db)):
     workspaces = ws_service.list_workspaces(db)
-    return [_ws_to_out(ws) for ws in workspaces]
+    return [_ws_to_out(ws, db) for ws in workspaces]
 
 
 @router.post("", response_model=WorkspaceOut, status_code=201)
@@ -101,7 +107,7 @@ def create_workspace(body: WorkspaceCreate, db: Session = Depends(get_db)):
     )
     db.commit()
     db.refresh(ws)
-    return _ws_to_out(ws)
+    return _ws_to_out(ws, db)
 
 
 @router.get("/{workspace_id}", response_model=WorkspaceOut)
@@ -109,7 +115,7 @@ def get_workspace(workspace_id: str, db: Session = Depends(get_db)):
     ws = ws_service.get_workspace(db, workspace_id)
     if ws is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
-    return _ws_to_out(ws)
+    return _ws_to_out(ws, db)
 
 
 @router.patch("/{workspace_id}", response_model=WorkspaceOut)
@@ -129,7 +135,7 @@ def update_workspace(
     )
     db.commit()
     db.refresh(ws)
-    return _ws_to_out(ws)
+    return _ws_to_out(ws, db)
 
 
 @router.delete("/{workspace_id}", response_model=WorkspaceOut)
@@ -141,7 +147,7 @@ def delete_workspace(workspace_id: str, db: Session = Depends(get_db)):
     ws_service.soft_delete_workspace(db, ws)
     db.commit()
     db.refresh(ws)
-    return _ws_to_out(ws)
+    return _ws_to_out(ws, db)
 
 
 # ── Profile endpoints ────────────────────────────────────────────────

@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.api.session import router as session_router
 from app.api.workspaces import router as workspaces_router
+from app.api.feeds import router as feeds_router
 
 # ── Logging setup ────────────────────────────────────────────────────
 logging.basicConfig(
@@ -59,6 +60,7 @@ def health():
 # ── Routers ──────────────────────────────────────────────────────────
 app.include_router(session_router)
 app.include_router(workspaces_router)
+app.include_router(feeds_router)
 
 
 # ── Run with: uvicorn app.main:app --reload ─────────────────────────

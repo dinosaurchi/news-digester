@@ -1,0 +1,123 @@
+"""FeedSource API endpoints."""
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.schemas.feed import FeedCreate, FeedUpdate, FeedOut, _feed_to_out
+from app.services import feed as feed_service
+from app.services import workspace as ws_service
+
+router = APIRouter(prefix="/api", tags=["feeds"])
+
+
+# ── Workspace-scoped feed endpoints ───────────────────────────────────
+
+
+@router.get("/workspaces/{workspace_id}/feeds", response_model=list[FeedOut])
+def list_feeds(workspace_id: str, db: Session = Depends(get_db)):
+    """List all feeds for a workspace."""
+    ws = ws_service.get_workspace(db, workspace_id)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    feeds = feed_service.list_feeds(db, workspace_id)
+    return [_feed_to_out(f) for f in feeds]
+
+
+@router.post(
+    "/workspaces/{workspace_id}/feeds", response_model=FeedOut, status_code=201
+)
+def create_feed(workspace_id: str, body: FeedCreate, db: Session = Depends(get_db)):
+    """Create a new feed for a workspace."""
+    ws = ws_service.get_workspace(db, workspace_id)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    feed = feed_service.create_feed(
+        db,
+        workspace_id=workspace_id,
+        name=body.name,
+        url=body.url,
+        type=body.type,
+        cadence=body.cadence,
+        tags=body.tags,
+    )
+    db.commit()
+    db.refresh(feed)
+    return _feed_to_out(feed)
+
+
+# ── Feed-scoped endpoints ─────────────────────────────────────────────
+
+
+@router.get("/feeds/{feed_id}", response_model=FeedOut)
+def get_feed(feed_id: str, db: Session = Depends(get_db)):
+    """Get a single feed by ID."""
+    feed = feed_service.get_feed(db, feed_id)
+    if feed is None:
+        raise HTTPException(status_code=404, detail="Feed not found")
+    return _feed_to_out(feed)
+
+
+@router.patch("/feeds/{feed_id}", response_model=FeedOut)
+def update_feed(feed_id: str, body: FeedUpdate, db: Session = Depends(get_db)):
+    """Partially update a feed."""
+    feed = feed_service.get_feed(db, feed_id)
+    if feed is None:
+        raise HTTPException(status_code=404, detail="Feed not found")
+
+    feed_service.update_feed(
+        db,
+        feed,
+        name=body.name,
+        url=body.url,
+        type=body.type,
+        cadence=body.cadence,
+        tags=body.tags,
+    )
+    db.commit()
+    db.refresh(feed)
+    return _feed_to_out(feed)
+
+
+@router.delete("/feeds/{feed_id}", response_model=FeedOut)
+def delete_feed(feed_id: str, db: Session = Depends(get_db)):
+    """Hard-delete a feed."""
+    feed = feed_service.get_feed(db, feed_id)
+    if feed is None:
+        raise HTTPException(status_code=404, detail="Feed not found")
+
+    out = _feed_to_out(feed)
+    feed_service.delete_feed(db, feed)
+    db.commit()
+    return out
+
+
+@router.post("/feeds/{feed_id}/toggle", response_model=FeedOut)
+def toggle_feed(feed_id: str, db: Session = Depends(get_db)):
+    """Toggle feed status between healthy and disabled."""
+    feed = feed_service.get_feed(db, feed_id)
+    if feed is None:
+        raise HTTPException(status_code=404, detail="Feed not found")
+
+    feed_service.toggle_feed_status(db, feed)
+    db.commit()
+    db.refresh(feed)
+    return _feed_to_out(feed)
+
+
+@router.post("/feeds/{feed_id}/test")
+def test_feed(feed_id: str, db: Session = Depends(get_db)):
+    """Test a feed (stub endpoint)."""
+    feed = feed_service.get_feed(db, feed_id)
+    if feed is None:
+        raise HTTPException(status_code=404, detail="Feed not found")
+
+    return {
+        "success": True,
+        "feedId": feed.id,
+        "message": "Feed test completed successfully",
+        "articlesFound": 5,
+        "lastError": None,
+    }

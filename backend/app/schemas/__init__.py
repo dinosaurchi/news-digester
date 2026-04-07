@@ -9,6 +9,7 @@ from app.schemas.workspace import (
     WorkspaceSettingsIn,
     WorkspaceSettingsOut,
 )
+from app.schemas.feed import FeedCreate, FeedUpdate, FeedOut
 
 __all__ = [
     "LoginRequest",
@@ -21,4 +22,7 @@ __all__ = [
     "WorkspaceProfileOut",
     "WorkspaceSettingsIn",
     "WorkspaceSettingsOut",
+    "FeedCreate",
+    "FeedUpdate",
+    "FeedOut",
 ]
