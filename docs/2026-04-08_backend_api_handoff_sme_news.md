@@ -45,6 +45,22 @@ The desired end state is not just "backend exists". The desired end state is:
 
 ---
 
+## Implementation decisions locked for this handoff
+
+The following choices are fixed for implementation unless this document is updated again:
+
+- session/auth approach: backend-served stub session for initial integration
+- backend/frontend contract strategy: exact match to current frontend DTOs
+- report model: backend may merge Report and ReportThread internally, but must preserve current frontend DTOs
+- delete behavior: workspaces are archived/soft-deleted; feeds are disabled or soft-deleted
+- early backend behavior: backend stubs are allowed where the real pipeline is not ready yet
+- mock API cleanup: `src/mock-api/` should be deleted once the real integration fully replaces it
+- backend stack: FastAPI + Postgres + Celery + Redis
+
+These are implementation instructions, not optional suggestions.
+
+---
+
 ## Primary objective
 
 Build a **backend foundation** that supports:
@@ -85,7 +101,7 @@ That minimal boundary is in scope for initial integration even though full auth 
 
 ## Recommended stack
 
-Use the architecture already agreed for MVP unless there is a strong repo-specific reason not to.
+Use the architecture already agreed for MVP.
 
 ### Backend
 - Python
@@ -517,15 +533,15 @@ If the backend prefers different external DTOs, the handoff must explicitly assi
 
 Full auth is not the priority, but the backend/frontend integration must remove frontend-side fake login and fake session state.
 
-Choose one of these approaches explicitly and document it in implementation:
+For this handoff, use an explicit backend-served stub session.
+Do not keep frontend-created login/session behavior.
 
-- preferred: minimal real session endpoints
-- fallback: explicit backend-served dev-only stub session
-
-Required minimum API if using session endpoints:
+Required minimum API:
 
 ### POST /api/session/login
-Accept credentials, establish session, and return current user/session payload.
+Accept credentials, establish a backend-owned session, and return current user/session payload.
+
+In the initial implementation this may be a backend stub in place of full auth, but the backend must still own validation and response behavior.
 
 ### GET /api/session/me
 Return current authenticated user/session payload for route gating and header rendering.
@@ -540,7 +556,9 @@ Minimum user/session payload should support the current frontend store shape:
 - `displayName`
 - `role`
 
-If this is intentionally stubbed in early phases, the stub must still be backend-served and documented. The frontend must not synthesize a user object locally for production flows.
+The frontend must not synthesize a user object locally for production flows.
+
+Session transport can be cookie-backed or another simple server-owned session mechanism, but it must be backend-controlled and stable across refresh.
 
 ---
 
@@ -726,10 +744,8 @@ Bulk update entity preferences.
 
 Before coding deeply, compare the current frontend’s mock DTOs to the backend response models.
 
-The backend should either:
-- align exactly with frontend DTOs, or
-- introduce a thin frontend adapter layer with explicit mapping
-
+For this handoff, the backend must align exactly with the current frontend DTOs.
+Do not introduce a frontend adapter layer unless this document is revised explicitly.
 Do not let implicit mismatches accumulate.
 
 In addition to DTO alignment, enforce frontend boundary alignment:
@@ -786,6 +802,7 @@ Set up backend project structure, database, migrations, core models, minimal ses
 - add seed/dev fixture setup if useful
 - add health endpoint
 - add clear config/env handling
+- implement backend-served stub session behavior suitable for initial frontend integration
 
 ## Automated tests
 - session login/me/logout tests
@@ -811,7 +828,7 @@ Set up backend project structure, database, migrations, core models, minimal ses
 ## Acceptance criteria
 - backend boots cleanly
 - migrations run cleanly
-- minimal session endpoints work or an explicit backend-served stub session is documented and working
+- minimal session endpoints work with the backend-served stub session
 - workspace/profile/settings endpoints work
 - responses are typed and stable
 - validation failures are handled clearly
@@ -870,6 +887,7 @@ Make reports and report-thread UX real from a persistence/API perspective.
   - ReportThread or equivalent
   - ReportMessage
   - FeedbackEvent
+- backend may merge Report and ReportThread internally if that simplifies persistence or API implementation, but current frontend DTOs must remain stable
 - implement endpoints:
   - GET /api/workspaces/{id}/reports
   - GET /api/reports/{report_id}
@@ -985,6 +1003,7 @@ Create a usable run-now backend action and start replacing frontend mock domains
 - preserve frontend behavior and UX
 - remove the replaced frontend mock imports and mock runtime logic for each integrated slice
 - keep temporary stub behavior on the backend side only where the real pipeline is not ready yet
+- use soft-delete/archive semantics rather than hard delete for workspaces; use disable or soft-delete semantics rather than hard delete for feeds
 
 ## Automated tests
 - run-now endpoint tests
@@ -1025,8 +1044,8 @@ After the core slices are wired to the real backend, remove remaining frontend-r
   - mock login acceptance of arbitrary credentials
   - client-created fake user/session objects for production auth flow
   - demo-only success toasts/actions that imply non-persistent backend behavior
-- if authentication is still intentionally deferred, document a clear temporary approach and keep any stub at the backend/API boundary rather than hidden in page logic
-- remove `src/mock-api/` entirely when no longer needed, or gate it to local dev/testing only and exclude it from production builds
+- keep the temporary auth/session behavior at the backend/API boundary rather than hidden in page logic
+- remove `src/mock-api/` entirely when no longer needed
 - update README and run instructions to reflect the real backend dependency and any remaining explicit temporary limitations
 
 ## Automated tests
@@ -1044,9 +1063,9 @@ After the core slices are wired to the real backend, remove remaining frontend-r
 - `src/lib/api.ts` no longer imports from `@/mock-api`
 - frontend pages/components do not import from `src/mock-api`
 - no client-side fake business logic remains in production flows
-- login/session state is sourced from backend responses or an explicit backend-served stub session
+- login/session state is sourced from backend responses from the backend-served stub session
 - any remaining stubbed behavior exists only behind backend endpoints and is explicitly documented
-- `src/mock-api/` is removed or excluded from production builds
+- `src/mock-api/` is removed
 - tests pass
 
 ---
