@@ -23,7 +23,10 @@ export const auth = {
     const res = await apiClient.post<{ user: User }>('/session/login', { username, password });
     return res.user;
   },
-  me: async () => apiClient.get<User>('/session/me'),
+  me: async () => {
+    const res = await apiClient.get<{ user: User }>('/session/me');
+    return res.user;
+  },
   logout: async () => apiClient.post('/session/logout'),
 };
 
