@@ -101,8 +101,8 @@ const reports = {
     apiClient.post<{ success: boolean }>(`/report-messages/${messageId}/thumb`, {
       value: vote,
     }),
-  regenerate: (messageId: string) =>
-    apiClient.post<ReportMessage>(`/reports/${messageId}/regenerate`),
+  regenerate: (reportId: string) =>
+    apiClient.post<ReportMessage>(`/reports/${reportId}/regenerate`),
 };
 
 // Runs

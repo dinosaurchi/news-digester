@@ -75,6 +75,14 @@ export default function ReportThreadPage() {
     return [...base, ...pending];
   }, [serverMessages, pendingMessages]);
 
+  // ID of the last agent message (regenerate is thread-scoped, so only show on last agent msg)
+  const lastAgentMessageId = useMemo(() => {
+    for (let i = allMessages.length - 1; i >= 0; i--) {
+      if (allMessages[i].role === 'agent') return allMessages[i].id;
+    }
+    return null;
+  }, [allMessages]);
+
   // Clear pending messages when server data refreshes with new messages
   useEffect(() => {
     if (serverMessages && pendingMessages.length > 0) {
@@ -106,9 +114,9 @@ export default function ReportThreadPage() {
     },
   });
 
-  // Regenerate mutation
+  // Regenerate mutation (uses thread/report ID, not message ID)
   const regenerateMutation = useMutation({
-    mutationFn: (msgId: string) => api.reports.regenerate(msgId),
+    mutationFn: () => api.reports.regenerate(threadId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['thread-messages', threadId] });
     },
@@ -274,10 +282,14 @@ export default function ReportThreadPage() {
                 key={msg.id}
                 message={msg}
                 copiedId={copiedId}
-                isRegenerating={regenerateMutation.isPending && regenerateMutation.variables === msg.id}
+                isRegenerating={regenerateMutation.isPending}
                 onVote={(vote) => voteMutation.mutate({ msgId: msg.id, vote })}
                 onCopy={() => handleCopy(msg.content, msg.id)}
-                onRegenerate={() => regenerateMutation.mutate(msg.id)}
+                onRegenerate={
+                  msg.role === 'agent' && !msg.id.startsWith('pending-') && msg.id === lastAgentMessageId
+                    ? () => regenerateMutation.mutate()
+                    : undefined
+                }
                 onInspectSources={() => handleInspectSources(msg.id)}
                 activeSourceMsgId={selectedSourceMsgId}
               />
@@ -430,7 +442,7 @@ interface MessageBubbleProps {
   isRegenerating: boolean;
   onVote: (vote: 'up' | 'down') => void;
   onCopy: () => void;
-  onRegenerate: () => void;
+  onRegenerate?: () => void;
   onInspectSources: () => void;
   activeSourceMsgId: string | null;
 }
@@ -452,7 +464,6 @@ function MessageBubble({
   const hasSources = (message.metadata?.sources?.length ?? 0) > 0;
   const isSourceActive = activeSourceMsgId === message.id;
   const isCopied = copiedId === message.id;
-  const isPending = message.id.startsWith('pending-');
 
   const roleLabel = isSystem ? 'System Report' : isAgent ? 'Agent' : 'You';
   const roleTime = formatMessageTime(message.createdAt);
@@ -589,8 +600,8 @@ function MessageBubble({
               {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
             </button>
 
-            {/* Regenerate (agent only) */}
-            {isAgent && !isPending && (
+            {/* Regenerate (agent only, last agent message) */}
+            {onRegenerate && (
               <button
                 onClick={onRegenerate}
                 disabled={isRegenerating}
@@ -600,7 +611,7 @@ function MessageBubble({
                     ? 'text-indigo-400'
                     : 'text-slate-400 hover:bg-slate-100 hover:text-slate-600'
                 )}
-                title="Regenerate response"
+                title="Regenerate thread response"
               >
                 <RefreshCw className={cn('w-3.5 h-3.5', isRegenerating && 'animate-spin')} />
               </button>
