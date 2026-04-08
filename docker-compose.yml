@@ -38,8 +38,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    volumes:
-      - ./backend:/app
+    restart: unless-stopped
 
   app:
     build:
@@ -54,7 +53,7 @@ services:
     depends_on:
       - backend
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
       interval: 30s
       timeout: 3s
       retries: 3

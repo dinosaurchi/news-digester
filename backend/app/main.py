@@ -30,6 +30,36 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
+
+# ── Startup: run migrations and seed ─────────────────────────────────
+@app.on_event("startup")
+def startup():
+    import subprocess
+
+    logger.info("Running database migrations...")
+    try:
+        subprocess.run(["alembic", "upgrade", "head"], check=True, capture_output=True)
+        logger.info("Migrations complete")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Migration failed: {e.stderr.decode()}")
+    # Run seed if no data exists
+    try:
+        from app.db.session import SessionLocal
+        from app.models import Workspace
+
+        db = SessionLocal()
+        count = db.query(Workspace).count()
+        if count == 0:
+            logger.info("No data found, running seed...")
+            from app.seed import seed_all
+
+            seed_all(db)
+            logger.info("Seed complete")
+        db.close()
+    except Exception as e:
+        logger.error(f"Seed check failed: {e}")
+
+
 # ── CORS ─────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,

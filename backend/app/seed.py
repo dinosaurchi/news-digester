@@ -1187,9 +1187,12 @@ ENTITY_PREFERENCES = [
 ]
 
 
-def seed() -> None:
-    """Seed the database with fixture data."""
-    db = SessionLocal()
+def seed_all(db) -> None:
+    """Seed the database with fixture data.
+
+    Accepts an existing database session so it can be called from
+    the FastAPI startup event or from tests.
+    """
     try:
         # Check if data already exists
         existing = db.query(Workspace).first()
@@ -1201,6 +1204,7 @@ def seed() -> None:
         for ws_data in WORKSPACES:
             ws = Workspace(**ws_data)
             db.add(ws)
+        db.flush()  # flush workspaces so FK references below resolve
         logger.info("Created %d workspaces", len(WORKSPACES))
 
         # Create profiles
@@ -1219,12 +1223,14 @@ def seed() -> None:
         for feed_data in FEEDS:
             feed = FeedSource(**feed_data)
             db.add(feed)
+        db.flush()  # flush feeds so content_items FK resolves
         logger.info("Created %d feeds", len(FEEDS))
 
         # Create reports (threads)
         for report_data in REPORTS:
             report = Report(**report_data)
             db.add(report)
+        db.flush()  # flush reports so messages/feedback/content FKs resolve
         logger.info("Created %d reports", len(REPORTS))
 
         # Create report messages
@@ -1243,6 +1249,7 @@ def seed() -> None:
         for cluster_data in CONTENT_CLUSTERS:
             cluster = ContentCluster(**cluster_data)
             db.add(cluster)
+        db.flush()  # flush clusters so content_items FK resolves
         logger.info("Created %d content clusters", len(CONTENT_CLUSTERS))
 
         # Create content items
@@ -1255,6 +1262,7 @@ def seed() -> None:
         for run_data in PROCESSING_RUNS:
             run = ProcessingRun(**run_data)
             db.add(run)
+        db.flush()  # flush runs so run_events FK resolves
         logger.info("Created %d processing runs", len(PROCESSING_RUNS))
 
         # Create processing run events
@@ -1287,6 +1295,13 @@ def seed() -> None:
         db.rollback()
         logger.exception("Seed failed")
         raise
+
+
+def seed() -> None:
+    """Seed the database with fixture data (creates its own session)."""
+    db = SessionLocal()
+    try:
+        seed_all(db)
     finally:
         db.close()
 
