@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/lib/store';
+import { auth } from '@/lib/api';
 import { Briefcase, Loader2, AlertCircle } from 'lucide-react';
 
 export default function LoginPage() {
@@ -16,9 +17,6 @@ export default function LoginPage() {
     setIsLoading(true);
     setError('');
 
-    // Simulate a small delay for UX
-    await new Promise(resolve => setTimeout(resolve, 500));
-
     if (!username.trim() || !password.trim()) {
       setError('Please enter both username and password.');
       setIsLoading(false);
@@ -26,18 +24,12 @@ export default function LoginPage() {
     }
 
     try {
-      // Mock login: accept any non-empty credentials
-      const mockUser = {
-        id: 'user-1',
-        username: username,
-        displayName: username.charAt(0).toUpperCase() + username.slice(1),
-        role: 'admin',
-      };
-      setUser(mockUser);
+      const user = await auth.login(username, password);
+      setUser(user);
       setLoggedIn(true);
       navigate('/workspaces');
     } catch (_err) {
-      setError('An error occurred. Please try again.');
+      setError('Invalid credentials. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -99,7 +91,7 @@ export default function LoginPage() {
 
           <div className="mt-8 pt-6 border-t border-slate-700 text-center">
             <p className="text-sm text-slate-500">
-              Demo mode — any non-empty credentials will work.
+              Enter any non-empty username and password to sign in.
             </p>
           </div>
         </div>

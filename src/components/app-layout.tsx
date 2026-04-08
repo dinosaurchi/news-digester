@@ -1,14 +1,31 @@
+import { useEffect } from 'react';
 import { Outlet, Navigate } from 'react-router-dom';
 import { Sidebar } from './sidebar';
 import { Header } from './header';
 import { useAppStore } from '@/lib/store';
+import { auth } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { useLocation } from 'react-router-dom';
 
 export function AppLayout() {
-  const { isSidebarOpen, isLoggedIn } = useAppStore();
+  const { isSidebarOpen, isLoggedIn, setUser, setLoggedIn } = useAppStore();
   const location = useLocation();
+
+  // Check auth state on mount
+  useEffect(() => {
+    if (!isLoggedIn) {
+      auth.me()
+        .then((user) => {
+          setUser(user);
+          setLoggedIn(true);
+        })
+        .catch(() => {
+          setUser(null);
+          setLoggedIn(false);
+        });
+    }
+  }, []);
 
   if (!isLoggedIn) {
     return <Navigate to="/login" replace />;

@@ -87,7 +87,7 @@ export default function ReportThreadPage() {
   const feedbackMutation = useMutation({
     mutationFn: (content: string) => api.reports.sendFeedback(threadId, content),
     onSuccess: ([, agentMsg]) => {
-      setPendingMessages([agentMsg]);
+      if (agentMsg) setPendingMessages([agentMsg]);
       setFeedback('');
       queryClient.invalidateQueries({ queryKey: ['thread-messages', threadId] });
       queryClient.invalidateQueries({ queryKey: ['thread-meta', threadId] });
