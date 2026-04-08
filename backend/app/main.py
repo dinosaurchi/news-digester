@@ -10,6 +10,8 @@ from app.api.workspaces import router as workspaces_router
 from app.api.feeds import router as feeds_router
 from app.api.reports import router as reports_router
 from app.api.feedback import router as feedback_router
+from app.api.content import router as content_router
+from app.api.runs import router as runs_router
 
 # ── Logging setup ────────────────────────────────────────────────────
 logging.basicConfig(
@@ -65,6 +67,8 @@ app.include_router(workspaces_router)
 app.include_router(feeds_router)
 app.include_router(reports_router)
 app.include_router(feedback_router)
+app.include_router(content_router)
+app.include_router(runs_router)
 
 
 # ── Run with: uvicorn app.main:app --reload ─────────────────────────

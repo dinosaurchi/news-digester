@@ -18,6 +18,14 @@ from app.models.report import (  # noqa: F401 — ensure models are registered w
     ReportMessage,
     FeedbackEvent,
 )
+from app.models.content import (  # noqa: F401 — ensure models are registered with Base
+    ContentItem,
+    ContentCluster,
+)
+from app.models.run import (  # noqa: F401 — ensure models are registered with Base
+    ProcessingRun,
+    ProcessingRunEvent,
+)
 from app.main import app
 from app.db.session import get_db
 

@@ -20,6 +20,8 @@ from app.schemas.report import (
     FeedbackEventOut,
     FeedbackSummaryOut,
 )
+from app.schemas.content import ContentItemOut, ContentDetailOut
+from app.schemas.run import RunSummaryOut, RunDetailOut
 
 __all__ = [
     "LoginRequest",
@@ -43,4 +45,8 @@ __all__ = [
     "SummaryOut",
     "FeedbackEventOut",
     "FeedbackSummaryOut",
+    "ContentItemOut",
+    "ContentDetailOut",
+    "RunSummaryOut",
+    "RunDetailOut",
 ]
