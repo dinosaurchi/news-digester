@@ -210,7 +210,7 @@ def run_now(workspace_id: str, db: Session = Depends(get_db)):
             role="system",
             content=report.markdown_body,
             metadata_json={
-                "sources": [item.url for item in all_items[:5]],
+                "sources": [item.id for item in all_items[:5]],
                 "reportId": report.id,
             },
         )
