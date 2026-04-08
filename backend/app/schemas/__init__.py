@@ -10,6 +10,16 @@ from app.schemas.workspace import (
     WorkspaceSettingsOut,
 )
 from app.schemas.feed import FeedCreate, FeedUpdate, FeedOut
+from app.schemas.report import (
+    MessageSendIn,
+    ThumbIn,
+    FeedbackCreateIn,
+    MessageOut,
+    ThreadOut,
+    SummaryOut,
+    FeedbackEventOut,
+    FeedbackSummaryOut,
+)
 
 __all__ = [
     "LoginRequest",
@@ -25,4 +35,12 @@ __all__ = [
     "FeedCreate",
     "FeedUpdate",
     "FeedOut",
+    "MessageSendIn",
+    "ThumbIn",
+    "FeedbackCreateIn",
+    "MessageOut",
+    "ThreadOut",
+    "SummaryOut",
+    "FeedbackEventOut",
+    "FeedbackSummaryOut",
 ]

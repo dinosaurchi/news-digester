@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from app.db.session import SessionLocal
 from app.models.workspace import Workspace, WorkspaceProfile, WorkspaceSettings
 from app.models.feed import FeedSource
+from app.models.report import Report, ReportMessage, FeedbackEvent
 
 logger = logging.getLogger(__name__)
 
@@ -477,6 +478,243 @@ FEEDS = [
     },
 ]
 
+REPORTS = [
+    {
+        "id": "report-1",
+        "workspace_id": "ws-1",
+        "title": "Weekly Tech Intel Report – March 18–24, 2024",
+        "period_start": datetime(2024, 3, 18, 0, 0, 0, tzinfo=timezone.utc),
+        "period_end": datetime(2024, 3, 24, 23, 59, 59, tzinfo=timezone.utc),
+        "status": "published",
+        "run_id": "run-001",
+        "published_at": datetime(2024, 3, 25, 8, 0, 0, tzinfo=timezone.utc),
+        "created_at": datetime(2024, 3, 25, 7, 30, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 3, 25, 8, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "report-2",
+        "workspace_id": "ws-1",
+        "title": "Weekly Tech Intel Report – March 11–17, 2024",
+        "period_start": datetime(2024, 3, 11, 0, 0, 0, tzinfo=timezone.utc),
+        "period_end": datetime(2024, 3, 17, 23, 59, 59, tzinfo=timezone.utc),
+        "status": "published",
+        "run_id": "run-002",
+        "published_at": datetime(2024, 3, 18, 8, 0, 0, tzinfo=timezone.utc),
+        "created_at": datetime(2024, 3, 18, 7, 30, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 3, 18, 8, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "report-3",
+        "workspace_id": "ws-1",
+        "title": "Weekly Tech Intel Report – March 25–31, 2024 (Draft)",
+        "period_start": datetime(2024, 3, 25, 0, 0, 0, tzinfo=timezone.utc),
+        "period_end": datetime(2024, 3, 31, 23, 59, 59, tzinfo=timezone.utc),
+        "status": "draft",
+        "run_id": "run-003",
+        "created_at": datetime(2024, 4, 1, 7, 30, 0, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 4, 1, 7, 30, 0, tzinfo=timezone.utc),
+    },
+]
+
+REPORT_MESSAGES = [
+    # Report 1 messages
+    {
+        "id": "msg-1-1",
+        "thread_id": "report-1",
+        "role": "system",
+        "content": "# Weekly Tech Intel Report – March 18–24, 2024\n\n## Key Highlights\n\n- **CloudGiant** announced a $2B investment in edge computing infrastructure.\n- **DataNexus Corp.** launched a new AI-powered analytics platform targeting financial services.\n- EU AI Act negotiations entered final stage with proposed compliance deadline of 2026.\n\n## Competitive Analysis\n\nCloudGiant's edge computing push directly competes with TechCorp's Edge-Connect Hub. Their $2B investment signals a major strategic commitment.\n\n## Regulatory Update\n\nThe EU AI Act is entering its final negotiation phase. Key implications for AI-Flow Engine include mandatory risk assessments for high-risk AI systems.",
+        "metadata_json": {
+            "sources": ["TechCrunch", "Ars Technica", "The Verge"],
+            "reportId": "report-1",
+            "model": "gpt-4",
+            "tokens": 1250,
+        },
+        "created_at": datetime(2024, 3, 25, 7, 30, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "msg-1-2",
+        "thread_id": "report-1",
+        "role": "user",
+        "content": "Can you provide more detail on the CloudGiant edge computing announcement? What specific products are they launching?",
+        "created_at": datetime(2024, 3, 25, 9, 15, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "msg-1-3",
+        "thread_id": "report-1",
+        "role": "agent",
+        "content": "Based on the available sources, CloudGiant announced three new edge computing products:\n\n1. **EdgeNode Mini** – A compact edge server for retail and branch office deployments\n2. **EdgeCloud Fabric** – A distributed orchestration platform for managing edge workloads\n3. **EdgeAI Accelerator** – An AI inference module optimized for edge deployment\n\nThis directly challenges our Edge-Connect Hub, particularly in the retail vertical. Recommend monitoring their go-to-market timeline and pricing strategy.",
+        "metadata_json": {
+            "sources": ["TechCrunch", "Wired Blog"],
+            "model": "gpt-4",
+            "tokens": 890,
+        },
+        "created_at": datetime(2024, 3, 25, 9, 16, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "msg-1-4",
+        "thread_id": "report-1",
+        "role": "user",
+        "content": "Good analysis. Please also track DataNexus's new analytics platform in next week's report.",
+        "created_at": datetime(2024, 3, 25, 10, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "msg-1-5",
+        "thread_id": "report-1",
+        "role": "agent",
+        "content": "Understood. I'll prioritize DataNexus's analytics platform launch in next week's report, including product features, target market, and potential impact on our DataGuard Shield offering.",
+        "metadata_json": {
+            "model": "gpt-4",
+            "tokens": 45,
+        },
+        "created_at": datetime(2024, 3, 25, 10, 1, 0, tzinfo=timezone.utc),
+    },
+    # Report 2 messages
+    {
+        "id": "msg-2-1",
+        "thread_id": "report-2",
+        "role": "system",
+        "content": "# Weekly Tech Intel Report – March 11–17, 2024\n\n## Key Highlights\n\n- **SoftSystems International** acquired a cybersecurity startup for $500M.\n- New NIST cybersecurity framework draft published.\n- Generative AI adoption in enterprise increased 40% QoQ.\n\n## Competitive Analysis\n\nSoftSystems' acquisition strengthens their cybersecurity portfolio, potentially threatening our DataGuard Shield positioning.",
+        "metadata_json": {
+            "sources": ["Ars Technica", "Wired Blog"],
+            "reportId": "report-2",
+            "model": "gpt-4",
+            "tokens": 980,
+        },
+        "created_at": datetime(2024, 3, 18, 7, 30, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "msg-2-2",
+        "thread_id": "report-2",
+        "role": "user",
+        "content": "The SoftSystems acquisition is concerning. Can you compare their cybersecurity capabilities with our DataGuard Shield?",
+        "created_at": datetime(2024, 3, 18, 11, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "msg-2-3",
+        "thread_id": "report-2",
+        "role": "agent",
+        "content": "Here's a preliminary comparison:\n\n| Feature | DataGuard Shield | SoftSystems (post-acquisition) |\n|---------|-----------------|------------------------------|\n| Zero Trust | ✅ Native | ✅ Via acquisition |\n| AI Threat Detection | ✅ Advanced | 🔄 Basic (expected upgrade) |\n| Cloud-Native | ✅ Full | ⚠️ Partial (legacy integration) |\n| Compliance Automation | ✅ Multi-framework | ⚠️ SOC2 only |\n\nOur key differentiator remains AI-driven threat detection and cloud-native architecture. However, SoftSystems' larger customer base gives them distribution advantage.",
+        "metadata_json": {
+            "sources": ["Ars Technica", "Competitor AI News"],
+            "model": "gpt-4",
+            "tokens": 1200,
+        },
+        "created_at": datetime(2024, 3, 18, 11, 2, 0, tzinfo=timezone.utc),
+    },
+    # Report 3 messages (draft)
+    {
+        "id": "msg-3-1",
+        "thread_id": "report-3",
+        "role": "system",
+        "content": "# Weekly Tech Intel Report – March 25–31, 2024 (Draft)\n\n## Key Highlights\n\n- **NovaTech Solutions** announced partnership with a major cloud provider.\n- Open-source AI model surpasses proprietary alternatives on key benchmarks.\n- Federal AI safety regulations proposed in the US.\n\n## Emerging Trends\n\nThe open-source AI trend presents both opportunities and challenges for our AI-Flow Engine product line.",
+        "metadata_json": {
+            "sources": ["TechCrunch", "The Verge"],
+            "reportId": "report-3",
+            "model": "gpt-4",
+            "tokens": 750,
+        },
+        "created_at": datetime(2024, 4, 1, 7, 30, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "msg-3-2",
+        "thread_id": "report-3",
+        "role": "user",
+        "content": "Please expand on the NovaTech partnership. Which cloud provider are they working with?",
+        "created_at": datetime(2024, 4, 1, 8, 30, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "msg-3-3",
+        "thread_id": "report-3",
+        "role": "agent",
+        "content": "NovaTech Solutions announced a strategic partnership with CloudGiant to integrate their project management tools with CloudGiant's cloud infrastructure. This could enable NovaTech to offer bundled solutions that compete with our CloudStack Pro platform. I recommend deeper analysis for the final version of this report.",
+        "metadata_json": {
+            "sources": ["TechCrunch", "Wired Blog"],
+            "model": "gpt-4",
+            "tokens": 680,
+        },
+        "created_at": datetime(2024, 4, 1, 8, 31, 0, tzinfo=timezone.utc),
+    },
+]
+
+FEEDBACK_EVENTS = [
+    {
+        "id": "fb-1",
+        "workspace_id": "ws-1",
+        "thread_id": "report-1",
+        "message_id": "msg-1-3",
+        "feedback_type": "thumbs_up",
+        "sentiment": "positive",
+        "created_at": datetime(2024, 3, 25, 9, 20, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "fb-2",
+        "workspace_id": "ws-1",
+        "thread_id": "report-1",
+        "message_id": "msg-1-1",
+        "feedback_type": "thumbs_up",
+        "sentiment": "positive",
+        "created_at": datetime(2024, 3, 25, 9, 30, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "fb-3",
+        "workspace_id": "ws-1",
+        "thread_id": "report-2",
+        "message_id": "msg-2-3",
+        "feedback_type": "thumbs_down",
+        "sentiment": "negative",
+        "created_at": datetime(2024, 3, 18, 11, 30, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "fb-4",
+        "workspace_id": "ws-1",
+        "thread_id": "report-1",
+        "message_id": None,
+        "feedback_type": "topic_preference",
+        "value": "Generative AI",
+        "sentiment": "positive",
+        "created_at": datetime(2024, 3, 25, 10, 30, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "fb-5",
+        "workspace_id": "ws-1",
+        "thread_id": "report-2",
+        "message_id": None,
+        "feedback_type": "topic_preference",
+        "value": "Cybersecurity Regulations",
+        "sentiment": "positive",
+        "created_at": datetime(2024, 3, 18, 12, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "fb-6",
+        "workspace_id": "ws-1",
+        "thread_id": "report-1",
+        "message_id": None,
+        "feedback_type": "source_preference",
+        "value": "TechCrunch",
+        "sentiment": "positive",
+        "created_at": datetime(2024, 3, 25, 11, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "fb-7",
+        "workspace_id": "ws-1",
+        "thread_id": "report-2",
+        "message_id": None,
+        "feedback_type": "topic_preference",
+        "value": "Generative AI",
+        "sentiment": "positive",
+        "created_at": datetime(2024, 3, 19, 9, 0, 0, tzinfo=timezone.utc),
+    },
+    {
+        "id": "fb-8",
+        "workspace_id": "ws-1",
+        "thread_id": "report-1",
+        "message_id": None,
+        "feedback_type": "comment",
+        "value": "Would like more detail on competitive pricing strategies",
+        "created_at": datetime(2024, 3, 26, 8, 0, 0, tzinfo=timezone.utc),
+    },
+]
+
 
 def seed() -> None:
     """Seed the database with fixture data."""
@@ -511,6 +749,24 @@ def seed() -> None:
             feed = FeedSource(**feed_data)
             db.add(feed)
         logger.info("Created %d feeds", len(FEEDS))
+
+        # Create reports (threads)
+        for report_data in REPORTS:
+            report = Report(**report_data)
+            db.add(report)
+        logger.info("Created %d reports", len(REPORTS))
+
+        # Create report messages
+        for msg_data in REPORT_MESSAGES:
+            msg = ReportMessage(**msg_data)
+            db.add(msg)
+        logger.info("Created %d report messages", len(REPORT_MESSAGES))
+
+        # Create feedback events
+        for event_data in FEEDBACK_EVENTS:
+            event = FeedbackEvent(**event_data)
+            db.add(event)
+        logger.info("Created %d feedback events", len(FEEDBACK_EVENTS))
 
         db.commit()
         logger.info("Seed completed successfully.")

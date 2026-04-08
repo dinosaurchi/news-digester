@@ -8,6 +8,8 @@ from app.config import settings
 from app.api.session import router as session_router
 from app.api.workspaces import router as workspaces_router
 from app.api.feeds import router as feeds_router
+from app.api.reports import router as reports_router
+from app.api.feedback import router as feedback_router
 
 # ── Logging setup ────────────────────────────────────────────────────
 logging.basicConfig(
@@ -61,6 +63,8 @@ def health():
 app.include_router(session_router)
 app.include_router(workspaces_router)
 app.include_router(feeds_router)
+app.include_router(reports_router)
+app.include_router(feedback_router)
 
 
 # ── Run with: uvicorn app.main:app --reload ─────────────────────────
