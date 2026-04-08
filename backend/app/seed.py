@@ -13,6 +13,11 @@ from app.models.feed import FeedSource
 from app.models.report import Report, ReportMessage, FeedbackEvent
 from app.models.content import ContentItem, ContentCluster
 from app.models.run import ProcessingRun, ProcessingRunEvent
+from app.models.preferences import (
+    TopicPreference,
+    SourcePreference,
+    EntityPreference,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1093,6 +1098,81 @@ PROCESSING_RUN_EVENTS = [
     },
 ]
 
+TOPIC_PREFERENCES = [
+    {
+        "id": "tpref-1",
+        "workspace_id": "ws-1",
+        "topic": "Generative AI",
+        "weight": 2.0,
+    },
+    {
+        "id": "tpref-2",
+        "workspace_id": "ws-1",
+        "topic": "Cybersecurity Regulations",
+        "weight": 1.5,
+    },
+    {
+        "id": "tpref-3",
+        "workspace_id": "ws-1",
+        "topic": "Edge Computing",
+        "weight": 1.0,
+    },
+    {
+        "id": "tpref-4",
+        "workspace_id": "ws-2",
+        "topic": "Solar Energy Policy",
+        "weight": 2.0,
+    },
+    {
+        "id": "tpref-5",
+        "workspace_id": "ws-2",
+        "topic": "Battery Technology",
+        "weight": 1.5,
+    },
+]
+
+SOURCE_PREFERENCES = [
+    {
+        "id": "spref-1",
+        "workspace_id": "ws-1",
+        "source_name": "TechCrunch",
+        "weight": 2.0,
+    },
+    {
+        "id": "spref-2",
+        "workspace_id": "ws-1",
+        "source_name": "Ars Technica",
+        "weight": 1.5,
+    },
+    {
+        "id": "spref-3",
+        "workspace_id": "ws-2",
+        "source_name": "Clean Energy Wire",
+        "weight": 2.0,
+    },
+]
+
+ENTITY_PREFERENCES = [
+    {
+        "id": "epref-1",
+        "workspace_id": "ws-1",
+        "entity_name": "CloudGiant",
+        "weight": 2.0,
+    },
+    {
+        "id": "epref-2",
+        "workspace_id": "ws-1",
+        "entity_name": "DataNexus Corp.",
+        "weight": 1.5,
+    },
+    {
+        "id": "epref-3",
+        "workspace_id": "ws-4",
+        "entity_name": "Stripe",
+        "weight": 1.0,
+    },
+]
+
 
 def seed() -> None:
     """Seed the database with fixture data."""
@@ -1169,6 +1249,24 @@ def seed() -> None:
             event = ProcessingRunEvent(**event_data)
             db.add(event)
         logger.info("Created %d processing run events", len(PROCESSING_RUN_EVENTS))
+
+        # Create topic preferences
+        for pref_data in TOPIC_PREFERENCES:
+            pref = TopicPreference(**pref_data)
+            db.add(pref)
+        logger.info("Created %d topic preferences", len(TOPIC_PREFERENCES))
+
+        # Create source preferences
+        for pref_data in SOURCE_PREFERENCES:
+            pref = SourcePreference(**pref_data)
+            db.add(pref)
+        logger.info("Created %d source preferences", len(SOURCE_PREFERENCES))
+
+        # Create entity preferences
+        for pref_data in ENTITY_PREFERENCES:
+            pref = EntityPreference(**pref_data)
+            db.add(pref)
+        logger.info("Created %d entity preferences", len(ENTITY_PREFERENCES))
 
         db.commit()
         logger.info("Seed completed successfully.")

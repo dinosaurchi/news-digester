@@ -26,6 +26,11 @@ from app.models.run import (  # noqa: F401 — ensure models are registered with
     ProcessingRun,
     ProcessingRunEvent,
 )
+from app.models.preferences import (  # noqa: F401 — ensure models are registered with Base
+    TopicPreference,
+    SourcePreference,
+    EntityPreference,
+)
 from app.main import app
 from app.db.session import get_db
 

@@ -12,6 +12,7 @@ from app.api.reports import router as reports_router
 from app.api.feedback import router as feedback_router
 from app.api.content import router as content_router
 from app.api.runs import router as runs_router
+from app.api.preferences import router as preferences_router
 
 # ── Logging setup ────────────────────────────────────────────────────
 logging.basicConfig(
@@ -69,6 +70,7 @@ app.include_router(reports_router)
 app.include_router(feedback_router)
 app.include_router(content_router)
 app.include_router(runs_router)
+app.include_router(preferences_router)
 
 
 # ── Run with: uvicorn app.main:app --reload ─────────────────────────
