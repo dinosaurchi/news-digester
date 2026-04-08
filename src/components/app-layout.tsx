@@ -9,7 +9,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useLocation } from 'react-router-dom';
 
 export function AppLayout() {
-  const { isSidebarOpen, isLoggedIn, setUser, setLoggedIn } = useAppStore();
+  const { isSidebarOpen, isLoggedIn, authStatus, setUser, setLoggedIn, setAuthStatus } = useAppStore();
   const location = useLocation();
 
   // Check auth state on mount
@@ -19,15 +19,25 @@ export function AppLayout() {
         .then((user) => {
           setUser(user);
           setLoggedIn(true);
+          setAuthStatus('authenticated');
         })
         .catch(() => {
           setUser(null);
           setLoggedIn(false);
+          setAuthStatus('anonymous');
         });
     }
   }, []);
 
-  if (!isLoggedIn) {
+  if (authStatus === 'unknown') {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="animate-spin h-8 w-8 border-4 border-slate-300 border-t-blue-600 rounded-full" />
+      </div>
+    );
+  }
+
+  if (authStatus === 'anonymous') {
     return <Navigate to="/login" replace />;
   }
 
