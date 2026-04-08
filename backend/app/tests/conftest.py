@@ -1,3 +1,7 @@
+import os
+
+os.environ["TESTING"] = "1"
+
 """Shared test fixtures for the backend API tests."""
 
 import pytest

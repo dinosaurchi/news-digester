@@ -54,10 +54,15 @@ def update_feed(db: Session, feed: FeedSource, **kwargs) -> FeedSource:
     return feed
 
 
-def delete_feed(db: Session, feed: FeedSource) -> None:
-    """Hard-delete a feed source."""
-    db.delete(feed)
-    db.flush()
+def delete_feed(db: Session, feed_id: str) -> FeedSource | None:
+    """Soft-delete a feed by setting status to disabled."""
+    feed = db.query(FeedSource).filter(FeedSource.id == feed_id).first()
+    if not feed:
+        return None
+    feed.status = "disabled"
+    db.commit()
+    db.refresh(feed)
+    return feed
 
 
 def toggle_feed_status(db: Session, feed: FeedSource) -> FeedSource:

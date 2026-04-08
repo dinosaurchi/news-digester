@@ -83,15 +83,12 @@ def update_feed(feed_id: str, body: FeedUpdate, db: Session = Depends(get_db)):
 
 @router.delete("/feeds/{feed_id}", response_model=FeedOut)
 def delete_feed(feed_id: str, db: Session = Depends(get_db)):
-    """Hard-delete a feed."""
-    feed = feed_service.get_feed(db, feed_id)
+    """Soft-delete a feed by setting status to disabled."""
+    feed = feed_service.delete_feed(db, feed_id)
     if feed is None:
         raise HTTPException(status_code=404, detail="Feed not found")
 
-    out = _feed_to_out(feed)
-    feed_service.delete_feed(db, feed)
-    db.commit()
-    return out
+    return _feed_to_out(feed)
 
 
 @router.post("/feeds/{feed_id}/toggle", response_model=FeedOut)

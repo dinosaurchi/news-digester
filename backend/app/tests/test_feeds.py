@@ -199,10 +199,12 @@ class TestDeleteFeed:
         resp = client.delete(f"/api/feeds/{feed_id}")
         assert resp.status_code == 200
         assert resp.json()["id"] == feed_id
+        assert resp.json()["status"] == "disabled"
 
-        # Subsequent GET must return 404
+        # Subsequent GET should still return the feed (soft-delete)
         resp = client.get(f"/api/feeds/{feed_id}")
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "disabled"
 
     def test_delete_feed_not_found(self, client):
         resp = client.delete("/api/feeds/nonexistent-id")

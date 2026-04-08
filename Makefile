@@ -4,7 +4,7 @@
 all: lint build test
 
 # CI target — runs lint, typecheck, test, and build
-ci: lint typecheck test build
+ci: lint typecheck test build backend-test
 
 # Install dependencies
 install:

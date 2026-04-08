@@ -241,11 +241,4 @@ def run_now(workspace_id: str, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(run)
 
-    except Exception as exc:
-        run.status = "failed"
-        run.finished_at = datetime.now(timezone.utc)
-        run.error_summary = str(exc)
-        db.commit()
-        db.refresh(run)
-
     return _run_summary_to_out(run)

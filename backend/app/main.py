@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 
 from fastapi import FastAPI, Request
@@ -34,6 +35,10 @@ app = FastAPI(
 # ── Startup: run migrations and seed ─────────────────────────────────
 @app.on_event("startup")
 def startup():
+    # Skip auto-migration in test environment
+    if os.environ.get("TESTING") == "1":
+        return
+
     import subprocess
 
     logger.info("Running database migrations...")
