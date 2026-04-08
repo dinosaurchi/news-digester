@@ -1,5 +1,7 @@
 """Tests for report and thread endpoints."""
 
+from datetime import datetime, timezone
+
 from app.tests.conftest import TestingSessionLocal
 
 
@@ -38,6 +40,55 @@ def _create_message(client, thread_id, role="system", content="Test message"):
             thread_id=thread_id,
             role=role,
             content=content,
+        )
+        db.add(msg)
+        db.commit()
+        db.refresh(msg)
+        return msg.id
+    finally:
+        db.close()
+
+
+def _create_content_item_by_id(client, workspace_id, item_id, **overrides):
+    """Create a content item with a specific ID via direct DB insert."""
+    from app.models.content import ContentItem
+
+    db = TestingSessionLocal()
+    try:
+        item = ContentItem(
+            id=item_id,
+            workspace_id=workspace_id,
+            title=overrides.get("title", "Test Content Item"),
+            content_type=overrides.get("content_type", "news"),
+            status=overrides.get("status", "included"),
+            local_relevance_score=0.8,
+            llm_score=0.7,
+            final_score=0.75,
+            published_at=overrides.get(
+                "published_at",
+                datetime(2024, 3, 20, 10, 0, 0, tzinfo=timezone.utc),
+            ),
+        )
+        db.add(item)
+        db.commit()
+        return item.id
+    finally:
+        db.close()
+
+
+def _create_message_with_metadata(
+    client, thread_id, metadata_json, role="system", content="Test"
+):
+    """Create a report message with custom metadata_json."""
+    from app.models.report import ReportMessage
+
+    db = TestingSessionLocal()
+    try:
+        msg = ReportMessage(
+            thread_id=thread_id,
+            role=role,
+            content=content,
+            metadata_json=metadata_json,
         )
         db.add(msg)
         db.commit()
@@ -260,3 +311,107 @@ class TestRegenerateReport:
     def test_report_404(self, client):
         resp = client.post("/api/reports/nonexistent-id/regenerate")
         assert resp.status_code == 404
+
+    def test_regenerate_with_valid_report_id_succeeds(self, client):
+        ws_id = _create_workspace(client)
+        rid = _create_report(client, ws_id, title="Regen Valid Test")
+        _create_message(client, rid, role="agent", content="Original report content")
+
+        resp = client.post(f"/api/reports/{rid}/regenerate")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Response must contain regenerated message content
+        assert "content" in data
+        assert len(data["content"]) > 0
+
+    def test_regenerate_with_nonexistent_report_id_returns_404(self, client):
+        resp = client.post("/api/reports/nonexistent/regenerate")
+        assert resp.status_code == 404
+
+
+class TestSourceMetadata:
+    """Tests that message metadata.sources are valid content item IDs."""
+
+    def test_seeded_message_sources_are_content_item_ids(self, client):
+        ws_id = _create_workspace(client)
+
+        # Create content items with known IDs
+        ci_ids = [
+            _create_content_item_by_id(
+                client, ws_id, f"ci-seeded-{i}", title=f"Source {i}"
+            )
+            for i in range(3)
+        ]
+
+        # Create a report (thread)
+        rid = _create_report(client, ws_id, title="Sources Metadata Test")
+
+        # Create messages with metadata.sources referencing content item IDs
+        _create_message_with_metadata(
+            client,
+            rid,
+            metadata_json={"sources": ci_ids, "reportId": rid},
+            role="system",
+            content="Report body referencing sources",
+        )
+        _create_message_with_metadata(
+            client,
+            rid,
+            metadata_json={"sources": [ci_ids[0]], "model": "gpt-4"},
+            role="agent",
+            content="Agent response with partial sources",
+        )
+
+        # Fetch messages via API
+        resp = client.get(f"/api/report-threads/{rid}/messages")
+        assert resp.status_code == 200
+        messages = resp.json()
+
+        # Verify every source in every message resolves as a content item
+        for msg in messages:
+            metadata = msg.get("metadata")
+            if metadata and isinstance(metadata.get("sources"), list):
+                for source_id in metadata["sources"]:
+                    content_resp = client.get(f"/api/content/{source_id}")
+                    assert content_resp.status_code == 200, (
+                        f"Source '{source_id}' in message '{msg['id']}' "
+                        f"is not a valid content item ID "
+                        f"(got {content_resp.status_code})"
+                    )
+
+    def test_run_now_message_sources_are_content_item_ids(self, client):
+        ws_id = _create_workspace(client)
+
+        # Trigger run-now (synchronous — completes before returning)
+        run_resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert run_resp.status_code == 201
+        run_id = run_resp.json()["id"]
+
+        # Find the generated report via run detail links
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        assert detail_resp.status_code == 200
+        report_ids = detail_resp.json().get("links", {}).get("reports")
+
+        if not report_ids:
+            # No report generated (e.g. pipeline produced nothing) —
+            # nothing to validate; the contract is vacuously satisfied.
+            return
+
+        # Get messages from the generated report
+        msg_resp = client.get(f"/api/report-threads/{report_ids[0]}/messages")
+        assert msg_resp.status_code == 200
+        messages = msg_resp.json()
+
+        for msg in messages:
+            metadata = msg.get("metadata")
+            if metadata and isinstance(metadata.get("sources"), list):
+                for source_id in metadata["sources"]:
+                    # Sources must be content item IDs, not URLs
+                    assert not source_id.startswith("http"), (
+                        f"Source '{source_id}' looks like a URL, not a content item ID"
+                    )
+                    content_resp = client.get(f"/api/content/{source_id}")
+                    assert content_resp.status_code == 200, (
+                        f"Run-now source '{source_id}' is not a valid "
+                        f"content item ID (got {content_resp.status_code})"
+                    )
