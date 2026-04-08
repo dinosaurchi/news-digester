@@ -165,9 +165,11 @@ def regenerate_report(report_id: str, db: Session = Depends(get_db)):
         )
 
     # Store original message ID and mark as regenerated
-    metadata = last_agent.metadata_json or {}
-    metadata["regenerated"] = True
-    metadata["originalMessageId"] = last_agent.id
+    metadata = {
+        **(last_agent.metadata_json or {}),
+        "regenerated": True,
+        "originalMessageId": last_agent.id,
+    }
     last_agent.content = "This is a regenerated report. The original content has been replaced with fresh analysis."
     last_agent.metadata_json = metadata
 

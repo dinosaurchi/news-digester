@@ -37,11 +37,11 @@
 
 ### Backend (139 tests, all passing)
 - 132 original tests + 7 new regression tests
-- New tests: session contract (3), regenerate (2), source metadata (2)
+- New tests: session contract (3), regenerate (2, including persistence), source metadata (2)
 
-### Frontend (15 tests, all passing)
-- 3 original tests + 12 new regression tests
-- New tests: store authStatus (6), API unwrapping (2), sidebar logout (4)
+### Frontend (20 tests, all passing)
+- 3 original tests + 17 regression tests
+- New tests: store authStatus (6), API unwrapping (2), sidebar logout (4), AppLayout auth hydration (3), report-thread regenerate/source inspection (2)
 
 ## API QA Results
 
@@ -54,14 +54,16 @@
 | Report messages source IDs | ✅ PASS |
 | Regenerate (POST /api/reports/{id}/regenerate) | ✅ PASS |
 | Content items resolve (GET /api/content/{id}) | ✅ PASS |
+| Run-now generated report source IDs | ✅ PASS |
 
 ## Web UI QA
 
-Web UI QA could not be performed in this environment due to Docker port forwarding limitations (host cannot reach container ports 3000/8000). However:
-- Frontend builds successfully (vite build passes)
-- All TypeScript type checking passes
-- All React component changes are verified via type system
-- Backend API is verified working via container-internal testing
+Full manual browser QA still could not be performed in this environment because host access to forwarded Docker ports is unavailable. The deployed frontend was still smoke-tested and the repaired UI paths are covered by component tests:
+- Frontend container serves the production app HTML successfully (`SME News Admin`)
+- TypeScript build and production Vite build both pass
+- AppLayout auth hydration is verified via jsdom component tests
+- Report-thread regenerate/source inspection is verified via jsdom component tests
+- Backend API contract is verified working via container-internal testing
 
 ## Deployment
 
@@ -79,10 +81,11 @@ All five integration bugs have been fixed:
 3. ✅ Regenerate uses correct report/thread ID contract
 4. ✅ Source metadata uses content item IDs consistently
 5. ✅ Both header and sidebar logout invalidate backend session
+6. ✅ Regenerate persists its metadata updates correctly
 
-Automated tests cover all repaired paths. API QA confirms the backend contract is correct.
+Automated tests now cover the repaired frontend and backend paths. Deployed container QA confirms the backend contract is correct and the production frontend is being served successfully.
 
 ### Recommended next steps for Pass 6/7:
-- Perform manual Web UI QA in a local environment with browser access
+- Perform manual browser QA in a local environment with browser access
 - Continue remaining Pass 6 quality items
 - Begin Pass 7 feature work

@@ -307,6 +307,16 @@ class TestRegenerateReport:
         assert resp.status_code == 200
         data = resp.json()
         assert data["metadata"]["regenerated"] is True
+        assert data["metadata"]["originalMessageId"] == data["id"]
+
+        # The regenerated flag must persist on subsequent reads, not only
+        # appear in the immediate mutation response.
+        messages_resp = client.get(f"/api/report-threads/{rid}/messages")
+        assert messages_resp.status_code == 200
+        messages = messages_resp.json()
+        regenerated = next(msg for msg in messages if msg["id"] == data["id"])
+        assert regenerated["metadata"]["regenerated"] is True
+        assert regenerated["metadata"]["originalMessageId"] == data["id"]
 
     def test_report_404(self, client):
         resp = client.post("/api/reports/nonexistent-id/regenerate")
