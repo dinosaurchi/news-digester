@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.feed import FeedSource
+from app.models.report import Report
 from app.schemas.workspace import (
     WorkspaceCreate,
     WorkspaceUpdate,
@@ -20,10 +21,22 @@ router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 def _ws_to_out(ws, db: Session = None) -> dict:
     """Convert a Workspace ORM object to WorkspaceOut-compatible dict with camelCase keys."""
     feed_count = 0
+    last_report_at = None
     if db is not None:
         feed_count = (
             db.query(FeedSource).filter(FeedSource.workspace_id == ws.id).count()
         )
+        last_report = (
+            db.query(Report)
+            .filter(
+                Report.workspace_id == ws.id,
+                Report.status == "published",
+            )
+            .order_by(Report.published_at.desc())
+            .first()
+        )
+        if last_report and last_report.published_at:
+            last_report_at = last_report.published_at.isoformat()
     return {
         "id": ws.id,
         "name": ws.name,
@@ -32,8 +45,8 @@ def _ws_to_out(ws, db: Session = None) -> dict:
         "createdAt": ws.created_at.isoformat() if ws.created_at else None,
         "updatedAt": ws.updated_at.isoformat() if ws.updated_at else None,
         "feedCount": feed_count,
-        "lastReportAt": None,  # computed — will be None until reports table exists
-        "nextRunAt": None,  # computed — will be None until runs table exists
+        "lastReportAt": last_report_at,
+        "nextRunAt": None,  # stub — no scheduler yet
     }
 
 
