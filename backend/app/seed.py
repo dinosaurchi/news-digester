@@ -544,7 +544,7 @@ REPORT_MESSAGES = [
         "role": "system",
         "content": "# Weekly Tech Intel Report – March 18–24, 2024\n\n## Key Highlights\n\n- **CloudGiant** announced a $2B investment in edge computing infrastructure.\n- **DataNexus Corp.** launched a new AI-powered analytics platform targeting financial services.\n- EU AI Act negotiations entered final stage with proposed compliance deadline of 2026.\n\n## Competitive Analysis\n\nCloudGiant's edge computing push directly competes with TechCorp's Edge-Connect Hub. Their $2B investment signals a major strategic commitment.\n\n## Regulatory Update\n\nThe EU AI Act is entering its final negotiation phase. Key implications for AI-Flow Engine include mandatory risk assessments for high-risk AI systems.",
         "metadata_json": {
-            "sources": ["TechCrunch", "Ars Technica", "The Verge"],
+            "sources": ["ci-1", "ci-2", "ci-3"],
             "reportId": "report-1",
             "model": "gpt-4",
             "tokens": 1250,
@@ -564,7 +564,7 @@ REPORT_MESSAGES = [
         "role": "agent",
         "content": "Based on the available sources, CloudGiant announced three new edge computing products:\n\n1. **EdgeNode Mini** – A compact edge server for retail and branch office deployments\n2. **EdgeCloud Fabric** – A distributed orchestration platform for managing edge workloads\n3. **EdgeAI Accelerator** – An AI inference module optimized for edge deployment\n\nThis directly challenges our Edge-Connect Hub, particularly in the retail vertical. Recommend monitoring their go-to-market timeline and pricing strategy.",
         "metadata_json": {
-            "sources": ["TechCrunch", "Wired Blog"],
+            "sources": ["ci-1", "ci-6"],
             "model": "gpt-4",
             "tokens": 890,
         },
@@ -595,7 +595,7 @@ REPORT_MESSAGES = [
         "role": "system",
         "content": "# Weekly Tech Intel Report – March 11–17, 2024\n\n## Key Highlights\n\n- **SoftSystems International** acquired a cybersecurity startup for $500M.\n- New NIST cybersecurity framework draft published.\n- Generative AI adoption in enterprise increased 40% QoQ.\n\n## Competitive Analysis\n\nSoftSystems' acquisition strengthens their cybersecurity portfolio, potentially threatening our DataGuard Shield positioning.",
         "metadata_json": {
-            "sources": ["Ars Technica", "Wired Blog"],
+            "sources": ["ci-4", "ci-10"],
             "reportId": "report-2",
             "model": "gpt-4",
             "tokens": 980,
@@ -615,7 +615,7 @@ REPORT_MESSAGES = [
         "role": "agent",
         "content": "Here's a preliminary comparison:\n\n| Feature | DataGuard Shield | SoftSystems (post-acquisition) |\n|---------|-----------------|------------------------------|\n| Zero Trust | ✅ Native | ✅ Via acquisition |\n| AI Threat Detection | ✅ Advanced | 🔄 Basic (expected upgrade) |\n| Cloud-Native | ✅ Full | ⚠️ Partial (legacy integration) |\n| Compliance Automation | ✅ Multi-framework | ⚠️ SOC2 only |\n\nOur key differentiator remains AI-driven threat detection and cloud-native architecture. However, SoftSystems' larger customer base gives them distribution advantage.",
         "metadata_json": {
-            "sources": ["Ars Technica", "Competitor AI News"],
+            "sources": ["ci-4", "ci-11"],
             "model": "gpt-4",
             "tokens": 1200,
         },
@@ -628,7 +628,7 @@ REPORT_MESSAGES = [
         "role": "system",
         "content": "# Weekly Tech Intel Report – March 25–31, 2024 (Draft)\n\n## Key Highlights\n\n- **NovaTech Solutions** announced partnership with a major cloud provider.\n- Open-source AI model surpasses proprietary alternatives on key benchmarks.\n- Federal AI safety regulations proposed in the US.\n\n## Emerging Trends\n\nThe open-source AI trend presents both opportunities and challenges for our AI-Flow Engine product line.",
         "metadata_json": {
-            "sources": ["TechCrunch", "The Verge"],
+            "sources": ["ci-5", "ci-9"],
             "reportId": "report-3",
             "model": "gpt-4",
             "tokens": 750,
@@ -648,7 +648,7 @@ REPORT_MESSAGES = [
         "role": "agent",
         "content": "NovaTech Solutions announced a strategic partnership with CloudGiant to integrate their project management tools with CloudGiant's cloud infrastructure. This could enable NovaTech to offer bundled solutions that compete with our CloudStack Pro platform. I recommend deeper analysis for the final version of this report.",
         "metadata_json": {
-            "sources": ["TechCrunch", "Wired Blog"],
+            "sources": ["ci-1", "ci-9"],
             "model": "gpt-4",
             "tokens": 680,
         },
