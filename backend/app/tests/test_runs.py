@@ -62,6 +62,32 @@ def _create_run_event(client, run_id, **overrides):
     return event_id
 
 
+def _create_feed(client, workspace_id, **overrides):
+    """Helper to create a feed source via direct DB insert."""
+    from app.tests.conftest import TestingSessionLocal
+    from app.models.feed import FeedSource
+
+    defaults = {
+        "id": overrides.pop("id", None),
+        "workspace_id": workspace_id,
+        "name": "Test Feed",
+        "url": overrides.pop("url", "https://example.com/feed.xml"),
+        "type": "rss",
+        "status": "healthy",
+    }
+    defaults.update(overrides)
+
+    db = TestingSessionLocal()
+    try:
+        feed = FeedSource(**defaults)
+        db.add(feed)
+        db.commit()
+        feed_id = feed.id
+    finally:
+        db.close()
+    return feed_id
+
+
 class TestListRuns:
     """GET /api/workspaces/{workspace_id}/runs"""
 
@@ -185,7 +211,11 @@ class TestRunNow:
         assert "generate_report" in step_names
 
     def test_run_now_completes_successfully(self, client):
-        """Run completes with success status and correct affected counts."""
+        """Run completes with success status and correct affected counts.
+
+        With no feeds in the test DB the pipeline fetches 0 feeds and
+        creates 0 articles, but still generates 1 report.
+        """
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -193,8 +223,8 @@ class TestRunNow:
         data = resp.json()
 
         assert data["status"] == "success"
-        assert data["affectedCounts"]["feeds"] == 3
-        assert data["affectedCounts"]["articles"] == 12
+        assert data["affectedCounts"]["feeds"] == 0
+        assert data["affectedCounts"]["articles"] == 0
         assert data["affectedCounts"]["reports"] == 1
 
     def test_run_now_all_events_success(self, client):
@@ -221,7 +251,7 @@ class TestRunNow:
         detail_resp = client.get(f"/api/runs/{run_id}")
         steps = detail_resp.json()["steps"]
         messages = {s["name"]: s["details"] for s in steps}
-        assert "Fetched 3 feeds" in messages["fetch_feeds"]
+        assert "Fetched" in messages["fetch_feeds"]
         assert "Normalized" in messages["normalize_content"]
         assert "Scored" in messages["score_content"]
         assert "Generated" in messages["generate_report"]

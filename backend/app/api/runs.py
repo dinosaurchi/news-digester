@@ -6,10 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.models.content import ContentItem
+from app.models.feed import FeedSource
+from app.models.report import Report, ReportMessage
 from app.models.run import ProcessingRun, ProcessingRunEvent
 from app.schemas.run import _run_summary_to_out, _run_event_to_step
 from app.services import run as run_service
 from app.services import workspace as ws_service
+from app.tasks.pipeline import fetch_feed, generate_report_stub, normalize_content
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
@@ -76,9 +80,6 @@ def get_run_detail(run_id: str, db: Session = Depends(get_db)):
     out["logSnippets"] = run_service.build_log_snippets(events)
 
     # Add links (reports and content items associated with this run)
-    from app.models.report import Report
-    from app.models.content import ContentItem
-
     linked_reports = db.query(Report).filter(Report.run_id == run_id).all()
     out["links"] = {
         "reports": [r.id for r in linked_reports] if linked_reports else None,
@@ -95,7 +96,8 @@ def get_run_detail(run_id: str, db: Session = Depends(get_db)):
 def run_now(workspace_id: str, db: Session = Depends(get_db)):
     """Trigger an immediate processing run for a workspace.
 
-    For now this runs synchronously. In production this would be dispatched
+    Runs the full pipeline synchronously: fetch feeds → normalize content →
+    score content → generate report.  In production this would be dispatched
     to a Celery task and the endpoint would return the run ID immediately.
     """
     ws = ws_service.get_workspace(db, workspace_id)
@@ -114,62 +116,136 @@ def run_now(workspace_id: str, db: Session = Depends(get_db)):
     db.add(run)
     db.flush()
 
-    # 2. Create initial pipeline step events
-    pipeline_steps = [
-        {
-            "step_name": "fetch_feeds",
-            "status": "running",
-            "message": "Fetching feeds...",
-        },
-        {
-            "step_name": "normalize_content",
-            "status": "pending",
-            "message": "Normalizing content...",
-        },
-        {
-            "step_name": "score_content",
-            "status": "pending",
-            "message": "Scoring content...",
-        },
-        {
-            "step_name": "generate_report",
-            "status": "pending",
-            "message": "Generating report...",
-        },
-    ]
-    events = []
-    for step in pipeline_steps:
-        evt = ProcessingRunEvent(
+    # Preserve started_at locally — SQLite strips tzinfo after commit/expire,
+    # which would break the duration calculation below.
+    started_at = now
+
+    try:
+        # ── Step 1: Fetch feeds ─────────────────────────────────────
+        event1 = ProcessingRunEvent(
             run_id=run.id,
-            step_name=step["step_name"],
-            status=step["status"],
-            message=step["message"],
+            step_name="fetch_feeds",
+            status="running",
+            message="Fetching feeds...",
         )
-        db.add(evt)
-        events.append(evt)
-    db.flush()
+        db.add(event1)
+        db.commit()
 
-    # 3. Simulate synchronous completion
-    finished = datetime.now(timezone.utc)
-    duration_ms = int((finished - now).total_seconds() * 1000)
+        feeds = (
+            db.query(FeedSource)
+            .filter(
+                FeedSource.workspace_id == workspace_id,
+                FeedSource.status != "disabled",
+            )
+            .all()
+        )
+        all_items: list[ContentItem] = []
+        for feed in feeds:
+            raw_items = fetch_feed(feed)
+            content_items = normalize_content(workspace_id, feed, raw_items)
+            for item in content_items:
+                db.add(item)
+            all_items.extend(content_items)
+            feed.last_fetched_at = datetime.now(timezone.utc)
 
-    run.status = "success"
-    run.finished_at = finished
-    run.duration_ms = duration_ms
-    run.affected_counts_json = {"feeds": 3, "articles": 12, "reports": 1}
+        event1.status = "success"
+        event1.message = f"Fetched {len(feeds)} feeds, found {len(all_items)} articles"
 
-    for evt in events:
-        evt.status = "success"
-        if evt.step_name == "fetch_feeds":
-            evt.message = "Fetched 3 feeds successfully (12 articles)"
-        elif evt.step_name == "normalize_content":
-            evt.message = "Normalized 12 articles"
-        elif evt.step_name == "score_content":
-            evt.message = "Scored 12 articles, 12 above threshold"
-        elif evt.step_name == "generate_report":
-            evt.message = "Generated 1 report"
+        # ── Step 2: Normalize content ───────────────────────────────
+        event2 = ProcessingRunEvent(
+            run_id=run.id,
+            step_name="normalize_content",
+            status="running",
+            message="Normalizing content...",
+        )
+        db.add(event2)
+        db.commit()
 
-    db.commit()
-    db.refresh(run)
+        event2.status = "success"
+        event2.message = f"Normalized {len(all_items)} content items"
+
+        # ── Step 3: Score content (stub) ───────────────────────────
+        event3 = ProcessingRunEvent(
+            run_id=run.id,
+            step_name="score_content",
+            status="running",
+            message="Scoring content...",
+        )
+        db.add(event3)
+        db.commit()
+
+        # Simple scoring: mark first 5 as included, rest as excluded
+        for i, item in enumerate(all_items):
+            if i < 5:
+                item.status = "included"
+                item.final_score = 0.8
+                item.inclusion_reason = "High relevance score"
+            else:
+                item.status = "excluded"
+                item.final_score = 0.3
+                item.exclusion_reason = "Below relevance threshold"
+
+        included_count = min(5, len(all_items))
+        event3.status = "success"
+        event3.message = f"Scored {len(all_items)} items, {included_count} included"
+
+        # ── Step 4: Generate report ────────────────────────────────
+        event4 = ProcessingRunEvent(
+            run_id=run.id,
+            step_name="generate_report",
+            status="running",
+            message="Generating report...",
+        )
+        db.add(event4)
+        db.commit()
+
+        report = generate_report_stub(ws, all_items, run)
+        db.add(report)
+        db.commit()
+        db.refresh(report)
+
+        # Create report thread message
+        msg = ReportMessage(
+            thread_id=report.id,
+            role="system",
+            content=report.markdown_body,
+            metadata_json={
+                "sources": [item.url for item in all_items[:5]],
+                "reportId": report.id,
+            },
+        )
+        db.add(msg)
+        db.commit()
+
+        event4.status = "success"
+        event4.message = f"Generated report: {report.title}"
+
+        # ── Complete run ───────────────────────────────────────────
+        finished = datetime.now(timezone.utc)
+        run.status = "success"
+        run.finished_at = finished
+        run.duration_ms = int((finished - started_at).total_seconds() * 1000)
+        run.affected_counts_json = {
+            "feeds": len(feeds),
+            "articles": len(all_items),
+            "reports": 1,
+        }
+        db.commit()
+        db.refresh(run)
+
+    except Exception as exc:
+        run.status = "failed"
+        run.finished_at = datetime.now(timezone.utc)
+        run.duration_ms = int((run.finished_at - started_at).total_seconds() * 1000)
+        run.error_summary = str(exc)
+        db.commit()
+        db.refresh(run)
+
+    except Exception as exc:
+        run.status = "failed"
+        run.finished_at = datetime.now(timezone.utc)
+        run.error_summary = str(exc)
+        db.commit()
+        db.refresh(run)
 
     return _run_summary_to_out(run)
