@@ -35,6 +35,9 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/sme_news
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: dev-secret-key-change-in-production
+      OPENCODE_BASE_URL: http://opencode-agent-adapter:8080
+      OPENCODE_TIMEOUT_SECONDS: "60"
+      OPENCODE_ENABLED: "true"
     depends_on:
       db:
         condition: service_healthy

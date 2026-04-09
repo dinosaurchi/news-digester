@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     APP_VERSION: str = "0.1.0"
 
+    # OpenCode Agent Adapter (backend-facing)
+    OPENCODE_BASE_URL: str = "http://opencode-agent-adapter:8080"
+    OPENCODE_TIMEOUT_SECONDS: int = 60
+    OPENCODE_ENABLED: bool = True
+    OPENCODE_DEFAULT_MODEL: str = "opencode/gpt-5-nano"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
