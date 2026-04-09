@@ -1165,3 +1165,332 @@ class TestRunNowShortlist:
             assert "unreachable" in (shortlist_events[0].message or "")
         finally:
             db.close()
+
+    def test_run_now_llm_report_failure_causes_run_failure(self, client, monkeypatch):
+        """When LLM fails during report generation, the run fails with explicit error."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+        from app.services.opencode_client import OpenCodeUnavailableError
+        from unittest.mock import MagicMock
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI article",
+                    "url": "https://example.com/article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI summary",
+                    "content": "Body about AI",
+                }
+            ],
+        )
+
+        # Enable OpenCode and mock the client: shortlist succeeds, report fails
+        monkeypatch.setattr("app.services.pipeline.settings.OPENCODE_ENABLED", True)
+        mock_client = MagicMock()
+        mock_client.refine_shortlist.return_value = MagicMock(
+            selected_items=[
+                {
+                    "id": "item-1",
+                    "title": "AI article",
+                    "score": 0.9,
+                    "rationale": "Highly relevant",
+                }
+            ],
+            rationale="Selected 1 item",
+        )
+        mock_client.generate_report_markdown.side_effect = OpenCodeUnavailableError(
+            "report adapter down"
+        )
+        monkeypatch.setattr(
+            "app.services.pipeline.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["status"] == "failed"
+        assert "report adapter down" in (data.get("error") or "")
+
+        run_id = data["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            report_events = [e for e in events if e.step_name == "generate_report"]
+            assert len(report_events) == 1
+            assert report_events[0].status == "error"
+            assert "report adapter down" in (report_events[0].message or "")
+        finally:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# Report generation integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunNowReportGeneration:
+    """Integration tests verifying that run-now produces real report content."""
+
+    def test_run_now_report_contains_content_titles(self, client, monkeypatch):
+        """Report markdown includes actual content item titles (not generic stub)."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.report import ReportMessage
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI breakthrough in healthcare",
+                    "url": "https://example.com/ai-health",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI transforms diagnostics",
+                    "content": "Body about AI healthcare",
+                },
+                {
+                    "title": "Machine learning trends 2025",
+                    "url": "https://example.com/ml-trends",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Author",
+                    "summary": "ML is evolving fast",
+                    "content": "Body about ML trends",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        # Get the report from the run detail links
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        assert detail_resp.status_code == 200
+        report_ids = detail_resp.json()["links"]["reports"]
+        assert len(report_ids) == 1
+
+        # Fetch the report messages to get the actual markdown
+        msg_resp = client.get(f"/api/report-threads/{report_ids[0]}/messages")
+        assert msg_resp.status_code == 200
+        messages = msg_resp.json()
+        system_msgs = [m for m in messages if m["role"] == "system"]
+        assert len(system_msgs) == 1
+
+        report_md = system_msgs[0]["content"]
+
+        # Verify the report contains the actual content item titles
+        assert "AI breakthrough in healthcare" in report_md
+        assert "Machine learning trends 2025" in report_md
+
+    def test_run_now_report_has_structured_sections(self, client, monkeypatch):
+        """Report markdown has structured sections (highlights, source details)."""
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI governance framework",
+                    "url": "https://example.com/ai-gov",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "New AI regulations",
+                    "content": "Body about AI governance",
+                }
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        report_ids = detail_resp.json()["links"]["reports"]
+        assert len(report_ids) == 1
+
+        msg_resp = client.get(f"/api/report-threads/{report_ids[0]}/messages")
+        messages = msg_resp.json()
+        report_md = [m for m in messages if m["role"] == "system"][0]["content"]
+
+        # Verify structured sections exist
+        assert "## Top Highlights" in report_md
+        assert "## Source Details" in report_md
+
+        # Verify the title/period header exists (title uses customer field)
+        assert "# Co — Daily News Digest" in report_md
+        assert "**Period**:" in report_md
+
+    def test_run_now_report_includes_source_links(self, client, monkeypatch):
+        """Report markdown contains URLs from the content items."""
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI in finance",
+                    "url": "https://finance.example.com/ai-report",
+                    "source_name": "Finance Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI disrupts banking",
+                    "content": "Body about AI in finance",
+                },
+                {
+                    "title": "ML in retail",
+                    "url": "https://retail.example.com/ml-analysis",
+                    "source_name": "Retail Feed",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Author",
+                    "summary": "ML transforms shopping",
+                    "content": "Body about ML in retail",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        report_ids = detail_resp.json()["links"]["reports"]
+        assert len(report_ids) == 1
+
+        msg_resp = client.get(f"/api/report-threads/{report_ids[0]}/messages")
+        messages = msg_resp.json()
+        report_md = [m for m in messages if m["role"] == "system"][0]["content"]
+
+        # Verify the report contains actual source URLs
+        assert "https://finance.example.com/ai-report" in report_md
+        assert "https://retail.example.com/ml-analysis" in report_md
+
+    def test_run_now_report_empty_shortlist_has_no_sections(self, client):
+        """Report with no content items has no highlights or source details sections."""
+        ws_id = _create_workspace(client)
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        report_ids = detail_resp.json()["links"]["reports"]
+        assert len(report_ids) == 1
+
+        msg_resp = client.get(f"/api/report-threads/{report_ids[0]}/messages")
+        messages = msg_resp.json()
+        report_md = [m for m in messages if m["role"] == "system"][0]["content"]
+
+        # Empty report should not have highlights or source details
+        assert "## Top Highlights" not in report_md
+        assert "## Source Details" not in report_md
+        assert "No items found" in report_md
+
+    def test_regenerate_creates_new_report_with_workspace_content(
+        self, client, monkeypatch
+    ):
+        """Regenerate endpoint creates a new report with content from workspace items."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.report import Report, ReportMessage
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "Regenerate test article",
+                    "url": "https://example.com/regen-test",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "Article for regenerate test",
+                    "content": "Body about regenerate test",
+                }
+            ],
+        )
+
+        # Create initial report via run-now
+        run_resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert run_resp.status_code == 201
+        run_id = run_resp.json()["id"]
+
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        report_ids = detail_resp.json()["links"]["reports"]
+        assert len(report_ids) == 1
+        original_report_id = report_ids[0]
+
+        # The regenerate endpoint requires an agent message to exist.
+        # Add one so the endpoint doesn't 404 with "No agent message found".
+        db = TestingSessionLocal()
+        try:
+            agent_msg = ReportMessage(
+                thread_id=original_report_id,
+                role="agent",
+                content="Original agent summary",
+            )
+            db.add(agent_msg)
+            db.commit()
+            db.flush()
+        finally:
+            db.close()
+
+        # Call regenerate endpoint
+        regen_resp = client.post(f"/api/reports/{original_report_id}/regenerate")
+        assert regen_resp.status_code == 200
+        regen_data = regen_resp.json()
+
+        # Verify the regenerated message has content
+        assert "content" in regen_data
+        assert len(regen_data["content"]) > 0
+
+        # Verify metadata marks it as regenerated
+        assert regen_data["metadata"]["regenerated"] is True
+        assert regen_data["metadata"]["originalReportId"] == original_report_id
+
+        # Verify the new report contains content from the workspace's items
+        assert "Regenerate test article" in regen_data["content"]
+        assert "https://example.com/regen-test" in regen_data["content"]
+
+        # Verify the original report is still intact and a new report was created
+        db = TestingSessionLocal()
+        try:
+            all_reports = db.query(Report).filter(Report.workspace_id == ws_id).all()
+            assert len(all_reports) == 2  # original + regenerated
+        finally:
+            db.close()
