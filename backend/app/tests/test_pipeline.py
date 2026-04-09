@@ -3,6 +3,9 @@
 import time
 from datetime import datetime, timezone
 
+import pytest
+
+from app.models.content import ContentItem
 from app.services.pipeline_steps import (
     FeedFetchResult,
     _extract_author,
@@ -12,6 +15,7 @@ from app.services.pipeline_steps import (
     _extract_url,
     _strip_html_tags,
     _struct_time_to_dt,
+    compute_source_entry_id,
     fetch_feed,
     normalize_content,
     parse_rfc2822,
@@ -67,8 +71,9 @@ class TestNormalizeContent:
             },
         ]
 
-        items = normalize_content("ws-1", FakeFeed(), raw_items)
+        items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
         assert len(items) == 1
+        assert skipped == 0
 
         item = items[0]
         assert item.workspace_id == "ws-1"
@@ -100,7 +105,7 @@ class TestNormalizeContent:
             },
         ]
 
-        items = normalize_content("ws-1", FakeFeed(), raw_items)
+        items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
         assert items[0].content_type == "blog"
 
     def test_normalize_content_empty(self):
@@ -111,8 +116,9 @@ class TestNormalizeContent:
             type = "rss"
             name = "Empty"
 
-        items = normalize_content("ws-1", FakeFeed(), [])
+        items, skipped = normalize_content("ws-1", FakeFeed(), [])
         assert items == []
+        assert skipped == 0
 
     def test_normalize_content_truncates_long_fields(self):
         """Title and URL are truncated to model column limits."""
@@ -134,10 +140,119 @@ class TestNormalizeContent:
             },
         ]
 
-        items = normalize_content("ws-1", FakeFeed(), raw_items)
+        items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
         assert len(items[0].title) <= 1000
         assert len(items[0].url) <= 2048
         assert len(items[0].summary_snippet) <= 500
+
+    def test_normalize_content_sets_source_entry_id(self):
+        """source_entry_id is set on ContentItem when available."""
+
+        class FakeFeed:
+            id = "feed-test"
+            type = "rss"
+            name = "Test Feed"
+
+        raw_items = [
+            {
+                "title": "Article One",
+                "url": "https://example.com/1",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Full content here",
+            },
+        ]
+
+        items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
+        assert skipped == 0
+        assert items[0].source_entry_id is not None
+        # Should be the normalized URL
+        assert "example.com" in items[0].source_entry_id.lower()
+
+    def test_normalize_content_idempotent_with_db(self, db_session):
+        """When db is provided, existing entries are skipped."""
+
+        # First, create an existing ContentItem with a source_entry_id
+        existing = ContentItem(
+            workspace_id="ws-1",
+            feed_source_id="feed-test",
+            title="Article One",
+            url="https://example.com/1",
+            source_name="Example",
+            content_type="news",
+            published_at=datetime(2024, 3, 20, tzinfo=timezone.utc),
+            status="pending",
+            local_relevance_score=0.5,
+            source_entry_id="https://example.com/1",
+        )
+        db_session.add(existing)
+        db_session.commit()
+
+        class FakeFeed:
+            id = "feed-test"
+            type = "rss"
+            name = "Test Feed"
+
+        raw_items = [
+            {
+                "title": "Article One",
+                "url": "https://example.com/1",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Full content here",
+            },
+            {
+                "title": "Article Two",
+                "url": "https://example.com/2",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 21, tzinfo=timezone.utc),
+                "author": "Bob",
+                "summary": "Another summary",
+                "raw_text": "More content",
+            },
+        ]
+
+        items, skipped = normalize_content("ws-1", FakeFeed(), raw_items, db=db_session)
+        assert skipped == 1  # Article One was skipped
+        assert len(items) == 1  # Only Article Two
+        assert items[0].title == "Article Two"
+
+    def test_normalize_content_no_skip_when_db_is_none(self):
+        """When db is None, no deduplication occurs."""
+
+        class FakeFeed:
+            id = "feed-test"
+            type = "rss"
+            name = "Test Feed"
+
+        raw_items = [
+            {
+                "title": "Article One",
+                "url": "https://example.com/1",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Full content here",
+            },
+            {
+                "title": "Article Two",
+                "url": "https://example.com/1",  # Same URL (duplicate)
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Full content here",
+            },
+        ]
+
+        items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
+        assert skipped == 0  # No skipping when db is None
+        assert len(items) == 2  # Both items returned
 
 
 class TestStripHtmlTags:

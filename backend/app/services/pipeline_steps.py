@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from typing import TYPE_CHECKING
 
 import feedparser
 import httpx
@@ -17,6 +18,9 @@ import httpx
 from app.models.content import ContentItem
 from app.models.feed import FeedSource
 from app.services.dedup import normalize_url
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -242,11 +246,50 @@ def validate_feed_source(feed: FeedSource) -> FeedValidationResult:
 
 
 def normalize_content(
-    workspace_id: str, feed: FeedSource, raw_items: list[dict]
-) -> list[ContentItem]:
-    """Convert raw feed items into ContentItem ORM records."""
+    workspace_id: str,
+    feed: FeedSource,
+    raw_items: list[dict],
+    *,
+    db: Session | None = None,
+) -> tuple[list[ContentItem], int]:
+    """Convert raw feed items into ContentItem ORM records.
+
+    When *db* is provided, entries whose ``source_entry_id`` already exists
+    in the database for the same *workspace_id* are skipped (idempotent
+    re-ingestion).  The ``source_entry_id`` is also set on each newly
+    created ``ContentItem``.
+
+    Returns:
+        A ``(content_items, skipped_count)`` tuple.  When *db* is ``None``,
+        ``skipped_count`` is always ``0``.
+    """
+    skipped_count = 0
+
+    # Pre-load existing source_entry_ids for the workspace when db is provided.
+    existing_ids: set[str] | None = None
+    if db is not None:
+        rows = (
+            db.query(ContentItem.source_entry_id)
+            .filter(
+                ContentItem.workspace_id == workspace_id,
+                ContentItem.source_entry_id.isnot(None),
+            )
+            .all()
+        )
+        existing_ids = {row[0] for row in rows if row[0] is not None}
+
     items: list[ContentItem] = []
     for raw in raw_items:
+        # Compute source_entry_id for deduplication.
+        entry_id = compute_source_entry_id(raw)
+
+        # Skip if already imported (only when db is provided).
+        if db is not None and existing_ids is not None and entry_id is not None:
+            if entry_id in existing_ids:
+                skipped_count += 1
+                logger.debug("Skipping duplicate entry (source_entry_id=%s)", entry_id)
+                continue
+
         item = ContentItem(
             workspace_id=workspace_id,
             feed_source_id=feed.id,
@@ -260,9 +303,11 @@ def normalize_content(
             raw_text=raw.get("raw_text", ""),
             status="pending",
             local_relevance_score=0.5,
+            source_entry_id=entry_id,
         )
         items.append(item)
-    return items
+
+    return items, skipped_count
 
 
 def compute_source_entry_id(raw_item: dict) -> str | None:

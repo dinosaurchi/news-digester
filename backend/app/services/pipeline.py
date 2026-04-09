@@ -118,10 +118,16 @@ def execute_workspace_run(
             if not result.success:
                 logger.warning("Skipping feed %s: %s", feed.name, result.error)
                 continue
-            content_items = normalize_content(workspace.id, feed, result.entries)
+            content_items, skipped = normalize_content(
+                workspace.id, feed, result.entries, db=db
+            )
             for item in content_items:
                 db.add(item)
             all_items.extend(content_items)
+            if skipped:
+                logger.info(
+                    "Skipped %d duplicate entries for feed %s", skipped, feed.name
+                )
             feed.last_fetched_at = datetime.now(timezone.utc)
         db.commit()
         _finish_event(
