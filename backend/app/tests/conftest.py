@@ -1,6 +1,7 @@
 import os
 
 os.environ["TESTING"] = "1"
+os.environ["OPENCODE_ENABLED"] = "false"
 
 """Shared test fixtures for the backend API tests."""
 

@@ -6,18 +6,21 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.content import ContentItem
 from app.models.feed import FeedSource
 from app.models.report import Report, ReportMessage
 from app.models.run import ProcessingRun, ProcessingRunEvent
 from app.models.workspace import Workspace
 from app.services.clustering import cluster_content_items
+from app.services.opencode_client import OpenCodeClient
 from app.services.pipeline_steps import (
     fetch_feed,
     generate_report_stub,
     normalize_content,
 )
 from app.services.scoring import score_content_items
+from app.services.shortlist import select_shortlist
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -82,7 +85,7 @@ def execute_workspace_run(
     *,
     run_type: str = "manual",
 ) -> tuple[ProcessingRun, list[ContentItem], Report]:
-    """Execute the current Pass 6 pipeline synchronously for one workspace."""
+    """Execute the current Pass 7 pipeline synchronously for one workspace."""
     now = datetime.now(timezone.utc)
     run = ProcessingRun(
         workspace_id=workspace.id,
@@ -194,13 +197,61 @@ def execute_workspace_run(
             )
             raise
 
+        # ------------------------------------------------------------------
+        # Shortlist step: select the final candidate set for report
+        # ------------------------------------------------------------------
+        shortlist_event = _start_event(
+            db,
+            run.id,
+            "select_shortlist",
+            "Selecting shortlist...",
+        )
+        try:
+            included_items = [item for item in all_items if item.status == "included"]
+
+            # Optionally use LLM refinement if OpenCode is enabled
+            opencode_client: OpenCodeClient | None = None
+            if settings.OPENCODE_ENABLED:
+                opencode_client = OpenCodeClient(
+                    base_url=settings.OPENCODE_BASE_URL,
+                    timeout=settings.OPENCODE_TIMEOUT_SECONDS,
+                    default_model=settings.OPENCODE_DEFAULT_MODEL,
+                    enabled=True,
+                )
+
+            shortlisted_items = select_shortlist(
+                db, included_items, workspace, run, opencode_client=opencode_client
+            )
+
+            _finish_event(
+                db,
+                shortlist_event,
+                status="completed",
+                message=(
+                    f"Shortlisted {len(shortlisted_items)} items "
+                    f"from {len(included_items)} included"
+                ),
+                extra_metadata={
+                    "shortlist_size": len(shortlisted_items),
+                    "included_count": len(included_items),
+                },
+            )
+        except Exception as shortlist_exc:
+            _finish_event(
+                db,
+                shortlist_event,
+                status="error",
+                message=f"Shortlist selection failed: {shortlist_exc}",
+            )
+            raise
+
         report_event = _start_event(
             db,
             run.id,
             "generate_report",
             "Generating report...",
         )
-        report = generate_report_stub(workspace, all_items, run)
+        report = generate_report_stub(workspace, shortlisted_items, run)
         db.add(report)
         db.commit()
         db.refresh(report)
@@ -210,7 +261,7 @@ def execute_workspace_run(
             role="system",
             content=report.markdown_body,
             metadata_json={
-                "sources": [item.id for item in all_items[:5]],
+                "sources": [item.id for item in shortlisted_items[:5]],
                 "reportId": report.id,
             },
         )

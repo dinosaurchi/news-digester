@@ -268,7 +268,7 @@ class TestRunNow:
         assert resp.status_code == 404
 
     def test_run_now_creates_events(self, client):
-        """Run-now creates 5 pipeline step events."""
+        """Run-now creates 6 pipeline step events."""
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -279,12 +279,13 @@ class TestRunNow:
         detail_resp = client.get(f"/api/runs/{run_id}")
         assert detail_resp.status_code == 200
         detail = detail_resp.json()
-        assert len(detail["steps"]) == 5
+        assert len(detail["steps"]) == 6
         step_names = [s["name"] for s in detail["steps"]]
         assert "fetch_feeds" in step_names
         assert "normalize_content" in step_names
         assert "cluster_content" in step_names
         assert "score_content" in step_names
+        assert "select_shortlist" in step_names
         assert "generate_report" in step_names
 
     def test_run_now_completes_successfully(self, client):
@@ -364,12 +365,14 @@ class TestRunNow:
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         snippets = detail_resp.json()["logSnippets"]
-        assert len(snippets) == 5
+        assert len(snippets) == 6
         assert any("fetch_feeds" in s for s in snippets)
 
     def test_run_now_links_created_content_items(self, client, monkeypatch):
         """Run detail exposes content item links created during the run."""
         ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id, priority_themes=["Fetched", "article"])
+        _create_workspace_settings(client, ws_id)
         _create_feed(client, ws_id, url="https://example.com/feed.xml")
 
         monkeypatch.setattr(
@@ -929,5 +932,236 @@ class TestRunNowScoring:
             # Verify the exclusion reasons reference the threshold
             reasons = {i.exclusion_reason for i in excluded}
             assert reasons == {"below_relevance_threshold"}
+        finally:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# Shortlist integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunNowShortlist:
+    """Integration tests verifying that run-now produces a shortlist."""
+
+    def test_run_now_shortlist_event_has_metadata(self, client):
+        """The select_shortlist pipeline event records shortlist_size."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+
+        ws_id = _create_workspace(client)
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            shortlist_events = [e for e in events if e.step_name == "select_shortlist"]
+            assert len(shortlist_events) == 1
+
+            shortlist_event = shortlist_events[0]
+            assert shortlist_event.status == "completed"
+
+            meta = shortlist_event.metadata_json
+            assert meta is not None
+            assert "shortlist_size" in meta
+            assert "included_count" in meta
+
+            # With no feeds configured, expect 0 shortlisted items
+            assert meta["shortlist_size"] == 0
+            assert meta["included_count"] == 0
+        finally:
+            db.close()
+
+    def test_run_now_produces_shortlist_of_appropriate_size(self, client, monkeypatch):
+        """Run-now produces a shortlist with correct size based on included items."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(
+            client,
+            ws_id,
+            thresholds={
+                "min_relevance_score": 0.1,
+                "min_final_score": 0.1,
+                "max_articles_per_report": 10,
+            },
+        )
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": f"AI article {i}",
+                    "url": f"https://example.com/article-{i}",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=i),
+                    "author": "Author",
+                    "summary": f"AI and machine learning article {i}",
+                    "content": f"Body about AI and machine learning {i}",
+                }
+                for i in range(5)
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            shortlist_events = [e for e in events if e.step_name == "select_shortlist"]
+            assert len(shortlist_events) == 1
+
+            meta = shortlist_events[0].metadata_json
+            assert (
+                meta["shortlist_size"] == 5
+            )  # All 5 should be included and shortlisted
+            assert meta["included_count"] == 5
+        finally:
+            db.close()
+
+    def test_run_now_shortlist_respects_cluster_dedup(self, client, monkeypatch):
+        """Shortlist deduplicates items from the same cluster."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                # Two duplicate stories (will be clustered)
+                {
+                    "title": "Duplicate AI Story",
+                    "url": "https://example.com/dup?utm_source=twitter",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI breakthrough story",
+                    "content": "Body about AI breakthrough",
+                },
+                {
+                    "title": "Duplicate AI Story",
+                    "url": "https://example.com/dup?fbclid=abc123",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Author",
+                    "summary": "AI breakthrough story duplicate",
+                    "content": "Body about AI breakthrough duplicate",
+                },
+                # One unique story
+                {
+                    "title": "Unique ML Story",
+                    "url": "https://example.com/unique-ml",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=3),
+                    "author": "Author",
+                    "summary": "Machine learning advances",
+                    "content": "Body about ML advances",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            shortlist_events = [e for e in events if e.step_name == "select_shortlist"]
+            assert len(shortlist_events) == 1
+
+            meta = shortlist_events[0].metadata_json
+            # Should have 3 included items (all pass threshold)
+            assert meta["included_count"] == 3
+            # But shortlist should deduplicate: 2 duplicates → 1, plus 1 unique = 2
+            assert meta["shortlist_size"] == 2
+        finally:
+            db.close()
+
+    def test_run_now_llm_failure_causes_run_failure(self, client, monkeypatch):
+        """When OPENCODE_ENABLED=True and LLM fails, run fails with explicit error."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+        from app.services.opencode_client import OpenCodeUnavailableError
+        from unittest.mock import MagicMock
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI article",
+                    "url": "https://example.com/article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI summary",
+                    "content": "Body about AI",
+                }
+            ],
+        )
+
+        # Enable OpenCode and mock the client to raise an error
+        monkeypatch.setattr("app.services.pipeline.settings.OPENCODE_ENABLED", True)
+        mock_client = MagicMock()
+        mock_client.refine_shortlist.side_effect = OpenCodeUnavailableError(
+            "adapter unreachable"
+        )
+        monkeypatch.setattr(
+            "app.services.pipeline.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        # Run should complete (201) but with failed status due to pipeline error
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["status"] == "failed"
+        assert "adapter unreachable" in (data.get("error") or "")
+
+        run_id = data["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            shortlist_events = [e for e in events if e.step_name == "select_shortlist"]
+            assert len(shortlist_events) == 1
+            assert shortlist_events[0].status == "error"
+            assert "unreachable" in (shortlist_events[0].message or "")
         finally:
             db.close()
