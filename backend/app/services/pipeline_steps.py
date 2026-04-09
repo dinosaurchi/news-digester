@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +13,7 @@ import httpx
 
 from app.models.content import ContentItem
 from app.models.feed import FeedSource
+from app.services.dedup import normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -127,3 +129,56 @@ def normalize_content(
         )
         items.append(item)
     return items
+
+
+def compute_source_entry_id(raw_item: dict) -> str | None:
+    """Compute a deterministic fingerprint for a raw feed entry.
+
+    Produces a stable identity string suitable for deduplication and
+    idempotent re-ingestion of feed items.
+
+    Resolution strategy:
+
+    1. **URL-based identity** — If the entry has a non-empty ``link``
+       (raw feedparser) or ``url`` (processed dict), the value is
+       normalized via :func:`app.services.dedup.normalize_url` and
+       returned.
+    2. **Composite hash** — When no usable URL is present, a SHA-256
+       hex digest is computed from the concatenation of ``title``,
+       ``source_name``, and ``published_at`` (or ``published`` /
+       ``updated`` for raw entries).
+    3. **None** — Returned when none of the required fields are
+       available.
+
+    Args:
+        raw_item: A raw feed entry dict.  Accepts both raw feedparser
+            entries (with ``link``, ``published``, ``updated`` keys) and
+            processed dicts produced by :func:`fetch_feed` (with ``url``,
+            ``source_name``, ``published_at`` keys).
+
+    Returns:
+        A normalized URL string, a SHA-256 hex digest, or ``None``.
+    """
+    # 1. Prefer URL-based identity.
+    link = raw_item.get("link") or raw_item.get("url")
+    if link:
+        normalized = normalize_url(link)
+        if normalized:
+            return normalized
+
+    # 2. Fall back to composite hash of title + source_name + published_at.
+    title = raw_item.get("title")
+    source_name = raw_item.get("source_name")
+    # Accept both datetime objects and raw date strings.
+    published_at = (
+        raw_item.get("published_at")
+        or raw_item.get("published")
+        or raw_item.get("updated")
+    )
+
+    if title and source_name and published_at is not None:
+        composite = f"{title}|{source_name}|{published_at}"
+        return hashlib.sha256(composite.encode("utf-8")).hexdigest()
+
+    # 3. Insufficient data.
+    return None
