@@ -1,0 +1,205 @@
+"""Shortlist selection module.
+
+Chooses the final candidate set for report generation by filtering,
+deduplicating clusters, scoring, capping, and optionally refining via LLM.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections import defaultdict
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.models.content import ContentItem
+from app.models.run import ProcessingRun
+from app.models.workspace import Workspace
+from app.services.opencode_client import OpenCodeClient
+
+logger = logging.getLogger(__name__)
+
+# Default cap on the number of articles per report
+_DEFAULT_MAX_ARTICLES = 15
+
+
+def select_shortlist(
+    db: Session,
+    items: list[ContentItem],
+    workspace: Workspace,
+    run: ProcessingRun,
+    *,
+    opencode_client: OpenCodeClient | None = None,
+) -> list[ContentItem]:
+    """Select the final shortlist of content items for report generation.
+
+    Steps:
+    1. Filter to items with status="included".
+    2. Deduplicate by cluster (keep lead or highest-scored per cluster).
+    3. Sort by final_score descending.
+    4. Cap at workspace maxArticlesPerReport (default 15).
+    5. Optionally refine via LLM if *opencode_client* is provided.
+
+    Parameters
+    ----------
+    db:
+        SQLAlchemy session.
+    items:
+        ContentItem ORM objects to select from.
+    workspace:
+        The workspace (provides settings/thresholds).
+    run:
+        The current processing run (available for future metadata storage).
+    opencode_client:
+        Optional LLM client for shortlist refinement.  When ``None`` the
+        score-based shortlist is returned as-is without contacting the LLM.
+
+    Returns
+    -------
+    List of ContentItem objects in the final shortlist.
+
+    Raises
+    ------
+    OpenCodeUnavailableError, OpenCodeTimeoutError, OpenCodeResponseError:
+        If *opencode_client* is provided and the LLM call fails.  These
+        propagate to the caller; there is **no** silent fallback.
+    """
+    # ------------------------------------------------------------------
+    # 1. Filter to included items only
+    # ------------------------------------------------------------------
+    included = [item for item in items if item.status == "included"]
+
+    # ------------------------------------------------------------------
+    # 2. Cluster deduplication
+    # ------------------------------------------------------------------
+    deduped = _dedup_clusters(included)
+
+    # ------------------------------------------------------------------
+    # 3. Sort by final_score descending
+    # ------------------------------------------------------------------
+    deduped.sort(key=lambda item: item.final_score or 0.0, reverse=True)
+
+    # ------------------------------------------------------------------
+    # 4. Cap shortlist size
+    # ------------------------------------------------------------------
+    max_articles = _get_max_articles(workspace)
+    capped = deduped[:max_articles]
+
+    # ------------------------------------------------------------------
+    # 5. Optional LLM refinement
+    # ------------------------------------------------------------------
+    if opencode_client is not None:
+        capped = _refine_via_llm(opencode_client, capped, workspace)
+
+    return capped
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_max_articles(workspace: Workspace) -> int:
+    """Return the max articles per report from workspace settings."""
+    settings = workspace.settings
+    if settings and settings.thresholds:
+        return int(
+            settings.thresholds.get("maxArticlesPerReport", _DEFAULT_MAX_ARTICLES)
+        )
+    return _DEFAULT_MAX_ARTICLES
+
+
+def _dedup_clusters(items: list[ContentItem]) -> list[ContentItem]:
+    """Deduplicate items by cluster, keeping the lead or highest-scored item.
+
+    Items with ``cluster_id is None`` (unclustered) are all kept
+    individually — they are not duplicates of one another.
+    """
+    clusters: dict[str | None, list[ContentItem]] = defaultdict(list)
+    for item in items:
+        clusters[item.cluster_id].append(item)
+
+    result: list[ContentItem] = []
+    for cluster_id, cluster_items in clusters.items():
+        if cluster_id is None:
+            # Unclustered items are all kept individually
+            result.extend(cluster_items)
+            continue
+
+        # Prefer the designated lead item
+        leads = [item for item in cluster_items if item.is_lead]
+        if leads:
+            result.append(leads[0])
+        else:
+            # Fall back to the highest-scored item in the cluster
+            best = max(cluster_items, key=lambda i: i.final_score or 0.0)
+            result.append(best)
+
+    return result
+
+
+def _refine_via_llm(
+    client: OpenCodeClient,
+    items: list[ContentItem],
+    workspace: Workspace,
+) -> list[ContentItem]:
+    """Refine the shortlist using the LLM client.
+
+    The LLM may reorder or filter the shortlist.  Its rationale is logged.
+
+    **Exceptions from the LLM call are not caught** — they propagate to the
+    caller so the pipeline can mark the run as failed.
+    """
+    # Build lightweight dicts for the LLM (include id for matching)
+    item_dicts: list[dict[str, Any]] = []
+    for item in items:
+        item_dicts.append(
+            {
+                "id": item.id,
+                "title": item.title,
+                "url": item.url,
+                "summary": item.summary_snippet,
+                "source_name": item.source_name,
+                "score": item.final_score,
+                "published_at": (
+                    item.published_at.isoformat() if item.published_at else None
+                ),
+            }
+        )
+
+    # Build workspace context
+    workspace_context: dict[str, Any] = {
+        "workspace_id": workspace.id,
+        "name": workspace.name,
+        "customer": workspace.customer,
+    }
+    if workspace.profile:
+        workspace_context["priority_themes"] = workspace.profile.priority_themes or []
+        workspace_context["competitors"] = workspace.profile.competitors or []
+        workspace_context["excluded_topics"] = workspace.profile.excluded_topics or []
+
+    # Call the LLM — exceptions propagate (no silent fallback)
+    llm_result = client.refine_shortlist(item_dicts, workspace_context)
+
+    # Log the rationale
+    if llm_result.rationale:
+        logger.info("LLM shortlist rationale: %s", llm_result.rationale)
+
+    # Match LLM-selected items back to ContentItem objects by id
+    item_by_id: dict[str, ContentItem] = {item.id: item for item in items}
+    refined: list[ContentItem] = []
+    for selected in llm_result.selected_items:
+        item_id = selected.get("id")
+        if item_id and item_id in item_by_id:
+            refined.append(item_by_id[item_id])
+
+    # If the LLM returned no matching items, fall back to the score-based
+    # shortlist.  This is not a failure — it is a data-matching precaution.
+    if not refined:
+        logger.warning(
+            "LLM shortlist refinement returned no matching items; "
+            "using score-based shortlist"
+        )
+        refined = items
+
+    return refined
