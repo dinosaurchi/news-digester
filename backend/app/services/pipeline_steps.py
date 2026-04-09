@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime
 from email.utils import parsedate_to_datetime
 
 import feedparser
@@ -11,11 +12,18 @@ import httpx
 
 from app.models.content import ContentItem
 from app.models.feed import FeedSource
-from app.models.report import Report
-from app.models.run import ProcessingRun
-from app.models.workspace import Workspace
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class FeedValidationResult:
+    """Result of fetching/parsing a configured feed source."""
+
+    success: bool
+    articles_found: int
+    source_title: str
+    error: str | None = None
 
 
 def parse_rfc2822(date_str: str) -> datetime | None:
@@ -56,6 +64,47 @@ def fetch_feed(feed: FeedSource) -> list[dict]:
         return []
 
 
+def validate_feed_source(feed: FeedSource) -> FeedValidationResult:
+    """Fetch a feed URL and validate that it returns parseable feed entries."""
+    try:
+        response = httpx.get(feed.url, follow_redirects=True, timeout=10)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        return FeedValidationResult(
+            success=False,
+            articles_found=0,
+            source_title=feed.name,
+            error=f"Fetch failed: {exc}",
+        )
+
+    parsed = feedparser.parse(response.text)
+    entries = list(parsed.entries)
+    source_title = parsed.feed.get("title", feed.name)
+
+    if parsed.bozo:
+        error = getattr(parsed, "bozo_exception", None)
+        return FeedValidationResult(
+            success=False,
+            articles_found=len(entries),
+            source_title=source_title,
+            error=f"Feed parse failed: {error}",
+        )
+
+    if not entries:
+        return FeedValidationResult(
+            success=False,
+            articles_found=0,
+            source_title=source_title,
+            error="Feed parsed successfully but contained no entries.",
+        )
+
+    return FeedValidationResult(
+        success=True,
+        articles_found=len(entries),
+        source_title=source_title,
+    )
+
+
 def normalize_content(
     workspace_id: str, feed: FeedSource, raw_items: list[dict]
 ) -> list[ContentItem]:
@@ -78,40 +127,3 @@ def normalize_content(
         )
         items.append(item)
     return items
-
-
-def generate_report_stub(
-    workspace: Workspace,
-    content_items: list[ContentItem],
-    run: ProcessingRun,
-) -> Report:
-    """Generate a simple deterministic report from content items."""
-    now = datetime.now(timezone.utc)
-    period_start = now - timedelta(days=1)
-
-    included = [c for c in content_items if c.status == "included"] or content_items[:5]
-
-    title = f"{workspace.customer} — Daily News Digest"
-    body = f"# {title}\n\n"
-    body += f"**Period:** {period_start.strftime('%Y-%m-%d')} to {now.strftime('%Y-%m-%d')}\n\n"
-    body += "## Summary\n\n"
-    body += f"We found {len(content_items)} articles. Here are the highlights:\n\n"
-
-    for i, item in enumerate(included[:10], 1):
-        body += f"### {i}. {item.title}\n\n"
-        body += f"Source: {item.source_name}\n"
-        body += f"URL: {item.url}\n\n"
-        if item.summary_snippet:
-            body += f"{item.summary_snippet}\n\n"
-        body += "---\n\n"
-
-    return Report(
-        workspace_id=workspace.id,
-        title=title,
-        period_start=period_start,
-        period_end=now,
-        status="published",
-        markdown_body=body,
-        run_id=run.id,
-        published_at=now,
-    )

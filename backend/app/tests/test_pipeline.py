@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 
 from app.services.pipeline_steps import (
     fetch_feed,
-    generate_report_stub,
     normalize_content,
     parse_rfc2822,
 )
@@ -130,78 +129,3 @@ class TestNormalizeContent:
         assert len(items[0].title) <= 1000
         assert len(items[0].url) <= 2048
         assert len(items[0].summary_snippet) <= 500
-
-
-class TestGenerateReportStub:
-    """generate_report_stub creates a Report from content items."""
-
-    def test_generate_report_stub_with_items(self):
-        """Report is generated with included items as highlights."""
-
-        # Build lightweight fakes
-        class FakeWorkspace:
-            id = "ws-1"
-            customer = "TestCo"
-
-        class FakeRun:
-            id = "run-1"
-
-        class FakeItem:
-            title = "Important Article"
-            source_name = "TechCrunch"
-            url = "https://techcrunch.com/article"
-            summary_snippet = "A very important summary"
-            status = "included"
-
-        report = generate_report_stub(FakeWorkspace(), [FakeItem()], FakeRun())
-        assert "TestCo" in report.title
-        assert "Daily News Digest" in report.title
-        assert "Important Article" in report.markdown_body
-        assert report.status == "published"
-        assert report.workspace_id == "ws-1"
-        assert report.run_id == "run-1"
-
-    def test_generate_report_stub_empty_items(self):
-        """Report with zero items still has header and summary."""
-
-        class FakeWorkspace:
-            id = "ws-1"
-            customer = "EmptyCo"
-
-        class FakeRun:
-            id = "run-1"
-
-        report = generate_report_stub(FakeWorkspace(), [], FakeRun())
-        assert "0 articles" in report.markdown_body
-        assert report.status == "published"
-
-    def test_generate_report_stub_falls_back_to_first_five(self):
-        """When no items are 'included', first five are used."""
-
-        class FakeWorkspace:
-            id = "ws-1"
-            customer = "FallbackCo"
-
-        class FakeRun:
-            id = "run-1"
-
-        items = []
-        for i in range(8):
-            item = type(
-                "Item",
-                (),
-                {
-                    "title": f"Article {i}",
-                    "source_name": "Source",
-                    "url": f"https://example.com/{i}",
-                    "summary_snippet": f"Summary {i}",
-                    "status": "pending",
-                },
-            )()
-            items.append(item)
-
-        report = generate_report_stub(FakeWorkspace(), items, FakeRun())
-        # Should include first 5 pending items as fallback
-        assert "Article 0" in report.markdown_body
-        assert "Article 4" in report.markdown_body
-        assert "Article 5" not in report.markdown_body

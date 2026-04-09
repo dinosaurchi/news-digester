@@ -1,6 +1,6 @@
 """ContentItem and ContentCluster SQLAlchemy models."""
 
-from sqlalchemy import String, Text, DateTime, JSON, Float, ForeignKey
+from sqlalchemy import String, Text, DateTime, JSON, Float, ForeignKey, Integer, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -35,10 +35,16 @@ class ContentItem(Base):
     local_relevance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     llm_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     final_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score_breakdown_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_lead: Mapped[bool | None] = mapped_column(Boolean, default=False, nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="pending"
     )  # included, excluded, pending
-    cluster_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    cluster_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("content_clusters.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     inclusion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     exclusion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     report_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -48,6 +54,9 @@ class ContentItem(Base):
     )
 
     workspace: Mapped["Workspace"] = relationship("Workspace", backref="content_items")
+    cluster: Mapped["ContentCluster | None"] = relationship(
+        "ContentCluster", back_populates="items", foreign_keys=[cluster_id]
+    )
 
 
 class ContentCluster(Base):
@@ -60,11 +69,15 @@ class ContentCluster(Base):
         nullable=False,
     )
     label: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    item_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[str] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[str | None] = mapped_column(
         DateTime, default=_now, onupdate=_now
     )
 
+    items: Mapped[list[ContentItem]] = relationship(
+        "ContentItem", back_populates="cluster", lazy="dynamic"
+    )
     workspace: Mapped["Workspace"] = relationship(
         "Workspace", backref="content_clusters"
     )

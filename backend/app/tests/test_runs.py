@@ -1,6 +1,6 @@
 """Tests for runs API endpoints."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def _create_workspace(client):
@@ -86,6 +86,82 @@ def _create_feed(client, workspace_id, **overrides):
     finally:
         db.close()
     return feed_id
+
+
+def _create_workspace_profile(client, workspace_id, **overrides):
+    """Helper to create a workspace profile via direct DB insert."""
+    from app.tests.conftest import TestingSessionLocal
+    from app.models.workspace import WorkspaceProfile
+
+    defaults = {
+        "id": overrides.pop("id", None),
+        "workspace_id": workspace_id,
+        "business_name": "Test Business",
+        "description": "Test Description",
+        "products": ["Product A"],
+        "competitors": ["CompetitorCorp"],
+        "priority_themes": overrides.pop("priority_themes", ["AI", "machine learning"]),
+        "excluded_topics": overrides.pop("excluded_topics", []),
+        "notes": None,
+    }
+    defaults.update(overrides)
+
+    db = TestingSessionLocal()
+    try:
+        profile = WorkspaceProfile(**defaults)
+        db.add(profile)
+        db.commit()
+        profile_id = profile.id
+    finally:
+        db.close()
+    return profile_id
+
+
+def _create_workspace_settings(client, workspace_id, **overrides):
+    """Helper to create workspace settings via direct DB insert."""
+    from app.tests.conftest import TestingSessionLocal
+    from app.models.workspace import WorkspaceSettings
+
+    defaults = {
+        "id": overrides.pop("id", None),
+        "workspace_id": workspace_id,
+        "schedule": {
+            "enabled": False,
+            "frequency": "daily",
+            "timeOfDay": "08:00",
+            "timezone": "UTC",
+        },
+        "report_style": "detailed",
+        "thresholds": overrides.pop(
+            "thresholds",
+            {
+                "min_relevance_score": 0.1,
+                "min_final_score": 0.1,
+                "max_articles_per_report": 15,
+            },
+        ),
+        "retention": {
+            "contentDays": 90,
+            "reportDays": 365,
+            "runHistoryDays": 180,
+        },
+        "email_delivery": {
+            "enabled": False,
+            "recipients": [],
+            "subjectPrefix": "[Intel Report]",
+        },
+    }
+    defaults.update(overrides)
+
+    db = TestingSessionLocal()
+    try:
+        settings = WorkspaceSettings(**defaults)
+        db.add(settings)
+        db.commit()
+        settings_id = settings.id
+    finally:
+        db.close()
+    return settings_id
 
 
 class TestListRuns:
@@ -192,7 +268,7 @@ class TestRunNow:
         assert resp.status_code == 404
 
     def test_run_now_creates_events(self, client):
-        """Run-now creates 4 pipeline step events."""
+        """Run-now creates 6 pipeline step events."""
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -203,11 +279,13 @@ class TestRunNow:
         detail_resp = client.get(f"/api/runs/{run_id}")
         assert detail_resp.status_code == 200
         detail = detail_resp.json()
-        assert len(detail["steps"]) == 4
+        assert len(detail["steps"]) == 6
         step_names = [s["name"] for s in detail["steps"]]
         assert "fetch_feeds" in step_names
         assert "normalize_content" in step_names
+        assert "cluster_content" in step_names
         assert "score_content" in step_names
+        assert "select_shortlist" in step_names
         assert "generate_report" in step_names
 
     def test_run_now_completes_successfully(self, client):
@@ -228,7 +306,7 @@ class TestRunNow:
         assert data["affectedCounts"]["reports"] == 1
 
     def test_run_now_all_events_success(self, client):
-        """All pipeline events are marked as success after run-now."""
+        """All pipeline events are marked as success/completed after run-now."""
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -239,7 +317,7 @@ class TestRunNow:
         assert detail_resp.status_code == 200
         steps = detail_resp.json()["steps"]
         for step in steps:
-            assert step["status"] == "success"
+            assert step["status"] in ("success", "completed")
 
     def test_run_now_events_have_messages(self, client):
         """Pipeline events have descriptive messages after completion."""
@@ -287,12 +365,14 @@ class TestRunNow:
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         snippets = detail_resp.json()["logSnippets"]
-        assert len(snippets) == 4
+        assert len(snippets) == 6
         assert any("fetch_feeds" in s for s in snippets)
 
     def test_run_now_links_created_content_items(self, client, monkeypatch):
         """Run detail exposes content item links created during the run."""
         ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id, priority_themes=["Fetched", "article"])
+        _create_workspace_settings(client, ws_id)
         _create_feed(client, ws_id, url="https://example.com/feed.xml")
 
         monkeypatch.setattr(
@@ -320,6 +400,187 @@ class TestRunNow:
         assert content_ids is not None
         assert isinstance(content_ids, list)
         assert len(content_ids) == 1
+
+    def test_run_now_produces_clustered_content_items(self, client, monkeypatch):
+        """After run-now, content items have cluster_id assigned."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.content import ContentItem
+
+        ws_id = _create_workspace(client)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        # Return two items sharing the same base URL (different tracking params)
+        # and one unique item — the pipeline should cluster the duplicates.
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "Duplicate Story",
+                    "url": "https://example.com/story?utm_source=twitter",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
+                    "author": "Author",
+                    "summary": "Summary A",
+                    "content": "Body A",
+                },
+                {
+                    "title": "Duplicate Story",
+                    "url": "https://example.com/story?fbclid=abc123",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(2024, 3, 20, 9, 0, 0, tzinfo=timezone.utc),
+                    "author": "Author",
+                    "summary": "Summary B",
+                    "content": "Body B",
+                },
+                {
+                    "title": "Unique Story",
+                    "url": "https://example.com/unique",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(
+                        2024, 3, 20, 10, 0, 0, tzinfo=timezone.utc
+                    ),
+                    "author": "Author",
+                    "summary": "Summary C",
+                    "content": "Body C",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+
+        # Query ContentItems directly from the DB
+        db = TestingSessionLocal()
+        try:
+            items = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).all()
+            )
+            assert len(items) == 3
+
+            # Every item should have a cluster_id
+            for item in items:
+                assert item.cluster_id is not None, (
+                    f"ContentItem {item.id} has no cluster_id"
+                )
+
+            # The two duplicate items should share the same cluster
+            dup_items = [i for i in items if "story?utm" in (i.url or "")]
+            dup_fb = [i for i in items if "story?fbclid" in (i.url or "")]
+            assert len(dup_items) == 1
+            assert len(dup_fb) == 1
+            assert dup_items[0].cluster_id == dup_fb[0].cluster_id
+
+            # The unique item should be in a different cluster
+            unique_items = [i for i in items if "/unique" in (i.url or "")]
+            assert len(unique_items) == 1
+            assert unique_items[0].cluster_id != dup_items[0].cluster_id
+        finally:
+            db.close()
+
+    def test_run_now_clustering_event_has_metadata(self, client):
+        """The cluster_content pipeline event records clusters_created and items_clustered."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+
+        ws_id = _create_workspace(client)
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        # Query events directly from the DB
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            cluster_events = [e for e in events if e.step_name == "cluster_content"]
+            assert len(cluster_events) == 1
+
+            cluster_event = cluster_events[0]
+            assert cluster_event.status == "completed"
+
+            meta = cluster_event.metadata_json
+            assert meta is not None
+            assert "clusters_created" in meta
+            assert "items_clustered" in meta
+
+            # With no feeds configured, expect 0 items clustered
+            assert meta["items_clustered"] == 0
+            assert meta["clusters_created"] == 0
+        finally:
+            db.close()
+
+    def test_run_now_clustering_event_with_items(self, client, monkeypatch):
+        """Clustering event metadata reflects actual clustered item counts."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+
+        ws_id = _create_workspace(client)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        # Return 3 items: 2 sharing the same base URL, 1 unique
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "Shared Story",
+                    "url": "https://example.com/shared?utm_source=tw",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
+                    "author": "Author",
+                    "summary": "Summary",
+                    "content": "Body",
+                },
+                {
+                    "title": "Shared Story",
+                    "url": "https://example.com/shared?fbclid=x",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(2024, 3, 20, 9, 0, 0, tzinfo=timezone.utc),
+                    "author": "Author",
+                    "summary": "Summary",
+                    "content": "Body",
+                },
+                {
+                    "title": "Solo Story",
+                    "url": "https://example.com/solo",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(
+                        2024, 3, 20, 10, 0, 0, tzinfo=timezone.utc
+                    ),
+                    "author": "Author",
+                    "summary": "Summary",
+                    "content": "Body",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            cluster_events = [e for e in events if e.step_name == "cluster_content"]
+            assert len(cluster_events) == 1
+
+            cluster_event = cluster_events[0]
+            assert cluster_event.status == "completed"
+
+            meta = cluster_event.metadata_json
+            assert meta is not None
+            assert meta["items_clustered"] == 3
+            assert meta["clusters_created"] == 2  # 1 multi-item + 1 singleton
+            assert meta["singleton_clusters"] == 1
+        finally:
+            db.close()
 
 
 class TestGetRunDetail:
@@ -393,3 +654,834 @@ class TestGetRunDetail:
         assert data["affectedCounts"]["articles"] == 20
         assert data["affectedCounts"]["reports"] == 1
         assert data["error"] == "Some error"
+
+
+# ---------------------------------------------------------------------------
+# Scoring integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunNowScoring:
+    """Integration tests verifying that run-now produces correctly scored content items."""
+
+    def test_run_now_produces_scored_content_items(self, client, monkeypatch):
+        """After run-now, content items have score_breakdown_json and final_score set."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.content import ContentItem
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI and machine learning advances in analytics",
+                    "url": "https://example.com/article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI breakthrough in machine learning analytics",
+                    "content": "Body about AI and machine learning analytics",
+                }
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+
+        db = TestingSessionLocal()
+        try:
+            items = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).all()
+            )
+            assert len(items) == 1
+
+            item = items[0]
+            assert item.final_score is not None
+            assert item.score_breakdown_json is not None
+            breakdown = item.score_breakdown_json
+
+            # Verify breakdown has expected structure
+            assert "scores" in breakdown
+            assert "weights" in breakdown
+            assert "combined_score" in breakdown
+            assert "filter_reason" in breakdown
+
+            # Verify individual scores are real (not None, numeric)
+            scores = breakdown["scores"]
+            for key in (
+                "keyword",
+                "competitor_mention",
+                "freshness",
+                "source_authority",
+                "bm25",
+            ):
+                assert key in scores
+                assert isinstance(scores[key], (int, float))
+        finally:
+            db.close()
+
+    def test_included_items_have_scores_above_threshold(self, client, monkeypatch):
+        """Items with status='included' have final_score >= min_relevance_score."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.content import ContentItem
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(
+            client,
+            ws_id,
+            thresholds={
+                "min_relevance_score": 0.1,
+                "min_final_score": 0.1,
+                "max_articles_per_report": 15,
+            },
+        )
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI revolutionizes machine learning analytics",
+                    "url": "https://example.com/ai-article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI breakthrough",
+                    "content": "Body about AI and machine learning",
+                },
+                {
+                    "title": "CompetitorCorp launches new product",
+                    "url": "https://example.com/competitor-article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Author",
+                    "summary": "CompetitorCorp news",
+                    "content": "Body about CompetitorCorp",
+                },
+                {
+                    "title": "Generic weather update with no keywords",
+                    "url": "https://example.com/weather",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=3),
+                    "author": "Author",
+                    "summary": "Weather forecast",
+                    "content": "Sunny with a chance of rain",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+
+        db = TestingSessionLocal()
+        try:
+            items = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).all()
+            )
+            assert len(items) == 3
+
+            included = [i for i in items if i.status == "included"]
+            for item in included:
+                assert item.final_score is not None
+                assert item.final_score >= 0.1, (
+                    f"Included item {item.id} has score {item.final_score} below threshold"
+                )
+        finally:
+            db.close()
+
+    def test_score_breakdown_queryable_via_content_detail_api(
+        self, client, monkeypatch
+    ):
+        """After run-now, the content detail API returns scoreBreakdown with real values."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.content import ContentItem
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI and machine learning in analytics",
+                    "url": "https://example.com/article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI analytics summary",
+                    "content": "Body about AI machine learning analytics",
+                }
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+
+        # Get the content item ID from the DB
+        db = TestingSessionLocal()
+        try:
+            item = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).first()
+            )
+            assert item is not None
+            content_id = item.id
+        finally:
+            db.close()
+
+        # Call the content detail API
+        detail_resp = client.get(f"/api/content/{content_id}")
+        assert detail_resp.status_code == 200
+        data = detail_resp.json()
+
+        # Verify scoreBreakdown is present and has real values
+        assert "scoreBreakdown" in data
+        sb = data["scoreBreakdown"]
+        assert "relevance" in sb
+        assert "llm" in sb
+        assert "freshness" in sb
+        assert "sourceAuthority" in sb
+
+        # Values should be non-negative floats
+        for key in ("relevance", "llm", "freshness", "sourceAuthority"):
+            assert isinstance(sb[key], (int, float))
+            assert sb[key] >= 0.0
+
+        # Since the article mentions "AI" and "machine learning" (priority themes),
+        # the relevance (keyword) score should be > 0
+        assert sb["relevance"] > 0.0
+
+    def test_workspace_thresholds_respected(self, client, monkeypatch):
+        """A high min_relevance_score causes more items to be excluded."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.content import ContentItem
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        # Set a very high threshold — almost nothing should pass
+        _create_workspace_settings(
+            client,
+            ws_id,
+            thresholds={
+                "min_relevance_score": 0.95,
+                "min_final_score": 0.95,
+                "max_articles_per_report": 15,
+            },
+        )
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "Some generic article",
+                    "url": "https://example.com/generic",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "A generic article with no keywords",
+                    "content": "Generic body text about nothing in particular",
+                },
+                {
+                    "title": "AI and machine learning advances",
+                    "url": "https://example.com/ai",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Author",
+                    "summary": "AI summary",
+                    "content": "Body about AI and machine learning",
+                },
+                {
+                    "title": "Another generic article about weather",
+                    "url": "https://example.com/weather",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=3),
+                    "author": "Author",
+                    "summary": "Weather summary",
+                    "content": "Sunny weather today",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+
+        db = TestingSessionLocal()
+        try:
+            items = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).all()
+            )
+            assert len(items) == 3
+
+            excluded = [i for i in items if i.status == "excluded"]
+            # With a 0.95 threshold, all items should be excluded since
+            # maximum possible score is ~0.5 (source_authority=0.5 * 0.15
+            # + freshness up to 1.0 * 0.20 + some keyword/bm25 < 0.25 + 0.20)
+            assert len(excluded) == 3
+
+            # Verify the exclusion reasons reference the threshold
+            reasons = {i.exclusion_reason for i in excluded}
+            assert reasons == {"below_relevance_threshold"}
+        finally:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# Shortlist integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunNowShortlist:
+    """Integration tests verifying that run-now produces a shortlist."""
+
+    def test_run_now_shortlist_event_has_metadata(self, client):
+        """The select_shortlist pipeline event records shortlist_size."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+
+        ws_id = _create_workspace(client)
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            shortlist_events = [e for e in events if e.step_name == "select_shortlist"]
+            assert len(shortlist_events) == 1
+
+            shortlist_event = shortlist_events[0]
+            assert shortlist_event.status == "completed"
+
+            meta = shortlist_event.metadata_json
+            assert meta is not None
+            assert "shortlist_size" in meta
+            assert "included_count" in meta
+
+            # With no feeds configured, expect 0 shortlisted items
+            assert meta["shortlist_size"] == 0
+            assert meta["included_count"] == 0
+        finally:
+            db.close()
+
+    def test_run_now_produces_shortlist_of_appropriate_size(self, client, monkeypatch):
+        """Run-now produces a shortlist with correct size based on included items."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(
+            client,
+            ws_id,
+            thresholds={
+                "min_relevance_score": 0.1,
+                "min_final_score": 0.1,
+                "max_articles_per_report": 10,
+            },
+        )
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": f"AI article {i}",
+                    "url": f"https://example.com/article-{i}",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=i),
+                    "author": "Author",
+                    "summary": f"AI and machine learning article {i}",
+                    "content": f"Body about AI and machine learning {i}",
+                }
+                for i in range(5)
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            shortlist_events = [e for e in events if e.step_name == "select_shortlist"]
+            assert len(shortlist_events) == 1
+
+            meta = shortlist_events[0].metadata_json
+            assert (
+                meta["shortlist_size"] == 5
+            )  # All 5 should be included and shortlisted
+            assert meta["included_count"] == 5
+        finally:
+            db.close()
+
+    def test_run_now_shortlist_respects_cluster_dedup(self, client, monkeypatch):
+        """Shortlist deduplicates items from the same cluster."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                # Two duplicate stories (will be clustered)
+                {
+                    "title": "Duplicate AI Story",
+                    "url": "https://example.com/dup?utm_source=twitter",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI breakthrough story",
+                    "content": "Body about AI breakthrough",
+                },
+                {
+                    "title": "Duplicate AI Story",
+                    "url": "https://example.com/dup?fbclid=abc123",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Author",
+                    "summary": "AI breakthrough story duplicate",
+                    "content": "Body about AI breakthrough duplicate",
+                },
+                # One unique story
+                {
+                    "title": "Unique ML Story",
+                    "url": "https://example.com/unique-ml",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=3),
+                    "author": "Author",
+                    "summary": "Machine learning advances",
+                    "content": "Body about ML advances",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            shortlist_events = [e for e in events if e.step_name == "select_shortlist"]
+            assert len(shortlist_events) == 1
+
+            meta = shortlist_events[0].metadata_json
+            # Should have 3 included items (all pass threshold)
+            assert meta["included_count"] == 3
+            # But shortlist should deduplicate: 2 duplicates → 1, plus 1 unique = 2
+            assert meta["shortlist_size"] == 2
+        finally:
+            db.close()
+
+    def test_run_now_llm_failure_causes_run_failure(self, client, monkeypatch):
+        """When OPENCODE_ENABLED=True and LLM fails, run fails with explicit error."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+        from app.services.opencode_client import OpenCodeUnavailableError
+        from unittest.mock import MagicMock
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI article",
+                    "url": "https://example.com/article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI summary",
+                    "content": "Body about AI",
+                }
+            ],
+        )
+
+        # Enable OpenCode and mock the client to raise an error
+        monkeypatch.setattr("app.services.pipeline.settings.OPENCODE_ENABLED", True)
+        mock_client = MagicMock()
+        mock_client.refine_shortlist.side_effect = OpenCodeUnavailableError(
+            "adapter unreachable"
+        )
+        monkeypatch.setattr(
+            "app.services.pipeline.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        # Run should complete (201) but with failed status due to pipeline error
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["status"] == "failed"
+        assert "adapter unreachable" in (data.get("error") or "")
+
+        run_id = data["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            shortlist_events = [e for e in events if e.step_name == "select_shortlist"]
+            assert len(shortlist_events) == 1
+            assert shortlist_events[0].status == "error"
+            assert "unreachable" in (shortlist_events[0].message or "")
+        finally:
+            db.close()
+
+    def test_run_now_llm_report_failure_causes_run_failure(self, client, monkeypatch):
+        """When LLM fails during report generation, the run fails with explicit error."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+        from app.services.opencode_client import OpenCodeUnavailableError
+        from unittest.mock import MagicMock
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI article",
+                    "url": "https://example.com/article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI summary",
+                    "content": "Body about AI",
+                }
+            ],
+        )
+
+        # Enable OpenCode and mock the client: shortlist succeeds, report fails
+        monkeypatch.setattr("app.services.pipeline.settings.OPENCODE_ENABLED", True)
+        mock_client = MagicMock()
+        mock_client.refine_shortlist.return_value = MagicMock(
+            selected_items=[
+                {
+                    "id": "item-1",
+                    "title": "AI article",
+                    "score": 0.9,
+                    "rationale": "Highly relevant",
+                }
+            ],
+            rationale="Selected 1 item",
+        )
+        mock_client.generate_report_markdown.side_effect = OpenCodeUnavailableError(
+            "report adapter down"
+        )
+        monkeypatch.setattr(
+            "app.services.pipeline.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["status"] == "failed"
+        assert "report adapter down" in (data.get("error") or "")
+
+        run_id = data["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            report_events = [e for e in events if e.step_name == "generate_report"]
+            assert len(report_events) == 1
+            assert report_events[0].status == "error"
+            assert "report adapter down" in (report_events[0].message or "")
+        finally:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# Report generation integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunNowReportGeneration:
+    """Integration tests verifying that run-now produces real report content."""
+
+    def test_run_now_report_contains_content_titles(self, client, monkeypatch):
+        """Report markdown includes actual content item titles (not generic stub)."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.report import ReportMessage
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI breakthrough in healthcare",
+                    "url": "https://example.com/ai-health",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI transforms diagnostics",
+                    "content": "Body about AI healthcare",
+                },
+                {
+                    "title": "Machine learning trends 2025",
+                    "url": "https://example.com/ml-trends",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Author",
+                    "summary": "ML is evolving fast",
+                    "content": "Body about ML trends",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        # Get the report from the run detail links
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        assert detail_resp.status_code == 200
+        report_ids = detail_resp.json()["links"]["reports"]
+        assert len(report_ids) == 1
+
+        # Fetch the report messages to get the actual markdown
+        msg_resp = client.get(f"/api/report-threads/{report_ids[0]}/messages")
+        assert msg_resp.status_code == 200
+        messages = msg_resp.json()
+        system_msgs = [m for m in messages if m["role"] == "system"]
+        assert len(system_msgs) == 1
+
+        report_md = system_msgs[0]["content"]
+
+        # Verify the report contains the actual content item titles
+        assert "AI breakthrough in healthcare" in report_md
+        assert "Machine learning trends 2025" in report_md
+
+    def test_run_now_report_has_structured_sections(self, client, monkeypatch):
+        """Report markdown has structured sections (highlights, source details)."""
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI governance framework",
+                    "url": "https://example.com/ai-gov",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "New AI regulations",
+                    "content": "Body about AI governance",
+                }
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        report_ids = detail_resp.json()["links"]["reports"]
+        assert len(report_ids) == 1
+
+        msg_resp = client.get(f"/api/report-threads/{report_ids[0]}/messages")
+        messages = msg_resp.json()
+        report_md = [m for m in messages if m["role"] == "system"][0]["content"]
+
+        # Verify structured sections exist
+        assert "## Top Highlights" in report_md
+        assert "## Source Details" in report_md
+
+        # Verify the title/period header exists (title uses customer field)
+        assert "# Co — Daily News Digest" in report_md
+        assert "**Period**:" in report_md
+
+    def test_run_now_report_includes_source_links(self, client, monkeypatch):
+        """Report markdown contains URLs from the content items."""
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI in finance",
+                    "url": "https://finance.example.com/ai-report",
+                    "source_name": "Finance Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI disrupts banking",
+                    "content": "Body about AI in finance",
+                },
+                {
+                    "title": "ML in retail",
+                    "url": "https://retail.example.com/ml-analysis",
+                    "source_name": "Retail Feed",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Author",
+                    "summary": "ML transforms shopping",
+                    "content": "Body about ML in retail",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        report_ids = detail_resp.json()["links"]["reports"]
+        assert len(report_ids) == 1
+
+        msg_resp = client.get(f"/api/report-threads/{report_ids[0]}/messages")
+        messages = msg_resp.json()
+        report_md = [m for m in messages if m["role"] == "system"][0]["content"]
+
+        # Verify the report contains actual source URLs
+        assert "https://finance.example.com/ai-report" in report_md
+        assert "https://retail.example.com/ml-analysis" in report_md
+
+    def test_run_now_report_empty_shortlist_has_no_sections(self, client):
+        """Report with no content items has no highlights or source details sections."""
+        ws_id = _create_workspace(client)
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        report_ids = detail_resp.json()["links"]["reports"]
+        assert len(report_ids) == 1
+
+        msg_resp = client.get(f"/api/report-threads/{report_ids[0]}/messages")
+        messages = msg_resp.json()
+        report_md = [m for m in messages if m["role"] == "system"][0]["content"]
+
+        # Empty report should not have highlights or source details
+        assert "## Top Highlights" not in report_md
+        assert "## Source Details" not in report_md
+        assert "No items found" in report_md
+
+    def test_regenerate_creates_new_report_with_workspace_content(
+        self, client, monkeypatch
+    ):
+        """Regenerate endpoint creates a new report with content from workspace items."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.report import Report, ReportMessage
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "Regenerate test article",
+                    "url": "https://example.com/regen-test",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "Article for regenerate test",
+                    "content": "Body about regenerate test",
+                }
+            ],
+        )
+
+        # Create initial report via run-now
+        run_resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert run_resp.status_code == 201
+        run_id = run_resp.json()["id"]
+
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        report_ids = detail_resp.json()["links"]["reports"]
+        assert len(report_ids) == 1
+        original_report_id = report_ids[0]
+
+        # Call regenerate endpoint
+        regen_resp = client.post(f"/api/reports/{original_report_id}/regenerate")
+        assert regen_resp.status_code == 200
+        regen_data = regen_resp.json()
+
+        # Verify the regenerated message has content
+        assert "content" in regen_data
+        assert len(regen_data["content"]) > 0
+
+        # Verify metadata marks it as regenerated
+        assert regen_data["metadata"]["regenerated"] is True
+        assert regen_data["metadata"]["originalReportId"] == original_report_id
+
+        # Verify the new report contains content from the workspace's items
+        assert "Regenerate test article" in regen_data["content"]
+        assert "https://example.com/regen-test" in regen_data["content"]
+
+        # Verify regenerate appended content to the same report thread
+        db = TestingSessionLocal()
+        try:
+            all_reports = db.query(Report).filter(Report.workspace_id == ws_id).all()
+            assert len(all_reports) == 1
+            messages = (
+                db.query(ReportMessage)
+                .filter(ReportMessage.thread_id == original_report_id)
+                .all()
+            )
+            assert len(messages) == 2  # original + regenerated system messages
+        finally:
+            db.close()

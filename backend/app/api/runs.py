@@ -94,11 +94,24 @@ def run_now(workspace_id: str, db: Session = Depends(get_db)):
     """Trigger an immediate processing run for a workspace.
 
     Runs the full pipeline synchronously: fetch feeds → normalize content →
-    score content → generate report.  In production this would be dispatched
-    to a Celery task and the endpoint would return the run ID immediately.
+    cluster → score content → select shortlist → generate report.  In production
+    this would be dispatched to a Celery task and the endpoint would return the
+    run ID immediately.
     """
+    from app.services import run as run_service
+
     ws = ws_service.get_workspace(db, workspace_id)
     if ws is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
-    run, _, _ = execute_workspace_run(db, ws, run_type="manual")
+
+    try:
+        run, _, _ = execute_workspace_run(db, ws, run_type="manual")
+    except Exception:
+        # The pipeline marks the run as failed before re-raising.
+        # Retrieve the failed run and return it.
+        run = run_service.list_runs(db, workspace_id, run_type="manual")[:1]
+        if run:
+            return _run_summary_to_out(run[0])
+        raise
+
     return _run_summary_to_out(run)

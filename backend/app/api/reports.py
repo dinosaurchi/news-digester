@@ -3,7 +3,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.session import get_db
+from app.models.content import ContentItem
+from app.models.report import ReportMessage
+from app.models.run import ProcessingRun
 from app.schemas.report import (
     MessageSendIn,
     ThumbIn,
@@ -14,6 +18,14 @@ from app.schemas.report import (
 from app.services import report as report_service
 from app.services import feedback as feedback_service
 from app.services import workspace as ws_service
+from app.services import report_chat as report_chat_service
+from app.services.opencode_client import (
+    OpenCodeClient,
+    OpenCodeResponseError,
+    OpenCodeTimeoutError,
+    OpenCodeUnavailableError,
+)
+from app.services.report_generator import render_report_markdown
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
@@ -82,7 +94,7 @@ def get_thread_messages(thread_id: str, db: Session = Depends(get_db)):
 
 @router.post("/report-threads/{thread_id}/messages", status_code=201)
 def send_message(thread_id: str, body: MessageSendIn, db: Session = Depends(get_db)):
-    """Send a feedback message and get an agent response."""
+    """Send a report-chat message and get a configured assistant response."""
     report = report_service.get_report(db, thread_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Thread not found")
@@ -94,18 +106,64 @@ def send_message(thread_id: str, body: MessageSendIn, db: Session = Depends(get_
         role="user",
         content=body.content,
     )
+    db.commit()
+    db.refresh(user_msg)
 
-    # Create mocked agent response
+    if not settings.OPENCODE_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Report chat assistant is not configured",
+        )
+
+    messages = report_service.get_thread_messages(db, thread_id)
+    source_ids = report_chat_service.get_report_chat_source_ids(report, messages)
+    source_items = report_chat_service.load_report_chat_source_items(
+        db,
+        workspace_id=report.workspace_id,
+        source_ids=source_ids,
+    )
+    recent_messages = report_chat_service.recent_report_chat_messages(messages)
+
+    opencode_client = OpenCodeClient(
+        base_url=settings.OPENCODE_BASE_URL,
+        timeout=settings.OPENCODE_TIMEOUT_SECONDS,
+        default_model=settings.OPENCODE_DEFAULT_MODEL,
+        default_agent=settings.OPENCODE_DEFAULT_AGENT,
+        workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
+        enabled=True,
+    )
+    try:
+        chat_result = report_chat_service.generate_report_chat_reply(
+            client=opencode_client,
+            question=body.content,
+            report=report,
+            source_items=source_items,
+            recent_messages=recent_messages,
+        )
+    except OpenCodeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OpenCodeTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except OpenCodeResponseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    metadata = {
+        "model": chat_result.model,
+        "sources": [item.id for item in source_items],
+        "usage": chat_result.usage,
+    }
+    if chat_result.session_id:
+        metadata["opencodeSessionId"] = chat_result.session_id
+
     agent_msg = report_service.create_message(
         db,
         thread_id=thread_id,
         role="agent",
-        content="Thank you for your feedback. We'll take this into account for future reports.",
-        metadata_json={"model": "mock-agent", "tokens": 42},
+        content=chat_result.content,
+        metadata_json=metadata,
     )
 
     db.commit()
-    db.refresh(user_msg)
     db.refresh(agent_msg)
 
     return {
@@ -153,27 +211,125 @@ def thumb_message(message_id: str, body: ThumbIn, db: Session = Depends(get_db))
 
 @router.post("/reports/{report_id}/regenerate")
 def regenerate_report(report_id: str, db: Session = Depends(get_db)):
-    """Stub: regenerate the last agent message in a report thread."""
+    """Regenerate a report message in the existing report thread.
+
+    Appends a new generated ``system`` message, updates the report markdown,
+    and marks the previous generated message as regenerated. Keeping the same
+    thread ID matches the frontend's thread-scoped regenerate behavior.
+    """
     report = report_service.get_report(db, report_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    last_agent = report_service.get_last_agent_message(db, report_id)
-    if last_agent is None:
-        raise HTTPException(
-            status_code=404, detail="No agent message found to regenerate"
+    original_msg = report_service.get_last_generated_message(db, report_id)
+
+    # Get the workspace from the original report
+    workspace = ws_service.get_workspace(db, report.workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # Regenerate from the original report/message sources. Falling back to a
+    # capped current shortlist keeps regeneration bounded if old metadata is
+    # absent (for example, legacy seeded report threads).
+    source_ids = _report_source_ids(report.metadata_json)
+    if not source_ids and original_msg is not None:
+        source_ids = _report_source_ids(original_msg.metadata_json)
+
+    if source_ids:
+        items_by_id = {
+            item.id: item
+            for item in (
+                db.query(ContentItem)
+                .filter(
+                    ContentItem.workspace_id == workspace.id,
+                    ContentItem.id.in_(source_ids),
+                )
+                .all()
+            )
+        }
+        shortlisted_items = [
+            items_by_id[item_id]
+            for item_id in source_ids
+            if item_id in items_by_id
+        ]
+    else:
+        shortlisted_items = (
+            db.query(ContentItem)
+            .filter(
+                ContentItem.workspace_id == workspace.id,
+                ContentItem.status == "included",
+            )
+            .order_by(ContentItem.final_score.desc())
+            .limit(15)
+            .all()
         )
 
-    # Store original message ID and mark as regenerated
+    # Create a new processing run for the regeneration
+    new_run = ProcessingRun(
+        workspace_id=workspace.id,
+        run_type="manual",
+        status="running",
+    )
+    db.add(new_run)
+    db.flush()
+
+    # Create OpenCode client if enabled
+    opencode_client: OpenCodeClient | None = None
+    if settings.OPENCODE_ENABLED:
+        opencode_client = OpenCodeClient(
+            base_url=settings.OPENCODE_BASE_URL,
+            timeout=settings.OPENCODE_TIMEOUT_SECONDS,
+            default_model=settings.OPENCODE_DEFAULT_MODEL,
+            default_agent=settings.OPENCODE_DEFAULT_AGENT,
+            workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
+            enabled=True,
+        )
+
+    # Generate fresh markdown without creating a hidden replacement thread.
+    markdown = render_report_markdown(
+        workspace,
+        shortlisted_items,
+        opencode_client=opencode_client,
+    )
+
+    source_ids = [item.id for item in shortlisted_items]
     metadata = {
-        **(last_agent.metadata_json or {}),
         "regenerated": True,
-        "originalMessageId": last_agent.id,
+        "originalMessageId": original_msg.id if original_msg is not None else None,
+        "originalReportId": report_id,
+        "reportId": report_id,
+        "sources": source_ids,
     }
-    last_agent.content = "This is a regenerated report. The original content has been replaced with fresh analysis."
-    last_agent.metadata_json = metadata
+    regenerated_msg = ReportMessage(
+        thread_id=report_id,
+        role="system",
+        content=markdown,
+        metadata_json=metadata,
+    )
+    db.add(regenerated_msg)
+    db.flush()
+
+    if original_msg is not None:
+        original_msg.metadata_json = {
+            **(original_msg.metadata_json or {}),
+            "regenerated": True,
+            "originalMessageId": original_msg.id,
+            "regeneratedMessageId": regenerated_msg.id,
+        }
+
+    report.markdown_body = markdown
+    report.run_id = new_run.id
+    new_run.status = "success"
 
     db.commit()
-    db.refresh(last_agent)
+    db.refresh(regenerated_msg)
 
-    return _message_to_out(last_agent)
+    return _message_to_out(regenerated_msg)
+
+
+def _report_source_ids(metadata: dict | None) -> list[str]:
+    """Return ordered source IDs from report/message metadata."""
+    raw_sources = (metadata or {}).get("sources")
+    if not isinstance(raw_sources, list):
+        return []
+    return [source_id for source_id in raw_sources if isinstance(source_id, str)]

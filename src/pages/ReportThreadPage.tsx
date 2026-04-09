@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { ApiError } from '@/lib/api-client';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -20,6 +21,7 @@ import {
   PanelRightOpen,
   Clock,
   Hash,
+  AlertCircle,
 } from 'lucide-react';
 import { formatDateRange, formatMessageTime, cn } from '@/lib/utils';
 import { StatusBadge } from '@/components/ui/status-badge';
@@ -39,6 +41,7 @@ export default function ReportThreadPage() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedSourceMsgId, setSelectedSourceMsgId] = useState<string | null>(null);
   const [sourcePanelOpen, setSourcePanelOpen] = useState(false);
+  const [assistantError, setAssistantError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -75,10 +78,12 @@ export default function ReportThreadPage() {
     return [...base, ...pending];
   }, [serverMessages, pendingMessages]);
 
-  // ID of the last agent message (regenerate is thread-scoped, so only show on last agent msg)
-  const lastAgentMessageId = useMemo(() => {
+  // Regenerate is thread-scoped; show it on the latest generated response.
+  const lastGeneratedMessageId = useMemo(() => {
     for (let i = allMessages.length - 1; i >= 0; i--) {
-      if (allMessages[i].role === 'agent') return allMessages[i].id;
+      if (allMessages[i].role === 'agent' || allMessages[i].role === 'system') {
+        return allMessages[i].id;
+      }
     }
     return null;
   }, [allMessages]);
@@ -94,14 +99,21 @@ export default function ReportThreadPage() {
   // Feedback mutation
   const feedbackMutation = useMutation({
     mutationFn: (content: string) => api.reports.sendFeedback(threadId, content),
+    onMutate: () => {
+      setAssistantError(null);
+    },
     onSuccess: ([, agentMsg]) => {
       if (agentMsg) setPendingMessages([agentMsg]);
       setFeedback('');
+      setAssistantError(null);
       queryClient.invalidateQueries({ queryKey: ['thread-messages', threadId] });
       queryClient.invalidateQueries({ queryKey: ['thread-meta', threadId] });
     },
-    onError: () => {
+    onError: (err) => {
       setPendingMessages([]);
+      setAssistantError(chatErrorMessage(err));
+      queryClient.invalidateQueries({ queryKey: ['thread-messages', threadId] });
+      queryClient.invalidateQueries({ queryKey: ['thread-meta', threadId] });
     },
   });
 
@@ -286,7 +298,9 @@ export default function ReportThreadPage() {
                 onVote={(vote) => voteMutation.mutate({ msgId: msg.id, vote })}
                 onCopy={() => handleCopy(msg.content, msg.id)}
                 onRegenerate={
-                  msg.role === 'agent' && !msg.id.startsWith('pending-') && msg.id === lastAgentMessageId
+                  (msg.role === 'agent' || msg.role === 'system') &&
+                  !msg.id.startsWith('pending-') &&
+                  msg.id === lastGeneratedMessageId
                     ? () => regenerateMutation.mutate()
                     : undefined
                 }
@@ -361,6 +375,15 @@ export default function ReportThreadPage() {
                 )}
               </button>
             </form>
+            {assistantError && (
+              <div
+                role="alert"
+                className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <span>{assistantError}</span>
+              </div>
+            )}
             <p className="text-[10px] text-slate-400 mt-2 text-center font-medium">
               Shift + Enter for new line · Feedback helps improve future reports
             </p>
@@ -430,6 +453,18 @@ export default function ReportThreadPage() {
       </AnimatePresence>
     </div>
   );
+}
+
+function chatErrorMessage(err: unknown): string {
+  if (err instanceof ApiError && err.status === 503) {
+    return typeof err.detail === 'string'
+      ? err.detail
+      : 'Report chat assistant is not configured';
+  }
+  if (err instanceof ApiError && typeof err.detail === 'string') {
+    return err.detail;
+  }
+  return 'The report chat assistant failed. Your message was saved.';
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -600,7 +635,7 @@ function MessageBubble({
               {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
             </button>
 
-            {/* Regenerate (agent only, last agent message) */}
+            {/* Regenerate (latest generated report/agent response only) */}
             {onRegenerate && (
               <button
                 onClick={onRegenerate}

@@ -2,6 +2,9 @@
 
 from datetime import datetime, timezone
 
+from app.config import settings
+from app.services.opencode_client import OpenCodeClient, OpenCodeResponseError
+from app.services.opencode_client import ReportChatResult
 from app.tests.conftest import TestingSessionLocal
 
 
@@ -210,7 +213,10 @@ class TestGetThreadMessages:
 class TestSendMessage:
     """POST /api/report-threads/{thread_id}/messages"""
 
-    def test_send_message_creates_user_and_agent(self, client):
+    def test_send_message_persists_user_and_returns_503_when_assistant_disabled(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "OPENCODE_ENABLED", False)
         ws_id = _create_workspace(client)
         rid = _create_report(client, ws_id, title="Send Test")
 
@@ -218,14 +224,89 @@ class TestSendMessage:
             f"/api/report-threads/{rid}/messages",
             json={"content": "This is my feedback"},
         )
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Report chat assistant is not configured"
+
+        messages_resp = client.get(f"/api/report-threads/{rid}/messages")
+        messages = messages_resp.json()
+        assert [msg["role"] for msg in messages] == ["user"]
+        assert messages[0]["content"] == "This is my feedback"
+
+    def test_send_message_creates_real_agent_message(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "OPENCODE_ENABLED", True)
+        captured = {}
+
+        def fake_answer(self, **kwargs):
+            captured.update(kwargs)
+            return ReportChatResult(
+                content="The report cites Source A and Source B as the key items.",
+                usage={"total_tokens": 123},
+                model="test/model",
+                session_id="sess-report-chat-1",
+            )
+
+        monkeypatch.setattr(OpenCodeClient, "answer_report_question", fake_answer)
+
+        ws_id = _create_workspace(client)
+        source_ids = [
+            _create_content_item_by_id(client, ws_id, "chat-source-a", title="Source A"),
+            _create_content_item_by_id(client, ws_id, "chat-source-b", title="Source B"),
+        ]
+        rid = _create_report(client, ws_id, title="Send Test")
+        _create_message_with_metadata(
+            client,
+            rid,
+            role="system",
+            content="Generated report body",
+            metadata_json={"sources": source_ids, "reportId": rid},
+        )
+
+        resp = client.post(
+            f"/api/report-threads/{rid}/messages",
+            json={"content": "Which sources matter most?"},
+        )
         assert resp.status_code == 201
         data = resp.json()
-        assert "userMessage" in data
-        assert "agentMessage" in data
         assert data["userMessage"]["role"] == "user"
-        assert data["userMessage"]["content"] == "This is my feedback"
         assert data["agentMessage"]["role"] == "agent"
-        assert "Thank you for your feedback" in data["agentMessage"]["content"]
+        assert data["agentMessage"]["content"] == (
+            "The report cites Source A and Source B as the key items."
+        )
+        assert data["agentMessage"]["metadata"]["model"] == "test/model"
+        assert data["agentMessage"]["metadata"]["sources"] == source_ids
+        assert data["agentMessage"]["metadata"]["opencodeSessionId"] == (
+            "sess-report-chat-1"
+        )
+        assert data["agentMessage"]["metadata"]["usage"] == {"total_tokens": 123}
+
+        assert captured["question"] == "Which sources matter most?"
+        assert [item["id"] for item in captured["source_items"]] == source_ids
+
+    def test_send_message_provider_failure_persists_user_only(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "OPENCODE_ENABLED", True)
+
+        def fail_answer(self, **kwargs):
+            raise OpenCodeResponseError("provider rejected request")
+
+        monkeypatch.setattr(OpenCodeClient, "answer_report_question", fail_answer)
+
+        ws_id = _create_workspace(client)
+        rid = _create_report(client, ws_id, title="Provider Failure")
+
+        resp = client.post(
+            f"/api/report-threads/{rid}/messages",
+            json={"content": "Will this fail?"},
+        )
+        assert resp.status_code == 502
+
+        messages_resp = client.get(f"/api/report-threads/{rid}/messages")
+        messages = messages_resp.json()
+        assert [msg["role"] for msg in messages] == ["user"]
+        assert messages[0]["content"] == "Will this fail?"
 
     def test_send_message_thread_not_found(self, client):
         resp = client.post(
@@ -301,22 +382,29 @@ class TestRegenerateReport:
     def test_regenerate_report(self, client):
         ws_id = _create_workspace(client)
         rid = _create_report(client, ws_id, title="Regen Test")
-        _create_message(client, rid, role="agent", content="Original report content")
+        original_mid = _create_message(
+            client, rid, role="system", content="Original report content"
+        )
 
         resp = client.post(f"/api/reports/{rid}/regenerate")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["metadata"]["regenerated"] is True
-        assert data["metadata"]["originalMessageId"] == data["id"]
 
-        # The regenerated flag must persist on subsequent reads, not only
-        # appear in the immediate mutation response.
+        # The response is a new system message in the same report thread
+        assert data["threadId"] == rid
+        assert data["role"] == "system"
+        assert data["metadata"]["regenerated"] is True
+        assert data["metadata"]["originalMessageId"] == original_mid
+        assert data["metadata"]["originalReportId"] == rid
+
+        # The original generated message should be marked as regenerated
         messages_resp = client.get(f"/api/report-threads/{rid}/messages")
         assert messages_resp.status_code == 200
         messages = messages_resp.json()
-        regenerated = next(msg for msg in messages if msg["id"] == data["id"])
-        assert regenerated["metadata"]["regenerated"] is True
-        assert regenerated["metadata"]["originalMessageId"] == data["id"]
+        original_msg = next(msg for msg in messages if msg["id"] == original_mid)
+        assert original_msg["metadata"]["regenerated"] is True
+        assert original_msg["metadata"]["originalMessageId"] == original_mid
+        assert original_msg["metadata"]["regeneratedMessageId"] == data["id"]
 
     def test_report_404(self, client):
         resp = client.post("/api/reports/nonexistent-id/regenerate")
@@ -325,7 +413,7 @@ class TestRegenerateReport:
     def test_regenerate_with_valid_report_id_succeeds(self, client):
         ws_id = _create_workspace(client)
         rid = _create_report(client, ws_id, title="Regen Valid Test")
-        _create_message(client, rid, role="agent", content="Original report content")
+        _create_message(client, rid, role="system", content="Original report content")
 
         resp = client.post(f"/api/reports/{rid}/regenerate")
         assert resp.status_code == 200

@@ -1,6 +1,7 @@
 import os
 
 os.environ["TESTING"] = "1"
+os.environ["OPENCODE_ENABLED"] = "false"
 
 """Shared test fixtures for the backend API tests."""
 
@@ -35,6 +36,7 @@ from app.models.preferences import (  # noqa: F401 — ensure models are registe
     SourcePreference,
     EntityPreference,
 )
+from app.models.user import User  # noqa: F401 — ensure model is registered with Base
 from app.main import app
 from app.db.session import get_db
 
@@ -80,6 +82,15 @@ def db_session():
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture(autouse=True)
+def seed_test_admin(db_session):
+    """Seed the real login user used by backend session tests."""
+    from app.services.session import bootstrap_admin_user
+
+    bootstrap_admin_user(db_session)
+    db_session.commit()
 
 
 @pytest.fixture(scope="function")

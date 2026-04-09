@@ -18,6 +18,7 @@ from app.models.preferences import (
     SourcePreference,
     EntityPreference,
 )
+from app.services.session import bootstrap_admin_user
 
 logger = logging.getLogger(__name__)
 
@@ -1288,6 +1289,9 @@ def seed_all(db) -> None:
             pref = EntityPreference(**pref_data)
             db.add(pref)
         logger.info("Created %d entity preferences", len(ENTITY_PREFERENCES))
+
+        admin_user = bootstrap_admin_user(db)
+        logger.info("Bootstrapped admin user '%s'", admin_user.username)
 
         db.commit()
         logger.info("Seed completed successfully.")

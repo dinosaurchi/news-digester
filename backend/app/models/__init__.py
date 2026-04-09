@@ -9,6 +9,7 @@ from app.models.preferences import (
     SourcePreference,
     EntityPreference,
 )
+from app.models.user import User
 
 __all__ = [
     "Workspace",
@@ -25,4 +26,5 @@ __all__ = [
     "TopicPreference",
     "SourcePreference",
     "EntityPreference",
+    "User",
 ]

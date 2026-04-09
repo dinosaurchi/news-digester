@@ -9,7 +9,6 @@ from app.services import workspace as workspace_service
 from app.services.pipeline import execute_workspace_run
 from app.services.pipeline_steps import (
     fetch_feed,
-    generate_report_stub,
     normalize_content,
     parse_rfc2822,
 )

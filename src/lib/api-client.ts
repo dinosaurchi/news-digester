@@ -1,17 +1,38 @@
 const API_BASE = '/api';
 
+export class ApiError extends Error {
+  status: number;
+  detail: unknown;
+
+  constructor(status: number, detail: unknown) {
+    const message =
+      typeof detail === 'string' ? detail : `API error: ${status}`;
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { 'Content-Type': 'application/json', ...options?.headers },
     ...options,
   });
   if (!res.ok) {
+    let detail: unknown;
+    try {
+      const body = await res.json();
+      detail = body?.detail ?? body;
+    } catch {
+      detail = undefined;
+    }
     if (res.status === 401) {
       // Handle auth redirect
       window.location.href = '/login';
-      throw new Error('Unauthorized');
+      throw new ApiError(res.status, detail ?? 'Unauthorized');
     }
-    throw new Error(`API error: ${res.status}`);
+    throw new ApiError(res.status, detail);
   }
   if (res.status === 204) return undefined as T;
   return res.json();

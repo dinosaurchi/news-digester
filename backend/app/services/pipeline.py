@@ -6,19 +6,30 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.content import ContentItem
 from app.models.feed import FeedSource
-from app.models.report import Report, ReportMessage
+from app.models.report import Report
 from app.models.run import ProcessingRun, ProcessingRunEvent
 from app.models.workspace import Workspace
-from app.services.pipeline_steps import fetch_feed, generate_report_stub, normalize_content
+from app.services.clustering import cluster_content_items
+from app.services.opencode_client import OpenCodeClient
+from app.services.pipeline_steps import (
+    fetch_feed,
+    normalize_content,
+)
+from app.services.report_generator import generate_report
+from app.services.scoring import score_content_items
+from app.services.shortlist import select_shortlist
 
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
-def _start_event(db: Session, run_id: str, step_name: str, message: str) -> ProcessingRunEvent:
+def _start_event(
+    db: Session, run_id: str, step_name: str, message: str
+) -> ProcessingRunEvent:
     started_at = datetime.now(timezone.utc)
     event = ProcessingRunEvent(
         run_id=run_id,
@@ -74,7 +85,7 @@ def execute_workspace_run(
     *,
     run_type: str = "manual",
 ) -> tuple[ProcessingRun, list[ContentItem], Report]:
-    """Execute the current Pass 6 pipeline synchronously for one workspace."""
+    """Execute the current Pass 7 pipeline synchronously for one workspace."""
     now = datetime.now(timezone.utc)
     run = ProcessingRun(
         workspace_id=workspace.id,
@@ -131,56 +142,149 @@ def execute_workspace_run(
             extra_metadata={"content_items": len(all_items)},
         )
 
-        score_event = _start_event(db, run.id, "score_content", "Scoring content...")
-        for i, item in enumerate(all_items):
-            if i < 5:
-                item.status = "included"
-                item.final_score = 0.8
-                item.inclusion_reason = "High relevance score"
-            else:
-                item.status = "excluded"
-                item.final_score = 0.3
-                item.exclusion_reason = "Below relevance threshold"
-        db.commit()
-        included_count = min(5, len(all_items))
-        _finish_event(
+        cluster_event = _start_event(
             db,
-            score_event,
-            status="success",
-            message=f"Scored {len(all_items)} items, {included_count} included",
-            extra_metadata={"included_count": included_count},
+            run.id,
+            "cluster_content",
+            "Clustering content items...",
         )
+        try:
+            cluster_stats = cluster_content_items(db, all_items, workspace.id)
+            _finish_event(
+                db,
+                cluster_event,
+                status="completed",
+                message=(
+                    f"Clustered {cluster_stats['items_clustered']} items "
+                    f"into {cluster_stats['clusters_created']} clusters "
+                    f"({cluster_stats['singleton_clusters']} singletons)"
+                ),
+                extra_metadata=cluster_stats,
+            )
+        except Exception as cluster_exc:
+            _finish_event(
+                db,
+                cluster_event,
+                status="error",
+                message=f"Clustering failed: {cluster_exc}",
+            )
+            raise
 
+        score_event = _start_event(db, run.id, "score_content", "Scoring content...")
+        try:
+            score_result = score_content_items(db, all_items, workspace)
+            db.commit()
+            _finish_event(
+                db,
+                score_event,
+                status="completed",
+                message=(
+                    f"Scored {len(all_items)} items, "
+                    f"{score_result['included_count']} included"
+                ),
+                extra_metadata={
+                    "included_count": score_result["included_count"],
+                    "excluded_count": score_result["excluded_count"],
+                    "avg_score": score_result["avg_score"],
+                },
+            )
+        except Exception as score_exc:
+            _finish_event(
+                db,
+                score_event,
+                status="error",
+                message=f"Scoring failed: {score_exc}",
+            )
+            raise
+
+        # ------------------------------------------------------------------
+        # Shortlist step: select the final candidate set for report
+        # ------------------------------------------------------------------
+        # Create OpenCode client once if enabled (shared by shortlist + report steps)
+        opencode_client: OpenCodeClient | None = None
+        if settings.OPENCODE_ENABLED:
+            opencode_client = OpenCodeClient(
+                base_url=settings.OPENCODE_BASE_URL,
+                timeout=settings.OPENCODE_TIMEOUT_SECONDS,
+                default_model=settings.OPENCODE_DEFAULT_MODEL,
+                default_agent=settings.OPENCODE_DEFAULT_AGENT,
+                workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
+                enabled=True,
+            )
+
+        shortlist_event = _start_event(
+            db,
+            run.id,
+            "select_shortlist",
+            "Selecting shortlist...",
+        )
+        try:
+            included_items = [item for item in all_items if item.status == "included"]
+
+            shortlisted_items = select_shortlist(
+                db, included_items, workspace, run, opencode_client=opencode_client
+            )
+
+            _finish_event(
+                db,
+                shortlist_event,
+                status="completed",
+                message=(
+                    f"Shortlisted {len(shortlisted_items)} items "
+                    f"from {len(included_items)} included"
+                ),
+                extra_metadata={
+                    "shortlist_size": len(shortlisted_items),
+                    "included_count": len(included_items),
+                },
+            )
+        except Exception as shortlist_exc:
+            _finish_event(
+                db,
+                shortlist_event,
+                status="error",
+                message=f"Shortlist selection failed: {shortlist_exc}",
+            )
+            raise
+
+        # ------------------------------------------------------------------
+        # Report generation step
+        # ------------------------------------------------------------------
         report_event = _start_event(
             db,
             run.id,
             "generate_report",
             "Generating report...",
         )
-        report = generate_report_stub(workspace, all_items, run)
-        db.add(report)
-        db.commit()
-        db.refresh(report)
+        try:
+            report = generate_report(
+                db,
+                workspace,
+                shortlisted_items,
+                run,
+                opencode_client=opencode_client,
+            )
+            db.commit()
+            db.refresh(report)
 
-        msg = ReportMessage(
-            thread_id=report.id,
-            role="system",
-            content=report.markdown_body,
-            metadata_json={
-                "sources": [item.id for item in all_items[:5]],
-                "reportId": report.id,
-            },
-        )
-        db.add(msg)
-        db.commit()
-
-        _finish_event(
-            db,
-            report_event,
-            status="success",
-            message=f"Generated report: {report.title}",
-            extra_metadata={"report_id": report.id},
-        )
+            _finish_event(
+                db,
+                report_event,
+                status="success",
+                message=f"Generated report: {report.title}",
+                extra_metadata={
+                    "report_id": report.id,
+                    "item_count": len(shortlisted_items),
+                },
+            )
+        except Exception as report_exc:
+            _finish_event(
+                db,
+                report_event,
+                status="error",
+                message=f"Report generation failed: {report_exc}",
+            )
+            raise
 
         finished = datetime.now(timezone.utc)
         run.status = "success"

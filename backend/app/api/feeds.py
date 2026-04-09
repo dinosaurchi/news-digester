@@ -1,5 +1,7 @@
 """FeedSource API endpoints."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -7,6 +9,7 @@ from app.db.session import get_db
 from app.schemas.feed import FeedCreate, FeedUpdate, FeedOut, _feed_to_out
 from app.services import feed as feed_service
 from app.services import workspace as ws_service
+from app.services.pipeline_steps import validate_feed_source
 
 router = APIRouter(prefix="/api", tags=["feeds"])
 
@@ -106,15 +109,28 @@ def toggle_feed(feed_id: str, db: Session = Depends(get_db)):
 
 @router.post("/feeds/{feed_id}/test")
 def test_feed(feed_id: str, db: Session = Depends(get_db)):
-    """Test a feed (stub endpoint)."""
+    """Fetch and parse a feed, returning the real validation result."""
     feed = feed_service.get_feed(db, feed_id)
     if feed is None:
         raise HTTPException(status_code=404, detail="Feed not found")
 
+    result = validate_feed_source(feed)
+    feed.last_fetched_at = datetime.now(timezone.utc)
+    feed.last_error = result.error
+    feed.status = "healthy" if result.success else "error"
+    db.commit()
+    db.refresh(feed)
+
     return {
-        "success": True,
+        "success": result.success,
         "feedId": feed.id,
-        "message": "Feed test completed successfully",
-        "articlesFound": 5,
-        "lastError": None,
+        "message": (
+            f"Feed test completed successfully: parsed {result.articles_found} articles"
+            if result.success
+            else "Feed test failed"
+        ),
+        "articlesFound": result.articles_found,
+        "sourceTitle": result.source_title,
+        "lastFetchedAt": feed.last_fetched_at.isoformat(),
+        "lastError": result.error,
     }
