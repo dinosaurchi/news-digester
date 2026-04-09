@@ -322,6 +322,187 @@ class TestRunNow:
         assert isinstance(content_ids, list)
         assert len(content_ids) == 1
 
+    def test_run_now_produces_clustered_content_items(self, client, monkeypatch):
+        """After run-now, content items have cluster_id assigned."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.content import ContentItem
+
+        ws_id = _create_workspace(client)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        # Return two items sharing the same base URL (different tracking params)
+        # and one unique item — the pipeline should cluster the duplicates.
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "Duplicate Story",
+                    "url": "https://example.com/story?utm_source=twitter",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
+                    "author": "Author",
+                    "summary": "Summary A",
+                    "content": "Body A",
+                },
+                {
+                    "title": "Duplicate Story",
+                    "url": "https://example.com/story?fbclid=abc123",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(2024, 3, 20, 9, 0, 0, tzinfo=timezone.utc),
+                    "author": "Author",
+                    "summary": "Summary B",
+                    "content": "Body B",
+                },
+                {
+                    "title": "Unique Story",
+                    "url": "https://example.com/unique",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(
+                        2024, 3, 20, 10, 0, 0, tzinfo=timezone.utc
+                    ),
+                    "author": "Author",
+                    "summary": "Summary C",
+                    "content": "Body C",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+
+        # Query ContentItems directly from the DB
+        db = TestingSessionLocal()
+        try:
+            items = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).all()
+            )
+            assert len(items) == 3
+
+            # Every item should have a cluster_id
+            for item in items:
+                assert item.cluster_id is not None, (
+                    f"ContentItem {item.id} has no cluster_id"
+                )
+
+            # The two duplicate items should share the same cluster
+            dup_items = [i for i in items if "story?utm" in (i.url or "")]
+            dup_fb = [i for i in items if "story?fbclid" in (i.url or "")]
+            assert len(dup_items) == 1
+            assert len(dup_fb) == 1
+            assert dup_items[0].cluster_id == dup_fb[0].cluster_id
+
+            # The unique item should be in a different cluster
+            unique_items = [i for i in items if "/unique" in (i.url or "")]
+            assert len(unique_items) == 1
+            assert unique_items[0].cluster_id != dup_items[0].cluster_id
+        finally:
+            db.close()
+
+    def test_run_now_clustering_event_has_metadata(self, client):
+        """The cluster_content pipeline event records clusters_created and items_clustered."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+
+        ws_id = _create_workspace(client)
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        # Query events directly from the DB
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            cluster_events = [e for e in events if e.step_name == "cluster_content"]
+            assert len(cluster_events) == 1
+
+            cluster_event = cluster_events[0]
+            assert cluster_event.status == "completed"
+
+            meta = cluster_event.metadata_json
+            assert meta is not None
+            assert "clusters_created" in meta
+            assert "items_clustered" in meta
+
+            # With no feeds configured, expect 0 items clustered
+            assert meta["items_clustered"] == 0
+            assert meta["clusters_created"] == 0
+        finally:
+            db.close()
+
+    def test_run_now_clustering_event_with_items(self, client, monkeypatch):
+        """Clustering event metadata reflects actual clustered item counts."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRunEvent
+
+        ws_id = _create_workspace(client)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        # Return 3 items: 2 sharing the same base URL, 1 unique
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "Shared Story",
+                    "url": "https://example.com/shared?utm_source=tw",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
+                    "author": "Author",
+                    "summary": "Summary",
+                    "content": "Body",
+                },
+                {
+                    "title": "Shared Story",
+                    "url": "https://example.com/shared?fbclid=x",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(2024, 3, 20, 9, 0, 0, tzinfo=timezone.utc),
+                    "author": "Author",
+                    "summary": "Summary",
+                    "content": "Body",
+                },
+                {
+                    "title": "Solo Story",
+                    "url": "https://example.com/solo",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(
+                        2024, 3, 20, 10, 0, 0, tzinfo=timezone.utc
+                    ),
+                    "author": "Author",
+                    "summary": "Summary",
+                    "content": "Body",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        db = TestingSessionLocal()
+        try:
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            cluster_events = [e for e in events if e.step_name == "cluster_content"]
+            assert len(cluster_events) == 1
+
+            cluster_event = cluster_events[0]
+            assert cluster_event.status == "completed"
+
+            meta = cluster_event.metadata_json
+            assert meta is not None
+            assert meta["items_clustered"] == 3
+            assert meta["clusters_created"] == 2  # 1 multi-item + 1 singleton
+            assert meta["singleton_clusters"] == 1
+        finally:
+            db.close()
+
 
 class TestGetRunDetail:
     """GET /api/runs/{run_id}"""
