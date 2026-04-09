@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useParams } from 'react-router-dom';
 import { Plus, Rss, Globe, Trash2, Edit2, Search, AlertCircle, Loader2 } from 'lucide-react';
-import { formatDate, cn } from '@/lib/utils';
+import { formatDate, timeAgo, cn } from '@/lib/utils';
 import { useState, useMemo } from 'react';
 import { useForm, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -272,8 +272,25 @@ export default function FeedsPage() {
                       </div>
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-500 capitalize">{feed.cadence}</td>
-                    <td className="px-6 py-4 text-sm text-slate-500">
-                      {feed.lastFetchedAt ? formatDate(feed.lastFetchedAt) : 'Never'}
+                    <td className="px-6 py-4">
+                      {feed.status === 'error' ? (
+                        <div className="space-y-1">
+                          {feed.lastErrorAt && (
+                            <span className="text-xs font-medium text-red-600">
+                              Errored {timeAgo(feed.lastErrorAt)}
+                            </span>
+                          )}
+                          {feed.lastError && (
+                            <p className="text-xs text-red-500/80 truncate max-w-[180px]" title={feed.lastError}>
+                              {feed.lastError}
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-sm text-slate-500">
+                          {feed.lastFetchedAt ? formatDate(feed.lastFetchedAt) : 'Never'}
+                        </span>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
