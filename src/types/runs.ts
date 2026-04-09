@@ -1,6 +1,25 @@
 export type RunType = 'scheduled' | 'manual';
 export type RunStatus = 'success' | 'failed' | 'running';
 
+export interface FeedDetail {
+  feedId: string;
+  feedName: string;
+  feedUrl: string;
+  status: string;
+  entriesCount: number;
+  error?: string;
+}
+
+export interface RunStepMetadata {
+  feedsSucceeded?: number;
+  feedsFailed?: number;
+  feedsAttempted?: number;
+  entriesFetched?: number;
+  entriesImported?: number;
+  entriesSkipped?: number;
+  feedDetails?: FeedDetail[];
+}
+
 export interface RunSummary {
   id: string;
   workspaceId: string;
@@ -13,6 +32,10 @@ export interface RunSummary {
     feeds: number;
     articles: number;
     reports: number;
+    entriesImported?: number;
+    entriesSkipped?: number;
+    feedsSucceeded?: number;
+    feedsFailed?: number;
   };
   error?: string;
 }
@@ -26,6 +49,7 @@ export interface RunStep {
   durationMs?: number;
   details?: string;
   error?: string;
+  metadata?: RunStepMetadata;
 }
 
 export interface RunDetail extends RunSummary {
