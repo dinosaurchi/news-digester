@@ -1,16 +1,43 @@
+import { useEffect } from 'react';
 import { Outlet, Navigate } from 'react-router-dom';
 import { Sidebar } from './sidebar';
 import { Header } from './header';
 import { useAppStore } from '@/lib/store';
+import { auth } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { useLocation } from 'react-router-dom';
 
 export function AppLayout() {
-  const { isSidebarOpen, isLoggedIn } = useAppStore();
+  const { isSidebarOpen, isLoggedIn, authStatus, setUser, setLoggedIn, setAuthStatus } = useAppStore();
   const location = useLocation();
 
-  if (!isLoggedIn) {
+  // Check auth state on mount
+  useEffect(() => {
+    if (!isLoggedIn) {
+      auth.me()
+        .then((user) => {
+          setUser(user);
+          setLoggedIn(true);
+          setAuthStatus('authenticated');
+        })
+        .catch(() => {
+          setUser(null);
+          setLoggedIn(false);
+          setAuthStatus('anonymous');
+        });
+    }
+  }, []);
+
+  if (authStatus === 'unknown') {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="animate-spin h-8 w-8 border-4 border-slate-300 border-t-blue-600 rounded-full" />
+      </div>
+    );
+  }
+
+  if (authStatus === 'anonymous') {
     return <Navigate to="/login" replace />;
   }
 

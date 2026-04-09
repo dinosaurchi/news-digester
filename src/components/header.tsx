@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Bell, Play, LogOut, ChevronDown, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useAppStore } from '@/lib/store';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { api } from '@/lib/api';
+import { api, auth } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { WorkspaceSwitcher } from './workspace-switcher';
 
@@ -45,8 +45,13 @@ export function Header() {
     },
   });
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     setUserMenuOpen(false);
+    try {
+      await auth.logout();
+    } catch {
+      // Ignore logout API errors — still clear local state
+    }
     logout();
     navigate('/login');
   };

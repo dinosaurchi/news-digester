@@ -14,6 +14,7 @@ import {
   FileBarChart,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { auth } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
 
 interface NavItem {
@@ -32,7 +33,12 @@ export function Sidebar() {
   // Determine if we're inside a workspace route
   const isInWorkspace = !!workspaceId;
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await auth.logout();
+    } catch {
+      // Ignore logout API errors — still clear local state
+    }
     logout();
     navigate('/login');
   };

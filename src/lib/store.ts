@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { Workspace } from './types';
 
+export type AuthStatus = 'unknown' | 'authenticated' | 'anonymous';
+
 export interface User {
   id: string;
   username: string;
@@ -13,6 +15,8 @@ interface AppState {
   setUser: (user: User | null) => void;
   isLoggedIn: boolean;
   setLoggedIn: (loggedIn: boolean) => void;
+  authStatus: AuthStatus;
+  setAuthStatus: (status: AuthStatus) => void;
   currentWorkspace: Workspace | null;
   setCurrentWorkspace: (workspace: Workspace | null) => void;
   isSidebarOpen: boolean;
@@ -25,7 +29,12 @@ export const useAppStore = create<AppState>((set) => ({
   user: null,
   setUser: (user) => set({ user }),
   isLoggedIn: false,
-  setLoggedIn: (loggedIn) => set({ isLoggedIn: loggedIn }),
+  setLoggedIn: (loggedIn) => set({
+    isLoggedIn: loggedIn,
+    authStatus: loggedIn ? 'authenticated' : 'anonymous',
+  }),
+  authStatus: 'unknown',
+  setAuthStatus: (status) => set({ authStatus: status }),
   currentWorkspace: null,
   setCurrentWorkspace: (workspace) => set({ currentWorkspace: workspace }),
   isSidebarOpen: true,
@@ -34,6 +43,7 @@ export const useAppStore = create<AppState>((set) => ({
   logout: () => set({
     user: null,
     isLoggedIn: false,
+    authStatus: 'anonymous',
     currentWorkspace: null,
   }),
 }));

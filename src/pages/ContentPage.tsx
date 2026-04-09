@@ -14,7 +14,7 @@ import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/loading-skeleton';
 import { ScoreBar } from '@/components/ui/score-bar';
 import type { ContentStatus, ContentType, ContentItemDetail } from '@/lib/types';
-import type { ContentFilters } from '@/mock-api/content';
+import type { ContentFilters } from '@/types';
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */

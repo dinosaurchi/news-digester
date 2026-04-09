@@ -15,7 +15,7 @@ import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/loading-skeleton';
 import { StepTimeline } from '@/components/ui/step-timeline';
 import type { RunType, RunStatus, RunDetail } from '@/lib/types';
-import type { RunFilters } from '@/mock-api/runs';
+import type { RunFilters } from '@/types';
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -187,7 +187,7 @@ export default function RunsPage() {
 
   const { data: detail, isLoading: detailLoading } = useQuery({
     queryKey: ['run-detail', selectedId],
-    queryFn: () => api.runs.getDetail(workspaceId, selectedId!),
+    queryFn: () => api.runs.getDetail(selectedId!),
     enabled: !!selectedId,
   });
 
