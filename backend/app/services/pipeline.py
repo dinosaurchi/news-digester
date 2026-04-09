@@ -121,6 +121,7 @@ def execute_workspace_run(
     feeds_attempted: int = len(feeds)
     feeds_succeeded: int = 0
     feeds_failed: int = 0
+    feed_details: list[dict] = []
 
     try:
         fetch_event = _start_event(db, run.id, "fetch_feeds", "Fetching feeds...")
@@ -133,6 +134,16 @@ def execute_workspace_run(
                 feed.last_error_at = datetime.now(timezone.utc)
                 logger.warning("Skipping feed %s: %s", feed.name, result.error)
                 feeds_failed += 1
+                feed_details.append(
+                    {
+                        "feed_id": str(feed.id),
+                        "feed_name": feed.name,
+                        "feed_url": feed.url,
+                        "status": "error",
+                        "entries_count": 0,
+                        "error": result.error,
+                    }
+                )
                 continue
             feeds_succeeded += 1
             # Record healthy/recovery state on the feed
@@ -153,6 +164,16 @@ def execute_workspace_run(
                 logger.info(
                     "Skipped %d duplicate entries for feed %s", skipped, feed.name
                 )
+            feed_details.append(
+                {
+                    "feed_id": str(feed.id),
+                    "feed_name": feed.name,
+                    "feed_url": feed.url,
+                    "status": "healthy",
+                    "entries_count": len(result.entries),
+                    "error": None,
+                }
+            )
         db.commit()
 
         # Aggregated counts dict — used for event metadata and run counts
@@ -163,6 +184,7 @@ def execute_workspace_run(
             "feeds_attempted": feeds_attempted,
             "feeds_succeeded": feeds_succeeded,
             "feeds_failed": feeds_failed,
+            "feed_details": feed_details,
         }
 
         _finish_event(
