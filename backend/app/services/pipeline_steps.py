@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import logging
+import re
+import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 import feedparser
@@ -16,6 +19,99 @@ from app.models.feed import FeedSource
 from app.services.dedup import normalize_url
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Entry-normalisation helpers
+# ---------------------------------------------------------------------------
+
+
+def _strip_html_tags(text: str) -> str:
+    """Remove HTML tags from *text*, returning plain text."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"<[^>]+>", "", text)
+    # Collapse runs of whitespace into a single space
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def _struct_time_to_dt(
+    struct: time.struct_time | None,
+) -> datetime | None:
+    """Convert a feedparser ``time.struct_time`` to a timezone-aware UTC datetime."""
+    if struct is None:
+        return None
+    try:
+        ts = calendar.timegm(struct)
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _extract_url(entry) -> str:
+    """Extract and normalise the canonical URL from a feedparser entry."""
+    raw_url = entry.get("link") or entry.get("id") or ""
+    return normalize_url(raw_url)
+
+
+def _extract_author(entry) -> str | None:
+    """Extract author name from a feedparser entry, trying multiple sources."""
+    if entry.get("author"):
+        return entry.get("author")
+    if entry.get("dc:creator"):
+        return entry.get("dc:creator")
+    if entry.get("dc_creator"):
+        return entry.get("dc_creator")
+    authors = entry.get("authors")
+    if authors and isinstance(authors, (list, tuple)) and len(authors) > 0:
+        first = authors[0]
+        name = (
+            first.get("name")
+            if isinstance(first, dict)
+            else getattr(first, "name", None)
+        )
+        if name:
+            return name
+    return None
+
+
+def _extract_published_at(entry) -> datetime | None:
+    """Extract publication timestamp from a feedparser entry using multiple strategies."""
+    # Try string-based parsing first (feedparser's published / updated)
+    for field in ("published", "updated"):
+        date_str = entry.get(field)
+        if date_str:
+            dt = parse_rfc2822(date_str)
+            if dt:
+                return dt
+    # Fall back to pre-parsed struct_time fields
+    for field in ("published_parsed", "updated_parsed"):
+        struct = entry.get(field)
+        if struct:
+            dt = _struct_time_to_dt(struct)
+            if dt:
+                return dt
+    return None
+
+
+def _extract_summary(entry) -> str:
+    """Extract summary, stripping HTML tags if present."""
+    return _strip_html_tags(entry.get("summary", ""))
+
+
+def _extract_raw_text(entry) -> str:
+    """Extract full text/body content from a feedparser entry."""
+    content = entry.get("content")
+    if content and isinstance(content, (list, tuple)) and len(content) > 0:
+        raw = content[0]
+        value = (
+            raw.get("value") if isinstance(raw, dict) else getattr(raw, "value", None)
+        )
+        if value:
+            return _strip_html_tags(value)
+    # Fallback to summary or description
+    return _strip_html_tags(entry.get("summary", "") or entry.get("description", ""))
 
 
 @dataclass
@@ -87,18 +183,12 @@ def fetch_feed(feed: FeedSource) -> FeedFetchResult:
         items.append(
             {
                 "title": entry.get("title", "Untitled"),
-                "url": entry.get("link", ""),
+                "url": _extract_url(entry),
                 "source_name": source_title,
-                "published_at": parse_rfc2822(
-                    entry.get("published", entry.get("updated", ""))
-                ),
-                "author": entry.get("author", ""),
-                "summary": entry.get("summary", ""),
-                "content": (
-                    entry.get("content", [{}])[0].get("value", "")
-                    if entry.get("content")
-                    else ""
-                ),
+                "published_at": _extract_published_at(entry),
+                "author": _extract_author(entry),
+                "summary": _extract_summary(entry),
+                "raw_text": _extract_raw_text(entry),
             }
         )
 
@@ -167,7 +257,7 @@ def normalize_content(
             published_at=raw.get("published_at"),
             author=raw.get("author"),
             summary_snippet=raw.get("summary", "")[:500],
-            raw_text=raw.get("content", ""),
+            raw_text=raw.get("raw_text", ""),
             status="pending",
             local_relevance_score=0.5,
         )
