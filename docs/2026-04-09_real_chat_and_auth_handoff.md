@@ -26,11 +26,14 @@ Do **not** hide this by renaming it. Replace it with a real implementation or ma
 
 ## Pass A — Real Report Chat
 
-### Product decision
+### Locked Product Decisions
 
-Implement report-thread chat as a real report assistant. The first production version should answer questions using the selected report plus its source content.
-
-Do not return a fake acknowledgement.
+- Report chat **requires OpenCode**.
+- If `OPENCODE_ENABLED=false`, report chat must return explicit HTTP 503. Do not create an `agent` message.
+- Chat context is the **current report plus that report's source content only**.
+- On assistant/provider failure, persist the user's message, return explicit failure, and do **not** create fake/error `agent` messages.
+- Do not return a fake acknowledgement.
+- Do not use all workspace content history in this pass.
 
 ### Backend Approach
 
@@ -44,12 +47,12 @@ Do not return a fake acknowledgement.
    - Keep source order.
    - Cap context size to a documented small value unless a summarization strategy exists.
 6. Generate the reply through a backend service function, for example `app.services.report_chat.generate_report_chat_reply(...)`.
-7. Supported modes:
-   - If `settings.OPENCODE_ENABLED == true`, call `OpenCodeClient` through a dedicated chat/report-QA method.
-   - If `settings.OPENCODE_ENABLED == false`, return an explicit API error such as HTTP 503 with message `Report chat assistant is not configured`.
-8. Do **not** silently fall back from failed OpenCode to a template answer.
-9. Create the `agent` message only after a real assistant response exists.
-10. Store useful metadata:
+7. If `settings.OPENCODE_ENABLED == false`, commit the user message, then return HTTP 503 with message `Report chat assistant is not configured`.
+8. If `settings.OPENCODE_ENABLED == true`, call `OpenCodeClient` through a dedicated chat/report-QA method.
+9. Do **not** silently fall back from failed OpenCode to a template answer.
+10. On any OpenCode/provider failure, keep the user message committed and return an explicit error response. Do not create an `agent` message.
+11. Create the `agent` message only after a real assistant response exists.
+12. Store useful metadata:
     - `model`
     - `sources`
     - `opencodeSessionId` when available
@@ -77,11 +80,13 @@ Do not return a fake acknowledgement.
 
 ## Pass B — Real Auth
 
-### Product decision
+### Locked Product Decisions
 
-Replace accept-any-credentials auth with a real user identity store.
-
-Keep cookie-based session behavior unless there is a separate product decision to adopt SSO/OIDC.
+- Replace accept-any-credentials auth with a real user identity store.
+- Keep cookie-based session behavior.
+- Bootstrap an admin user via environment/dev seed path.
+- Do not implement user CRUD, invites, or password reset in this pass.
+- Keep `role` in the User DTO/session, but treat it as informational only. Do not add endpoint-level permission enforcement in this pass.
 
 ### Backend Approach
 
@@ -94,7 +99,7 @@ Keep cookie-based session behavior unless there is a separate product decision t
    - `users.status`
    - timestamps
 2. Hash passwords with a maintained password hashing library.
-3. Seed/dev-bootstrap exactly one admin user via environment or an explicit dev seed path.
+3. Seed/dev-bootstrap exactly one admin user via environment and/or the existing dev seed path. Document the exact mechanism in `.env.example` and the final PR/commit note.
 4. Update `backend/app/api/session.py`:
    - Validate username/password against stored hash.
    - Return 401 for wrong username/password.
@@ -105,6 +110,8 @@ Keep cookie-based session behavior unless there is a separate product decision t
    - Keep server-side session deletion.
 6. Add env documentation in `.env.example`.
 7. Add tests for success, bad password, unknown user, disabled user, me/logout.
+8. Do not add user management endpoints in this pass.
+9. Do not add role-based authorization checks in this pass.
 
 ### Frontend Approach
 
@@ -142,11 +149,10 @@ API QA after `make up`:
 4. `GET /api/session/me` returns authenticated user.
 5. `POST /api/workspaces/ws-1/run-now` succeeds in default deterministic mode.
 6. New report exists and has source-backed system message.
-7. Report chat:
-   - configured path creates a real agent response, or
-   - unconfigured path fails explicitly without fake agent message.
-8. Regenerate still appends a same-thread system message and preserves source IDs.
-9. Logout invalidates the session.
+7. Report chat with default `OPENCODE_ENABLED=false`: user message is persisted, request returns explicit HTTP 503, and no `agent` message is created.
+8. Report chat with `OPENCODE_ENABLED=true` and working OpenCode/provider: configured path creates a real agent response grounded in current report/source context.
+9. Regenerate still appends a same-thread system message and preserves source IDs.
+10. Logout invalidates the session.
 
 Web UI QA after `make up`:
 
