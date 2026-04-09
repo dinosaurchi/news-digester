@@ -11,14 +11,21 @@ from app.models.feed import FeedSource
 from app.models.report import Report, ReportMessage
 from app.models.run import ProcessingRun, ProcessingRunEvent
 from app.models.workspace import Workspace
-from app.services.pipeline_steps import fetch_feed, generate_report_stub, normalize_content
+from app.services.clustering import cluster_content_items
+from app.services.pipeline_steps import (
+    fetch_feed,
+    generate_report_stub,
+    normalize_content,
+)
 
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
-def _start_event(db: Session, run_id: str, step_name: str, message: str) -> ProcessingRunEvent:
+def _start_event(
+    db: Session, run_id: str, step_name: str, message: str
+) -> ProcessingRunEvent:
     started_at = datetime.now(timezone.utc)
     event = ProcessingRunEvent(
         run_id=run_id,
@@ -130,6 +137,34 @@ def execute_workspace_run(
             message=f"Normalized {len(all_items)} content items",
             extra_metadata={"content_items": len(all_items)},
         )
+
+        cluster_event = _start_event(
+            db,
+            run.id,
+            "cluster_content",
+            "Clustering content items...",
+        )
+        try:
+            cluster_stats = cluster_content_items(db, all_items, workspace.id)
+            _finish_event(
+                db,
+                cluster_event,
+                status="completed",
+                message=(
+                    f"Clustered {cluster_stats['items_clustered']} items "
+                    f"into {cluster_stats['clusters_created']} clusters "
+                    f"({cluster_stats['singleton_clusters']} singletons)"
+                ),
+                extra_metadata=cluster_stats,
+            )
+        except Exception as cluster_exc:
+            _finish_event(
+                db,
+                cluster_event,
+                status="error",
+                message=f"Clustering failed: {cluster_exc}",
+            )
+            raise
 
         score_event = _start_event(db, run.id, "score_content", "Scoring content...")
         for i, item in enumerate(all_items):

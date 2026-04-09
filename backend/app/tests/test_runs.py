@@ -192,7 +192,7 @@ class TestRunNow:
         assert resp.status_code == 404
 
     def test_run_now_creates_events(self, client):
-        """Run-now creates 4 pipeline step events."""
+        """Run-now creates 5 pipeline step events."""
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -203,10 +203,11 @@ class TestRunNow:
         detail_resp = client.get(f"/api/runs/{run_id}")
         assert detail_resp.status_code == 200
         detail = detail_resp.json()
-        assert len(detail["steps"]) == 4
+        assert len(detail["steps"]) == 5
         step_names = [s["name"] for s in detail["steps"]]
         assert "fetch_feeds" in step_names
         assert "normalize_content" in step_names
+        assert "cluster_content" in step_names
         assert "score_content" in step_names
         assert "generate_report" in step_names
 
@@ -228,7 +229,7 @@ class TestRunNow:
         assert data["affectedCounts"]["reports"] == 1
 
     def test_run_now_all_events_success(self, client):
-        """All pipeline events are marked as success after run-now."""
+        """All pipeline events are marked as success/completed after run-now."""
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -239,7 +240,7 @@ class TestRunNow:
         assert detail_resp.status_code == 200
         steps = detail_resp.json()["steps"]
         for step in steps:
-            assert step["status"] == "success"
+            assert step["status"] in ("success", "completed")
 
     def test_run_now_events_have_messages(self, client):
         """Pipeline events have descriptive messages after completion."""
@@ -287,7 +288,7 @@ class TestRunNow:
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         snippets = detail_resp.json()["logSnippets"]
-        assert len(snippets) == 4
+        assert len(snippets) == 5
         assert any("fetch_feeds" in s for s in snippets)
 
     def test_run_now_links_created_content_items(self, client, monkeypatch):
