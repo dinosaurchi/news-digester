@@ -114,6 +114,14 @@ def execute_workspace_run(
     all_items: list[ContentItem] = []
     report: Report | None = None
 
+    # --- Counters for ingestion tracking ---
+    entries_fetched: int = 0
+    entries_imported: int = 0
+    entries_skipped: int = 0
+    feeds_attempted: int = len(feeds)
+    feeds_succeeded: int = 0
+    feeds_failed: int = 0
+
     try:
         fetch_event = _start_event(db, run.id, "fetch_feeds", "Fetching feeds...")
         for feed in feeds:
@@ -124,15 +132,20 @@ def execute_workspace_run(
                 feed.last_error = result.error
                 feed.last_error_at = datetime.now(timezone.utc)
                 logger.warning("Skipping feed %s: %s", feed.name, result.error)
+                feeds_failed += 1
                 continue
+            feeds_succeeded += 1
             # Record healthy/recovery state on the feed
             feed.status = "healthy"
             feed.last_error = None
             feed.last_error_at = None
             feed.last_fetched_at = datetime.now(timezone.utc)
+            entries_fetched += len(result.entries)
             content_items, skipped = normalize_content(
                 workspace.id, feed, result.entries, db=db
             )
+            entries_imported += len(content_items)
+            entries_skipped += skipped
             for item in content_items:
                 db.add(item)
             all_items.extend(content_items)
@@ -141,12 +154,27 @@ def execute_workspace_run(
                     "Skipped %d duplicate entries for feed %s", skipped, feed.name
                 )
         db.commit()
+
+        # Aggregated counts dict — used for event metadata and run counts
+        counts = {
+            "entries_fetched": entries_fetched,
+            "entries_imported": entries_imported,
+            "entries_skipped": entries_skipped,
+            "feeds_attempted": feeds_attempted,
+            "feeds_succeeded": feeds_succeeded,
+            "feeds_failed": feeds_failed,
+        }
+
         _finish_event(
             db,
             fetch_event,
             status="success",
-            message=f"Fetched {len(feeds)} feeds, found {len(all_items)} articles",
-            extra_metadata={"feed_count": len(feeds), "article_count": len(all_items)},
+            message=(
+                f"Fetched {feeds_succeeded}/{feeds_attempted} feeds, "
+                f"imported {entries_imported} articles "
+                f"({entries_skipped} skipped)"
+            ),
+            extra_metadata=counts,
         )
 
         normalize_event = _start_event(
@@ -312,9 +340,10 @@ def execute_workspace_run(
         run.finished_at = finished
         run.duration_ms = int((finished - now).total_seconds() * 1000)
         run.affected_counts_json = {
-            "feeds": len(feeds),
-            "articles": len(all_items),
+            "feeds": feeds_succeeded,
+            "articles": entries_imported,
             "reports": 1,
+            "entries_skipped": entries_skipped,
         }
         db.commit()
         db.refresh(run)
