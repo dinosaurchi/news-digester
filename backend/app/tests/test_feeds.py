@@ -58,6 +58,7 @@ class TestCreateFeed:
         assert "updatedAt" in data
         assert data["lastFetchedAt"] is None
         assert data["lastError"] is None
+        assert data["lastErrorAt"] is None
 
     def test_create_feed_validation_missing_name(self, client):
         """Missing name → 422."""
@@ -342,6 +343,7 @@ class TestTestFeed:
         assert feed_data["status"] == "healthy"
         assert feed_data["lastFetchedAt"] is not None
         assert feed_data["lastError"] is None
+        assert feed_data["lastErrorAt"] is None
 
     @patch("app.services.pipeline_steps.httpx.get")
     def test_test_feed_parse_error_updates_feed(self, mock_get, client):
