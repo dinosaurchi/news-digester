@@ -1,6 +1,6 @@
 """ContentItem and ContentCluster SQLAlchemy models."""
 
-from sqlalchemy import String, Text, DateTime, JSON, Float, ForeignKey, Integer
+from sqlalchemy import String, Text, DateTime, JSON, Float, ForeignKey, Integer, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -35,6 +35,8 @@ class ContentItem(Base):
     local_relevance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     llm_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     final_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score_breakdown_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_lead: Mapped[bool | None] = mapped_column(Boolean, default=False, nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="pending"
     )  # included, excluded, pending
