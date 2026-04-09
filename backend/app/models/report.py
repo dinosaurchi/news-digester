@@ -22,6 +22,7 @@ class Report(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     markdown_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     published_at: Mapped[str | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[str | None] = mapped_column(
