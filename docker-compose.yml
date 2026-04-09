@@ -98,7 +98,11 @@ services:
       retries: 3
       start_period: 5s
 
+  # Opencode services are gated behind the 'opencode' profile so they are
+  # NOT started by default with `make up` / `docker compose up`.
+  # To include them, run: docker compose --profile opencode up --build -d
   opencode-server:
+    profiles: ["opencode"]
     image: ${OPENCODE_SERVER_IMAGE:-opencode/opencode:latest}
     container_name: sme-news-admin-opencode-server
     ports:
@@ -118,7 +122,11 @@ services:
       retries: 3
       start_period: 10s
 
+  # Opencode services are gated behind the 'opencode' profile so they are
+  # NOT started by default with `make up` / `docker compose up`.
+  # To include them, run: docker compose --profile opencode up --build -d
   opencode-agent-adapter:
+    profiles: ["opencode"]
     image: ${OPENCODE_ADAPTER_IMAGE:-opencode/agent-adapter:latest}
     container_name: sme-news-admin-opencode-agent-adapter
     ports:
