@@ -12,6 +12,7 @@ from app.services.scoring import (
     compute_freshness_score,
     compute_keyword_score,
     compute_source_authority_score,
+    score_content_items,
 )
 
 
@@ -361,3 +362,308 @@ class TestComputeCombinedScore:
         _, breakdown = compute_combined_score({})
         total = sum(breakdown["weights"].values())
         assert total == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# score_content_items (pipeline-level scoring)
+# ---------------------------------------------------------------------------
+
+
+def _make_workspace(
+    db,
+    *,
+    priority_themes=None,
+    competitors=None,
+    excluded_topics=None,
+    trusted_domains=None,
+    min_relevance_score=0.1,
+):
+    """Helper to create a workspace with optional profile/settings."""
+    from app.models.workspace import Workspace, WorkspaceProfile, WorkspaceSettings
+
+    ws = Workspace(name="Test", customer="TestCo")
+    db.add(ws)
+    db.flush()
+
+    profile = WorkspaceProfile(
+        workspace_id=ws.id,
+        priority_themes=priority_themes or [],
+        competitors=competitors or [],
+        excluded_topics=excluded_topics or [],
+    )
+    db.add(profile)
+
+    thresholds: dict = {"min_relevance_score": min_relevance_score}
+    if trusted_domains is not None:
+        thresholds["trusted_domains"] = trusted_domains
+
+    settings = WorkspaceSettings(
+        workspace_id=ws.id,
+        thresholds=thresholds,
+    )
+    db.add(settings)
+    db.flush()
+    return ws
+
+
+def _make_item(db, ws_id, **overrides):
+    """Helper to create a ContentItem with sensible defaults."""
+    from app.models.content import ContentItem
+
+    defaults = {
+        "workspace_id": ws_id,
+        "title": "Generic news article about technology",
+        "url": "https://example.com/article",
+        "source_name": "Example News",
+        "content_type": "news",
+        "summary_snippet": "A summary about technology trends.",
+        "published_at": datetime.now(timezone.utc),
+        "status": "pending",
+    }
+    defaults.update(overrides)
+    item = ContentItem(**defaults)
+    db.add(item)
+    db.flush()
+    return item
+
+
+class TestScoreContentItems:
+    """score_content_items ties scoring utilities to real ContentItem objects."""
+
+    def test_basic_scoring_with_themes(self, db_session):
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai", "machine learning"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI breakthrough in machine learning",
+            summary_snippet="New advances in AI and ML are reshaping industries.",
+        )
+
+        result = score_content_items(db_session, [item], ws)
+
+        assert result["included_count"] == 1
+        assert result["excluded_count"] == 0
+        assert item.status == "included"
+        assert item.final_score is not None
+        assert item.final_score > 0
+        assert item.score_breakdown_json is not None
+        assert "combined_score" in item.score_breakdown_json
+        assert "filter_reason" in item.score_breakdown_json
+
+    def test_excluded_by_topic(self, db_session):
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            excluded_topics=["celebrity gossip"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Celebrity gossip: latest drama unfolds",
+            summary_snippet="All the celebrity gossip you need.",
+        )
+
+        result = score_content_items(db_session, [item], ws)
+
+        assert result["excluded_count"] == 1
+        assert result["included_count"] == 0
+        assert item.status == "excluded"
+        assert item.exclusion_reason == "matched_excluded_topic"
+        assert item.score_breakdown_json["filter_reason"] == "matched_excluded_topic"
+        assert item.score_breakdown_json["excluded_topic_score"] == 1.0
+
+    def test_excluded_by_low_score(self, db_session):
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["quantum computing"],
+            min_relevance_score=0.5,
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Weather forecast for tomorrow",
+            summary_snippet="Sunny skies expected.",
+        )
+
+        result = score_content_items(db_session, [item], ws)
+
+        assert result["excluded_count"] == 1
+        assert item.status == "excluded"
+        assert item.exclusion_reason == "below_relevance_threshold"
+
+    def test_no_workspace_profile(self, db_session):
+        """Should work even when workspace has no profile at all."""
+        from app.models.workspace import Workspace
+
+        ws = Workspace(name="NoProfile", customer="TestCo")
+        db_session.add(ws)
+        db_session.flush()
+
+        item = _make_item(db_session, ws.id, title="Some article")
+
+        result = score_content_items(db_session, [item], ws)
+
+        # With no themes, keyword and bm25 scores are 0, but freshness and
+        # source_authority still contribute. The item may be included or
+        # excluded depending on the threshold.
+        assert result["included_count"] + result["excluded_count"] == 1
+        assert item.final_score is not None
+        assert item.score_breakdown_json is not None
+
+    def test_no_workspace_settings(self, db_session):
+        """Should use defaults when workspace has no settings."""
+        from app.models.workspace import Workspace, WorkspaceProfile
+
+        ws = Workspace(name="NoSettings", customer="TestCo")
+        db_session.add(ws)
+        db_session.flush()
+
+        profile = WorkspaceProfile(
+            workspace_id=ws.id,
+            priority_themes=["ai"],
+        )
+        db_session.add(profile)
+        db_session.flush()
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI news today",
+            summary_snippet="Advances in artificial intelligence.",
+        )
+
+        result = score_content_items(db_session, [item], ws)
+
+        # Should use default min_relevance_score of 0.1
+        assert item.final_score is not None
+        assert item.score_breakdown_json is not None
+
+    def test_empty_items_list(self, db_session):
+        ws = _make_workspace(db_session)
+
+        result = score_content_items(db_session, [], ws)
+
+        assert result["included_count"] == 0
+        assert result["excluded_count"] == 0
+        assert result["avg_score"] == 0.0
+        assert result["min_score"] == 0.0
+        assert result["max_score"] == 0.0
+
+    def test_item_with_none_fields(self, db_session):
+        """Handle items with missing summary, url, published_at."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="",  # empty string (title is NOT NULL in DB)
+            summary_snippet=None,
+            url=None,
+            published_at=None,
+        )
+
+        # Should not raise
+        result = score_content_items(db_session, [item], ws)
+
+        assert result["included_count"] + result["excluded_count"] == 1
+        assert item.final_score is not None
+
+    def test_summary_metadata(self, db_session):
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+        items = [
+            _make_item(db_session, ws.id, title=f"Article {i} about AI")
+            for i in range(3)
+        ]
+
+        result = score_content_items(db_session, items, ws)
+
+        assert result["included_count"] + result["excluded_count"] == 3
+        assert 0.0 <= result["avg_score"] <= 1.0
+        assert 0.0 <= result["min_score"] <= 1.0
+        assert 0.0 <= result["max_score"] <= 1.0
+        assert result["min_score"] <= result["max_score"]
+
+    def test_competitor_mention_detected(self, db_session):
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            competitors=["OpenAI"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="OpenAI releases new model",
+            summary_snippet="OpenAI has announced a breakthrough.",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        assert item.score_breakdown_json is not None
+        assert item.score_breakdown_json["scores"][
+            "competitor_mention"
+        ] == pytest.approx(1.0)
+
+    def test_trusted_domain_boost(self, db_session):
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            trusted_domains=["reuters.com"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI news",
+            url="https://reuters.com/ai-article",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        assert item.score_breakdown_json is not None
+        assert item.score_breakdown_json["scores"]["source_authority"] == pytest.approx(
+            1.0
+        )
+
+    def test_breakdown_contains_all_components(self, db_session):
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+        item = _make_item(db_session, ws.id, title="AI article")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "weights" in breakdown
+        assert "scores" in breakdown
+        assert "combined_score" in breakdown
+        assert "excluded_topic_score" in breakdown
+        assert "filter_reason" in breakdown
+        for key in [
+            "keyword",
+            "competitor_mention",
+            "freshness",
+            "source_authority",
+            "bm25",
+        ]:
+            assert key in breakdown["scores"]
+
+    def test_excluded_topic_takes_priority_over_low_score(self, db_session):
+        """Excluded topic should be flagged even if score would be low anyway."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["quantum"],
+            excluded_topics=["gossip"],
+            min_relevance_score=0.5,
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Celebrity gossip roundup",
+            summary_snippet="The latest gossip from Hollywood.",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        assert item.status == "excluded"
+        assert item.exclusion_reason == "matched_excluded_topic"
+        assert item.score_breakdown_json["filter_reason"] == "matched_excluded_topic"

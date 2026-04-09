@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timezone
+from urllib.parse import urlparse
+
+from sqlalchemy.orm import Session
+
+from app.models.content import ContentItem
+from app.models.workspace import Workspace
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -223,3 +232,180 @@ def compute_combined_score(scores: dict) -> tuple[float, dict]:
 
     breakdown["combined_score"] = combined
     return combined, breakdown
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-level scoring: score a batch of ContentItems against a workspace
+# ---------------------------------------------------------------------------
+
+
+def _extract_domain(url: str | None) -> str:
+    """Extract the hostname from a URL string, returning empty string on failure."""
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        return parsed.hostname or ""
+    except Exception:
+        return ""
+
+
+def score_content_items(
+    db: Session,
+    items: list[ContentItem],
+    workspace: Workspace,
+) -> dict:
+    """Score a list of ContentItems using workspace profile/settings.
+
+    For each item the function:
+    1. Computes individual scores (keyword, competitor, freshness, source, bm25).
+    2. Combines them into a weighted score via ``compute_combined_score``.
+    3. Checks excluded topics and the minimum relevance threshold.
+    4. Persists the results on the ORM objects and commits.
+
+    Parameters
+    ----------
+    db:
+        SQLAlchemy session (used to flush/persist changes).
+    items:
+        ContentItem ORM objects to score.
+    workspace:
+        The workspace whose profile/settings define scoring context.
+
+    Returns
+    -------
+    A dict with summary metadata::
+
+        {
+            "included_count": int,
+            "excluded_count": int,
+            "avg_score": float,
+            "min_score": float,
+            "max_score": float,
+        }
+    """
+    # ------------------------------------------------------------------
+    # 1. Load workspace context (gracefully handle missing profile/settings)
+    # ------------------------------------------------------------------
+    profile = workspace.profile
+    settings = workspace.settings
+
+    priority_themes: list[str] = (
+        list(profile.priority_themes) if profile and profile.priority_themes else []
+    )
+    competitors: list[str] = (
+        list(profile.competitors) if profile and profile.competitors else []
+    )
+    excluded_topics: list[str] = (
+        list(profile.excluded_topics) if profile and profile.excluded_topics else []
+    )
+
+    # trusted_domains may live inside settings.thresholds or be absent
+    trusted_domains: list[str] | None = None
+    if settings and settings.thresholds:
+        trusted_domains = settings.thresholds.get("trusted_domains")
+        if trusted_domains is not None:
+            trusted_domains = list(trusted_domains)
+
+    # Minimum relevance threshold (default 0.1)
+    min_relevance_score: float = 0.1
+    if settings and settings.thresholds:
+        min_relevance_score = float(settings.thresholds.get("min_relevance_score", 0.1))
+
+    # ------------------------------------------------------------------
+    # 2. Score each item
+    # ------------------------------------------------------------------
+    included_count = 0
+    excluded_count = 0
+    scores_list: list[float] = []
+
+    for item in items:
+        # Build the text blob to score: title + summary (with raw_text as fallback)
+        parts: list[str] = []
+        if item.title:
+            parts.append(item.title)
+        if item.summary_snippet:
+            parts.append(item.summary_snippet)
+        elif item.raw_text:
+            # Use first 1000 chars of raw_text as a fallback summary
+            parts.append(item.raw_text[:1000])
+        item_text = " ".join(parts)
+
+        # Compute individual scores
+        individual_scores: dict[str, float] = {
+            "keyword": compute_keyword_score(item_text, priority_themes),
+            "competitor_mention": compute_competitor_mention_score(
+                item_text, competitors
+            ),
+            "freshness": compute_freshness_score(
+                item.published_at  # type: ignore[arg-type]
+                if not isinstance(item.published_at, str)
+                else None,
+            ),
+            "source_authority": compute_source_authority_score(
+                _extract_domain(item.url),
+                trusted_domains,
+            ),
+            "bm25": compute_bm25_score(item_text, priority_themes),
+        }
+
+        # Combined weighted score
+        combined_score, breakdown = compute_combined_score(individual_scores)
+
+        # Check excluded topics
+        excluded_score = compute_excluded_topic_score(item_text, excluded_topics)
+        breakdown["excluded_topic_score"] = excluded_score
+
+        # ------------------------------------------------------------------
+        # 3. Apply filtering rules
+        # ------------------------------------------------------------------
+        if excluded_score > 0:
+            item.status = "excluded"
+            item.exclusion_reason = "matched_excluded_topic"
+            item.inclusion_reason = None
+            breakdown["filter_reason"] = "matched_excluded_topic"
+            excluded_count += 1
+        elif combined_score < min_relevance_score:
+            item.status = "excluded"
+            item.exclusion_reason = "below_relevance_threshold"
+            item.inclusion_reason = None
+            breakdown["filter_reason"] = "below_relevance_threshold"
+            breakdown["min_relevance_threshold"] = min_relevance_score
+            excluded_count += 1
+        else:
+            item.status = "included"
+            item.exclusion_reason = None
+            item.inclusion_reason = f"combined_score={combined_score:.4f}"
+            breakdown["filter_reason"] = "included"
+            included_count += 1
+
+        # ------------------------------------------------------------------
+        # 4. Persist results on the item
+        # ------------------------------------------------------------------
+        item.score_breakdown_json = breakdown
+        item.final_score = combined_score
+
+        scores_list.append(combined_score)
+
+    # Flush changes to the database
+    db.flush()
+
+    # ------------------------------------------------------------------
+    # 5. Return summary metadata
+    # ------------------------------------------------------------------
+    if scores_list:
+        avg_score = sum(scores_list) / len(scores_list)
+        min_score = min(scores_list)
+        max_score = max(scores_list)
+    else:
+        avg_score = 0.0
+        min_score = 0.0
+        max_score = 0.0
+
+    return {
+        "included_count": included_count,
+        "excluded_count": excluded_count,
+        "avg_score": avg_score,
+        "min_score": min_score,
+        "max_score": max_score,
+    }
