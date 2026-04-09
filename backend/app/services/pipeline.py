@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.config import settings
 from app.models.content import ContentItem
@@ -116,8 +119,17 @@ def execute_workspace_run(
         for feed in feeds:
             result = fetch_feed(feed)
             if not result.success:
+                # Record failure state on the feed — do NOT update last_fetched_at
+                feed.status = "error"
+                feed.last_error = result.error
+                feed.last_error_at = datetime.now(timezone.utc)
                 logger.warning("Skipping feed %s: %s", feed.name, result.error)
                 continue
+            # Record healthy/recovery state on the feed
+            feed.status = "healthy"
+            feed.last_error = None
+            feed.last_error_at = None
+            feed.last_fetched_at = datetime.now(timezone.utc)
             content_items, skipped = normalize_content(
                 workspace.id, feed, result.entries, db=db
             )
@@ -128,7 +140,6 @@ def execute_workspace_run(
                 logger.info(
                     "Skipped %d duplicate entries for feed %s", skipped, feed.name
                 )
-            feed.last_fetched_at = datetime.now(timezone.utc)
         db.commit()
         _finish_event(
             db,
