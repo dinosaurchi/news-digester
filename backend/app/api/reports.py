@@ -3,7 +3,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.session import get_db
+from app.models.content import ContentItem
+from app.models.run import ProcessingRun
 from app.schemas.report import (
     MessageSendIn,
     ThumbIn,
@@ -14,6 +17,8 @@ from app.schemas.report import (
 from app.services import report as report_service
 from app.services import feedback as feedback_service
 from app.services import workspace as ws_service
+from app.services.opencode_client import OpenCodeClient
+from app.services.report_generator import generate_report
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
@@ -153,7 +158,11 @@ def thumb_message(message_id: str, body: ThumbIn, db: Session = Depends(get_db))
 
 @router.post("/reports/{report_id}/regenerate")
 def regenerate_report(report_id: str, db: Session = Depends(get_db)):
-    """Stub: regenerate the last agent message in a report thread."""
+    """Regenerate a report using the real report generator.
+
+    Creates a new Report and ReportMessage with fresh content, and marks
+    the original agent message as regenerated with tracking metadata.
+    """
     report = report_service.get_report(db, report_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -164,16 +173,81 @@ def regenerate_report(report_id: str, db: Session = Depends(get_db)):
             status_code=404, detail="No agent message found to regenerate"
         )
 
-    # Store original message ID and mark as regenerated
+    # Get the workspace from the original report
+    workspace = ws_service.get_workspace(db, report.workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # Get shortlisted content items for the workspace
+    shortlisted_items = (
+        db.query(ContentItem)
+        .filter(
+            ContentItem.workspace_id == workspace.id,
+            ContentItem.status == "included",
+        )
+        .order_by(ContentItem.final_score.desc())
+        .all()
+    )
+
+    # Create a new processing run for the regeneration
+    new_run = ProcessingRun(
+        workspace_id=workspace.id,
+        run_type="manual",
+        status="running",
+    )
+    db.add(new_run)
+    db.flush()
+
+    # Create OpenCode client if enabled
+    opencode_client: OpenCodeClient | None = None
+    if settings.OPENCODE_ENABLED:
+        opencode_client = OpenCodeClient(
+            base_url=settings.OPENCODE_BASE_URL,
+            timeout=settings.OPENCODE_TIMEOUT_SECONDS,
+            default_model=settings.OPENCODE_DEFAULT_MODEL,
+            enabled=True,
+        )
+
+    # Generate a new report
+    new_report = generate_report(
+        db,
+        workspace,
+        shortlisted_items,
+        new_run,
+        opencode_client=opencode_client,
+    )
+
+    # Add regeneration tracking metadata to the new report's system message
+    new_messages = report_service.get_thread_messages(db, new_report.id)
+    system_msg = next((m for m in new_messages if m.role == "system"), None)
+    if system_msg is not None:
+        system_msg.metadata_json = {
+            **(system_msg.metadata_json or {}),
+            "regenerated": True,
+            "originalMessageId": last_agent.id,
+            "originalReportId": report_id,
+        }
+
+    # Mark the original agent message as regenerated
     metadata = {
         **(last_agent.metadata_json or {}),
         "regenerated": True,
         "originalMessageId": last_agent.id,
+        "newReportId": new_report.id,
     }
-    last_agent.content = "This is a regenerated report. The original content has been replaced with fresh analysis."
     last_agent.metadata_json = metadata
 
-    db.commit()
-    db.refresh(last_agent)
+    # Mark the new run as successful
+    new_run.status = "success"
 
-    return _message_to_out(last_agent)
+    db.commit()
+    db.refresh(new_report)
+    db.refresh(last_agent)
+    if system_msg is not None:
+        db.refresh(system_msg)
+
+    # Return the new report's system message
+    if system_msg is None:
+        raise HTTPException(status_code=500, detail="Report generation failed")
+
+    return _message_to_out(system_msg)

@@ -301,22 +301,28 @@ class TestRegenerateReport:
     def test_regenerate_report(self, client):
         ws_id = _create_workspace(client)
         rid = _create_report(client, ws_id, title="Regen Test")
-        _create_message(client, rid, role="agent", content="Original report content")
+        original_mid = _create_message(
+            client, rid, role="agent", content="Original report content"
+        )
 
         resp = client.post(f"/api/reports/{rid}/regenerate")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["metadata"]["regenerated"] is True
-        assert data["metadata"]["originalMessageId"] == data["id"]
 
-        # The regenerated flag must persist on subsequent reads, not only
-        # appear in the immediate mutation response.
+        # The response is the new report's system message (role="system")
+        assert data["metadata"]["regenerated"] is True
+        assert data["metadata"]["originalMessageId"] == original_mid
+        assert data["metadata"]["originalReportId"] == rid
+
+        # The original agent message should be marked as regenerated
+        # and track the new report ID
         messages_resp = client.get(f"/api/report-threads/{rid}/messages")
         assert messages_resp.status_code == 200
         messages = messages_resp.json()
-        regenerated = next(msg for msg in messages if msg["id"] == data["id"])
-        assert regenerated["metadata"]["regenerated"] is True
-        assert regenerated["metadata"]["originalMessageId"] == data["id"]
+        original_msg = next(msg for msg in messages if msg["id"] == original_mid)
+        assert original_msg["metadata"]["regenerated"] is True
+        assert original_msg["metadata"]["originalMessageId"] == original_mid
+        assert "newReportId" in original_msg["metadata"]
 
     def test_report_404(self, client):
         resp = client.post("/api/reports/nonexistent-id/regenerate")

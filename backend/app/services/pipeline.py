@@ -9,16 +9,16 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.content import ContentItem
 from app.models.feed import FeedSource
-from app.models.report import Report, ReportMessage
+from app.models.report import Report
 from app.models.run import ProcessingRun, ProcessingRunEvent
 from app.models.workspace import Workspace
 from app.services.clustering import cluster_content_items
 from app.services.opencode_client import OpenCodeClient
 from app.services.pipeline_steps import (
     fetch_feed,
-    generate_report_stub,
     normalize_content,
 )
+from app.services.report_generator import generate_report
 from app.services.scoring import score_content_items
 from app.services.shortlist import select_shortlist
 
@@ -200,6 +200,16 @@ def execute_workspace_run(
         # ------------------------------------------------------------------
         # Shortlist step: select the final candidate set for report
         # ------------------------------------------------------------------
+        # Create OpenCode client once if enabled (shared by shortlist + report steps)
+        opencode_client: OpenCodeClient | None = None
+        if settings.OPENCODE_ENABLED:
+            opencode_client = OpenCodeClient(
+                base_url=settings.OPENCODE_BASE_URL,
+                timeout=settings.OPENCODE_TIMEOUT_SECONDS,
+                default_model=settings.OPENCODE_DEFAULT_MODEL,
+                enabled=True,
+            )
+
         shortlist_event = _start_event(
             db,
             run.id,
@@ -208,16 +218,6 @@ def execute_workspace_run(
         )
         try:
             included_items = [item for item in all_items if item.status == "included"]
-
-            # Optionally use LLM refinement if OpenCode is enabled
-            opencode_client: OpenCodeClient | None = None
-            if settings.OPENCODE_ENABLED:
-                opencode_client = OpenCodeClient(
-                    base_url=settings.OPENCODE_BASE_URL,
-                    timeout=settings.OPENCODE_TIMEOUT_SECONDS,
-                    default_model=settings.OPENCODE_DEFAULT_MODEL,
-                    enabled=True,
-                )
 
             shortlisted_items = select_shortlist(
                 db, included_items, workspace, run, opencode_client=opencode_client
@@ -245,36 +245,44 @@ def execute_workspace_run(
             )
             raise
 
+        # ------------------------------------------------------------------
+        # Report generation step
+        # ------------------------------------------------------------------
         report_event = _start_event(
             db,
             run.id,
             "generate_report",
             "Generating report...",
         )
-        report = generate_report_stub(workspace, shortlisted_items, run)
-        db.add(report)
-        db.commit()
-        db.refresh(report)
+        try:
+            report = generate_report(
+                db,
+                workspace,
+                shortlisted_items,
+                run,
+                opencode_client=opencode_client,
+            )
+            db.commit()
+            db.refresh(report)
 
-        msg = ReportMessage(
-            thread_id=report.id,
-            role="system",
-            content=report.markdown_body,
-            metadata_json={
-                "sources": [item.id for item in shortlisted_items[:5]],
-                "reportId": report.id,
-            },
-        )
-        db.add(msg)
-        db.commit()
-
-        _finish_event(
-            db,
-            report_event,
-            status="success",
-            message=f"Generated report: {report.title}",
-            extra_metadata={"report_id": report.id},
-        )
+            _finish_event(
+                db,
+                report_event,
+                status="success",
+                message=f"Generated report: {report.title}",
+                extra_metadata={
+                    "report_id": report.id,
+                    "item_count": len(shortlisted_items),
+                },
+            )
+        except Exception as report_exc:
+            _finish_event(
+                db,
+                report_event,
+                status="error",
+                message=f"Report generation failed: {report_exc}",
+            )
+            raise
 
         finished = datetime.now(timezone.utc)
         run.status = "success"
