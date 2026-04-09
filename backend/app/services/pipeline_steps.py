@@ -365,6 +365,22 @@ def normalize_content(
             local_relevance_score=0.5,
             source_entry_id=entry_id,
         )
+
+        # Optional: enrich raw_text by fetching the original article.
+        if settings.ARTICLE_ENRICHMENT_ENABLED and item.url:
+            try:
+                enriched = enrich_article_body(
+                    item.url,
+                    timeout=settings.ARTICLE_ENRICHMENT_TIMEOUT_SECONDS,
+                )
+                if enriched:
+                    item.raw_text = enriched
+            except Exception:
+                logger.exception(
+                    "Article enrichment failed for %s; keeping feed-provided text",
+                    item.url,
+                )
+
         items.append(item)
 
     return items, skipped_count
