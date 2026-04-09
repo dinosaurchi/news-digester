@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Zap,
   Loader2,
+  AlertTriangle,
 } from 'lucide-react';
 import { formatDate, cn } from '@/lib/utils';
 import { useAppStore } from '@/lib/store';
@@ -113,10 +114,25 @@ export default function WorkspaceOverviewPage() {
         <OverviewStatCard
           title="Total Feeds"
           value={feeds?.length || 0}
-          subtitle={`${healthyFeeds} healthy, ${errorFeeds} error`}
+          subtitle={
+            errorFeeds > 0 ? (
+              <span>
+                {healthyFeeds} healthy,{' '}
+                <Link
+                  to={`/workspaces/${workspaceId}/feeds`}
+                  className="text-red-600 font-semibold hover:underline"
+                >
+                  {errorFeeds} error
+                </Link>
+              </span>
+            ) : (
+              <span>{healthyFeeds} healthy, all OK</span>
+            )
+          }
           icon={Rss}
           color="text-indigo-600"
           bg="bg-indigo-50"
+          warningCount={errorFeeds > 0 ? errorFeeds : undefined}
         />
         <OverviewStatCard
           title="Content Items"
@@ -354,18 +370,35 @@ function OverviewStatCard({
   icon: Icon,
   color,
   bg,
+  warningCount,
 }: {
   title: string;
   value: string | number;
-  subtitle: string;
+  subtitle: React.ReactNode;
   icon: React.ComponentType<{ className?: string }>;
   color: string;
   bg: string;
+  warningCount?: number;
 }) {
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+    <div
+      className={cn(
+        'bg-white rounded-xl p-5 shadow-sm',
+        warningCount
+          ? 'border border-red-200 ring-1 ring-red-100'
+          : 'border border-slate-200'
+      )}
+    >
       <div className="flex items-center justify-between mb-3">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{title}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{title}</p>
+          {warningCount != null && warningCount > 0 && (
+            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 text-[10px] font-bold leading-none">
+              <AlertTriangle className="w-2.5 h-2.5" />
+              {warningCount}
+            </span>
+          )}
+        </div>
         <div className={cn('p-1.5 rounded-lg', bg, color)}>
           <Icon className="w-4 h-4" />
         </div>
