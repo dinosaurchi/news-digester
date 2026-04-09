@@ -71,6 +71,11 @@ def generate_report(
     now = datetime.now(timezone.utc)
 
     # ------------------------------------------------------------------
+    # 0. Load feedback context for traceability
+    # ------------------------------------------------------------------
+    feedback_context = _load_feedback_context(db, workspace.id)
+
+    # ------------------------------------------------------------------
     # 1. Assemble structured report input
     # ------------------------------------------------------------------
     title, period_start, period_end, items_data = _assemble_input(
@@ -91,6 +96,10 @@ def generate_report(
     # 3. Create Report record
     # ------------------------------------------------------------------
     source_ids = [item.id for item in shortlist_items]
+    metadata: dict[str, Any] = {"sources": source_ids}
+    if feedback_context:
+        metadata["feedback_context"] = feedback_context
+
     report = Report(
         workspace_id=workspace.id,
         title=title,
@@ -100,7 +109,7 @@ def generate_report(
         markdown_body=markdown,
         run_id=run.id,
         published_at=now,
-        metadata_json={"sources": source_ids},
+        metadata_json=metadata,
     )
     db.add(report)
     db.flush()  # assign report.id before creating the message
@@ -126,6 +135,84 @@ def generate_report(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _load_feedback_context(db: Session, workspace_id: str) -> dict[str, Any] | None:
+    """Load feedback influence summary for a workspace.
+
+    Returns a dict with keys ``topics_influenced``, ``sources_influenced``,
+    and ``feedback_event_count``, or ``None`` when no feedback data exists.
+    """
+    topic_weights: dict[str, float] = {}
+    source_weights: dict[str, float] = {}
+    feedback_event_count: int = 0
+
+    try:
+        from app.models.preferences import TopicPreference, SourcePreference
+
+        topic_prefs = (
+            db.query(TopicPreference)
+            .filter(TopicPreference.workspace_id == workspace_id)
+            .all()
+        )
+        for tp in topic_prefs:
+            topic_weights[tp.topic] = topic_weights.get(tp.topic, 0.0) + tp.weight
+
+        source_prefs = (
+            db.query(SourcePreference)
+            .filter(SourcePreference.workspace_id == workspace_id)
+            .all()
+        )
+        for sp in source_prefs:
+            source_weights[sp.source_name] = (
+                source_weights.get(sp.source_name, 0.0) + sp.weight
+            )
+
+    except Exception:
+        logger.debug(
+            "Could not load preference models for feedback context", exc_info=True
+        )
+
+    try:
+        from app.models.report import FeedbackEvent
+
+        feedback_event_count = (
+            db.query(FeedbackEvent)
+            .filter(FeedbackEvent.workspace_id == workspace_id)
+            .count()
+        )
+    except Exception:
+        logger.debug("Could not load feedback event count", exc_info=True)
+
+    # Return None when there is absolutely no feedback data
+    if not topic_weights and not source_weights and feedback_event_count == 0:
+        return None
+
+    topics_influenced: list[dict[str, Any]] = []
+    for topic, weight in topic_weights.items():
+        topics_influenced.append(
+            {
+                "topic": topic,
+                "weight": weight,
+                "direction": "positive" if weight > 0 else "negative",
+            }
+        )
+
+    sources_influenced: list[dict[str, Any]] = []
+    for source, weight in source_weights.items():
+        sources_influenced.append(
+            {
+                "source": source,
+                "weight": weight,
+                "direction": "positive" if weight > 0 else "negative",
+            }
+        )
+
+    return {
+        "topics_influenced": topics_influenced,
+        "sources_influenced": sources_influenced,
+        "feedback_event_count": feedback_event_count,
+    }
 
 
 def _assemble_input(
