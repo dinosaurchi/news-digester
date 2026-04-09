@@ -2,7 +2,9 @@
 
 import time
 from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from app.models.content import ContentItem
@@ -16,6 +18,7 @@ from app.services.pipeline_steps import (
     _strip_html_tags,
     _struct_time_to_dt,
     compute_source_entry_id,
+    enrich_article_body,
     fetch_feed,
     normalize_content,
     parse_rfc2822,
@@ -436,3 +439,296 @@ class TestExtractRawText:
     def test_empty_entry(self):
         entry = {}
         assert _extract_raw_text(entry) == ""
+
+
+# ---------------------------------------------------------------------------
+# Article enrichment tests
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichArticleBodySuccess:
+    """enrich_article_body successfully extracts text from an HTML page."""
+
+    @patch("app.services.pipeline_steps.trafilatura")
+    def test_returns_extracted_text(self, mock_trafilatura):
+        """Returns non-empty extracted text from a valid HTML response."""
+        mock_trafilatura.extract.return_value = "This is extracted article text."
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.text = (
+            "<html><body><p>This is extracted article text.</p></body></html>"
+        )
+        mock_response.headers = {"content-type": "text/html"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("app.services.pipeline_steps.httpx.get", return_value=mock_response):
+            result = enrich_article_body("https://example.com/article")
+
+        assert result == "This is extracted article text."
+        mock_trafilatura.extract.assert_called_once()
+
+    @patch("app.services.pipeline_steps.trafilatura")
+    def test_trafilatura_is_called(self, mock_trafilatura):
+        """trafilatura.extract is called with the response text."""
+        mock_trafilatura.extract.return_value = "Some text"
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.text = "<html><body>Content</body></html>"
+        mock_response.headers = {"content-type": "text/html"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("app.services.pipeline_steps.httpx.get", return_value=mock_response):
+            enrich_article_body("https://example.com/article")
+
+        mock_trafilatura.extract.assert_called_once_with(
+            "<html><body>Content</body></html>"
+        )
+
+
+class TestEnrichArticleBodyFailure:
+    """enrich_article_body returns None on errors and does not raise."""
+
+    def test_returns_none_on_http_timeout(self):
+        """HTTP timeout returns None without raising."""
+        with patch(
+            "app.services.pipeline_steps.httpx.get",
+            side_effect=httpx.TimeoutException("timeout"),
+        ):
+            result = enrich_article_body("https://example.com/article")
+
+        assert result is None
+
+    def test_returns_none_on_http_error(self):
+        """HTTP error (e.g. 404) returns None without raising."""
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Not Found",
+            request=MagicMock(),
+            response=MagicMock(status_code=404),
+        )
+
+        with patch("app.services.pipeline_steps.httpx.get", return_value=mock_response):
+            result = enrich_article_body("https://example.com/article")
+
+        assert result is None
+
+    def test_returns_none_on_connection_error(self):
+        """Network connection error returns None without raising."""
+        with patch(
+            "app.services.pipeline_steps.httpx.get",
+            side_effect=httpx.ConnectError("connection refused"),
+        ):
+            result = enrich_article_body("https://example.com/article")
+
+        assert result is None
+
+    @patch("app.services.pipeline_steps.trafilatura")
+    def test_returns_none_on_trafilatura_failure(self, mock_trafilatura):
+        """trafilatura exception returns None without raising."""
+        mock_trafilatura.extract.side_effect = RuntimeError("extraction failed")
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.text = "<html><body>Content</body></html>"
+        mock_response.headers = {"content-type": "text/html"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("app.services.pipeline_steps.httpx.get", return_value=mock_response):
+            result = enrich_article_body("https://example.com/article")
+
+        assert result is None
+
+    def test_returns_none_for_non_html_content(self):
+        """Non-HTML content-type returns None."""
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.headers = {"content-type": "application/pdf"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("app.services.pipeline_steps.httpx.get", return_value=mock_response):
+            result = enrich_article_body("https://example.com/doc.pdf")
+
+        assert result is None
+
+    @patch("app.services.pipeline_steps.trafilatura")
+    def test_returns_none_when_trafilatura_returns_empty(self, mock_trafilatura):
+        """When trafilatura returns None/empty, returns None."""
+        mock_trafilatura.extract.return_value = None
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.text = "<html><body></body></html>"
+        mock_response.headers = {"content-type": "text/html"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("app.services.pipeline_steps.httpx.get", return_value=mock_response):
+            result = enrich_article_body("https://example.com/article")
+
+        assert result is None
+
+
+class TestEnrichArticleBodyLengthCap:
+    """enrich_article_body caps extracted text to ARTICLE_BODY_MAX_LENGTH."""
+
+    @patch("app.services.pipeline_steps.trafilatura")
+    def test_text_capped_to_max_length(self, mock_trafilatura):
+        """Extracted text longer than ARTICLE_BODY_MAX_LENGTH is truncated."""
+        # Generate text that exceeds the default max length of 10000 chars
+        long_text = "A" * 15000
+        mock_trafilatura.extract.return_value = long_text
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.text = "<html><body>Long content</body></html>"
+        mock_response.headers = {"content-type": "text/html"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("app.services.pipeline_steps.httpx.get", return_value=mock_response):
+            result = enrich_article_body("https://example.com/article")
+
+        assert result is not None
+        assert len(result) == 10000  # capped to default max
+        assert result == "A" * 10000
+
+    @patch("app.services.pipeline_steps.trafilatura")
+    def test_short_text_unchanged(self, mock_trafilatura):
+        """Extracted text shorter than max length is not truncated."""
+        short_text = "Short article text."
+        mock_trafilatura.extract.return_value = short_text
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.text = "<html><body>Short</body></html>"
+        mock_response.headers = {"content-type": "text/html"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("app.services.pipeline_steps.httpx.get", return_value=mock_response):
+            result = enrich_article_body("https://example.com/article")
+
+        assert result == short_text
+
+
+class TestNormalizeContentEnrichmentEnabled:
+    """normalize_content calls enrichment when ARTICLE_ENRICHMENT_ENABLED=True."""
+
+    @patch("app.services.pipeline_steps.enrich_article_body")
+    def test_enrichment_called_when_enabled(self, mock_enrich):
+        """When enrichment is enabled, enrich_article_body is called for items with URLs."""
+        mock_enrich.return_value = "Enriched article body text."
+
+        class FakeFeed:
+            id = "feed-test"
+            type = "rss"
+            name = "Test Feed"
+
+        raw_items = [
+            {
+                "title": "Article One",
+                "url": "https://example.com/1",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Original feed text",
+            },
+        ]
+
+        with patch(
+            "app.services.pipeline_steps.settings.ARTICLE_ENRICHMENT_ENABLED", True
+        ):
+            items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
+
+        assert len(items) == 1
+        mock_enrich.assert_called_once()
+        # raw_text should be overridden with enriched content
+        assert items[0].raw_text == "Enriched article body text."
+
+    @patch("app.services.pipeline_steps.enrich_article_body")
+    def test_raw_text_preserved_when_enrichment_returns_none(self, mock_enrich):
+        """When enrichment returns None, original raw_text is preserved."""
+        mock_enrich.return_value = None
+
+        class FakeFeed:
+            id = "feed-test"
+            type = "rss"
+            name = "Test Feed"
+
+        raw_items = [
+            {
+                "title": "Article One",
+                "url": "https://example.com/1",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Original feed text",
+            },
+        ]
+
+        with patch(
+            "app.services.pipeline_steps.settings.ARTICLE_ENRICHMENT_ENABLED", True
+        ):
+            items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
+
+        assert len(items) == 1
+        mock_enrich.assert_called_once()
+        # raw_text should remain as the original
+        assert items[0].raw_text == "Original feed text"
+
+    @patch("app.services.pipeline_steps.enrich_article_body")
+    def test_enrichment_skipped_for_items_without_url(self, mock_enrich):
+        """Items without a URL do not trigger enrichment."""
+        mock_enrich.return_value = "Enriched text"
+
+        class FakeFeed:
+            id = "feed-test"
+            type = "rss"
+            name = "Test Feed"
+
+        raw_items = [
+            {
+                "title": "Article No URL",
+                "url": "",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Original text",
+            },
+        ]
+
+        with patch(
+            "app.services.pipeline_steps.settings.ARTICLE_ENRICHMENT_ENABLED", True
+        ):
+            items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
+
+        mock_enrich.assert_not_called()
+        assert items[0].raw_text == "Original text"
+
+
+class TestNormalizeContentEnrichmentDisabled:
+    """normalize_content does not call enrichment when ARTICLE_ENRICHMENT_ENABLED=False."""
+
+    @patch("app.services.pipeline_steps.enrich_article_body")
+    def test_enrichment_not_called_when_disabled(self, mock_enrich):
+        """When enrichment is disabled (default), enrich_article_body is never called."""
+        mock_enrich.return_value = "Should not be used"
+
+        class FakeFeed:
+            id = "feed-test"
+            type = "rss"
+            name = "Test Feed"
+
+        raw_items = [
+            {
+                "title": "Article One",
+                "url": "https://example.com/1",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Original feed text",
+            },
+        ]
+
+        # Default is ARTICLE_ENRICHMENT_ENABLED=False, but explicitly patch for clarity
+        with patch(
+            "app.services.pipeline_steps.settings.ARTICLE_ENRICHMENT_ENABLED", False
+        ):
+            items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
+
+        assert len(items) == 1
+        mock_enrich.assert_not_called()
+        # raw_text should remain as the original feed text
+        assert items[0].raw_text == "Original feed text"
