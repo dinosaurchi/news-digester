@@ -604,6 +604,12 @@ function RunDetailSheet({
               <ImpactPill label="Feeds" value={detail.affectedCounts.feeds} />
               <ImpactPill label="Articles" value={detail.affectedCounts.articles} />
               <ImpactPill label="Reports" value={detail.affectedCounts.reports} />
+              {detail.affectedCounts.entriesImported !== undefined && (
+                <ImpactPill label="Imported" value={detail.affectedCounts.entriesImported} />
+              )}
+              {detail.affectedCounts.entriesSkipped !== undefined && (
+                <ImpactPill label="Skipped" value={detail.affectedCounts.entriesSkipped} />
+              )}
             </div>
           </section>
 
