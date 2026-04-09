@@ -56,6 +56,221 @@ These are implementation instructions, not suggestions.
 
 ---
 
+## Opencode integration instructions
+
+Implement the LLM integration as a **backend -> opencode-agent-adapter -> opencode-server** chain, not as direct ad hoc model calls scattered through the codebase.
+
+This guidance is based on the referenced `ai-pm` Compose pattern retrieved via `gh`, where:
+
+- `opencode-server` serves the opencode runtime on port `4096`
+- `opencode-agent-adapter` fronts that server on port `8080`
+- the application backend talks to the adapter, not directly to the opencode server
+
+### Required architecture
+
+Add two dedicated Compose services for Pass 7 LLM usage:
+
+- `opencode-server`
+- `opencode-agent-adapter`
+
+Required relationship:
+
+- backend calls `opencode-agent-adapter`
+- `opencode-agent-adapter` calls `opencode-server`
+- `opencode-server` owns the runtime model serving configuration
+
+Do not:
+
+- call `opencode-server` directly from multiple backend modules
+- scatter provider credentials across the backend pipeline
+- let pipeline stages issue raw provider calls
+
+### Required Compose pattern
+
+Mirror the referenced shape closely:
+
+- `opencode-server`
+  - internal base URL example: `http://opencode-server:4096`
+  - should run the opencode serve command
+  - should own default model configuration
+  - should receive opencode auth/config inputs
+
+- `opencode-agent-adapter`
+  - internal base URL example: `http://opencode-agent-adapter:8080`
+  - should depend on `opencode-server`
+  - should be the only LLM endpoint called by the backend
+  - should translate backend requests into opencode server calls
+  - should own adapter state/log paths
+
+- backend
+  - should depend on the adapter service, not the server directly for LLM calls
+  - should use a single adapter base URL env var
+
+### Required environment variables
+
+Use env vars consistent with the reference pattern.
+
+At minimum, support these:
+
+- backend-facing:
+  - `OPENCODE_BASE_URL`
+  - `OPENCODE_TIMEOUT_SECONDS`
+  - `OPENCODE_ENABLED`
+
+- server-facing:
+  - `OPENCODE_SERVER_USERNAME`
+  - `OPENCODE_SERVER_PASSWORD`
+  - `OPENCODE_CONFIG_DIR`
+  - `OPENCODE_DEFAULT_MODEL`
+
+- adapter-facing:
+  - `OPENCODE_BASE_URL` pointing to `http://opencode-server:4096`
+  - `OPENCODE_SERVER_USERNAME`
+  - `OPENCODE_SERVER_PASSWORD`
+  - `OPENCODE_CONFIG_DIR`
+  - `MODEL_CATALOG_OVERRIDE`
+  - optional cache TTL values if the adapter supports them
+
+For the backend service in this repo, point:
+
+- `OPENCODE_BASE_URL` to the adapter, not the server
+  - example: `http://opencode-agent-adapter:8080`
+
+Lock the default model for Pass 7 to:
+
+- `opencode/gpt-5-nano`
+
+Map that through the adapter/server config in the same spirit as the reference:
+
+- `OPENCODE_DEFAULT_MODEL`
+- `MODEL_CATALOG_OVERRIDE`
+
+### Volumes and runtime state
+
+Follow the same operational separation as the reference:
+
+- persistent runtime/config state should live in mounted volumes, not ephemeral container-only paths
+- adapter state/logs should have their own mounted data directory
+- opencode config/home should be mounted consistently into both the server and adapter if required by the runtime
+
+In this repo, the exact host paths may differ from `ai-pm`, but the pattern should remain:
+
+- runtime state volume for adapter data/logs
+- runtime/config volume for opencode config
+- optional custom config mount for opencode runtime behavior
+
+### Credential handling
+
+- provider credentials should be configured on the opencode server / adapter side, not spread across backend pipeline modules
+- backend should only know how to call the adapter endpoint
+- do not log secrets
+- do not bake secrets into the repo or image
+
+### Backend code structure
+
+Implement a dedicated backend provider client layer, for example:
+
+- `backend/app/services/llm_client.py`
+- or `backend/app/services/opencode_client.py`
+
+That layer should be the only place that:
+
+- knows the adapter URL
+- builds the adapter request
+- parses adapter response payloads
+- maps transport/provider errors into explicit application errors
+
+The pipeline stages should consume typed helper methods such as:
+
+- `refine_shortlist(...)`
+- `generate_report_markdown(...)`
+
+Do not let pipeline stages construct raw provider HTTP calls directly.
+
+The backend client should assume it is talking to the adapter service, not directly to opencode-server.
+
+### Adapter request / response expectations
+
+The backend-facing adapter contract should be structured and explicit.
+
+Recommended request shape:
+
+- `task`: `"shortlist_refinement"` or `"report_generation"`
+- `model`
+- `input`
+- `metadata`
+
+Recommended response shape:
+
+- `ok`
+- `output`
+- `usage`
+- `model`
+- `error`
+
+If the adapter returns an error:
+
+- backend must fail the relevant stage explicitly
+- backend must persist clear run-event/error details
+- backend must not silently convert that into fake successful output
+
+### Docker / deployment expectations
+
+Pass 7 implementation should include:
+
+- compose wiring for both:
+  - `opencode-server`
+  - `opencode-agent-adapter`
+- backend environment variables pointing to the adapter
+- adapter environment variables pointing to the server
+- health or readiness checks where practical
+- explicit redeploy verification that:
+  - server starts
+  - adapter starts
+  - backend can reach adapter
+  - adapter can reach server
+
+At QA time, verify:
+
+- `opencode-server` container starts
+- `opencode-agent-adapter` container starts
+- backend can reach the adapter over the compose network
+- adapter can reach `opencode-server`
+- a successful LLM call works for the intended stage
+- a failed adapter/provider call surfaces as explicit run failure
+
+### Failure policy
+
+For this integration, fail fast and explicitly:
+
+- adapter unavailable
+- opencode server unavailable
+- authentication failure
+- provider/network timeout
+- invalid provider response
+- model invocation error
+
+These must:
+
+- fail the required stage
+- fail the run if the stage is required for that path
+- persist explicit error details
+- remain visible in run inspection and logs
+
+### Test expectations for the integration
+
+Add tests for:
+
+- successful backend -> adapter invocation
+- successful adapter -> opencode-server path where testable
+- adapter timeout/error mapping
+- opencode-server unavailability/error mapping
+- invalid response handling
+- run failure persistence on adapter/provider failure
+- configuration-driven model selection
+
+---
+
 ## Pass 7 objective
 
 Turn the working Pass 6 pipeline foundation into the first **meaningfully useful intelligence pipeline**.
