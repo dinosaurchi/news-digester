@@ -60,6 +60,11 @@ def startup():
 
             seed_all(db)
             logger.info("Seed complete")
+        from app.services.session import bootstrap_admin_user
+
+        admin_user = bootstrap_admin_user(db)
+        db.commit()
+        logger.info("Admin user ready: %s", admin_user.username)
         db.close()
     except Exception as e:
         logger.error(f"Seed check failed: {e}")

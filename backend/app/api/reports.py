@@ -18,7 +18,13 @@ from app.schemas.report import (
 from app.services import report as report_service
 from app.services import feedback as feedback_service
 from app.services import workspace as ws_service
-from app.services.opencode_client import OpenCodeClient
+from app.services import report_chat as report_chat_service
+from app.services.opencode_client import (
+    OpenCodeClient,
+    OpenCodeResponseError,
+    OpenCodeTimeoutError,
+    OpenCodeUnavailableError,
+)
 from app.services.report_generator import render_report_markdown
 
 router = APIRouter(prefix="/api", tags=["reports"])
@@ -88,7 +94,7 @@ def get_thread_messages(thread_id: str, db: Session = Depends(get_db)):
 
 @router.post("/report-threads/{thread_id}/messages", status_code=201)
 def send_message(thread_id: str, body: MessageSendIn, db: Session = Depends(get_db)):
-    """Send a feedback message and get an agent response."""
+    """Send a report-chat message and get a configured assistant response."""
     report = report_service.get_report(db, thread_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Thread not found")
@@ -100,18 +106,64 @@ def send_message(thread_id: str, body: MessageSendIn, db: Session = Depends(get_
         role="user",
         content=body.content,
     )
+    db.commit()
+    db.refresh(user_msg)
 
-    # Create mocked agent response
+    if not settings.OPENCODE_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Report chat assistant is not configured",
+        )
+
+    messages = report_service.get_thread_messages(db, thread_id)
+    source_ids = report_chat_service.get_report_chat_source_ids(report, messages)
+    source_items = report_chat_service.load_report_chat_source_items(
+        db,
+        workspace_id=report.workspace_id,
+        source_ids=source_ids,
+    )
+    recent_messages = report_chat_service.recent_report_chat_messages(messages)
+
+    opencode_client = OpenCodeClient(
+        base_url=settings.OPENCODE_BASE_URL,
+        timeout=settings.OPENCODE_TIMEOUT_SECONDS,
+        default_model=settings.OPENCODE_DEFAULT_MODEL,
+        default_agent=settings.OPENCODE_DEFAULT_AGENT,
+        workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
+        enabled=True,
+    )
+    try:
+        chat_result = report_chat_service.generate_report_chat_reply(
+            client=opencode_client,
+            question=body.content,
+            report=report,
+            source_items=source_items,
+            recent_messages=recent_messages,
+        )
+    except OpenCodeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OpenCodeTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except OpenCodeResponseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    metadata = {
+        "model": chat_result.model,
+        "sources": [item.id for item in source_items],
+        "usage": chat_result.usage,
+    }
+    if chat_result.session_id:
+        metadata["opencodeSessionId"] = chat_result.session_id
+
     agent_msg = report_service.create_message(
         db,
         thread_id=thread_id,
         role="agent",
-        content="Thank you for your feedback. We'll take this into account for future reports.",
-        metadata_json={"model": "mock-agent", "tokens": 42},
+        content=chat_result.content,
+        metadata_json=metadata,
     )
 
     db.commit()
-    db.refresh(user_msg)
     db.refresh(agent_msg)
 
     return {

@@ -32,7 +32,7 @@ This starts all services (frontend, backend, PostgreSQL, Redis, Celery worker, C
 - **Frontend**: [http://localhost:3000](http://localhost:3000)
 - **API docs**: [http://localhost:8000/api/docs](http://localhost:8000/api/docs)
 
-Sign in with stub backend credentials such as `tester` / `whatever`. The backend owns the session contract, but authentication is still intentionally stubbed at this stage.
+Sign in with the configured administrator account. For a fresh local `.env`, the default dev credentials are `admin` / `admin`; change `ADMIN_USERNAME` and `ADMIN_PASSWORD` before using a shared deployment.
 
 ### Local Development
 
@@ -120,7 +120,7 @@ Interactive API documentation is available at `/api/docs` (Swagger UI) and `/api
 
 | Path | Page | Description |
 |------|------|-------------|
-| `/login` | Login | Authentication (stub session — any credentials work) |
+| `/login` | Login | Authentication backed by the configured administrator user |
 | `/workspaces` | Workspaces | Workspace grid with search, filters, and creation |
 | `/workspaces/:id` | Overview | Dashboard with stat cards, recent runs, and quick actions |
 | `/workspaces/:id/profile` | Profile | Business profile editor with form validation |

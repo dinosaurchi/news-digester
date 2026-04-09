@@ -12,6 +12,7 @@ from app.services.opencode_client import (
     OpenCodeTimeoutError,
     OpenCodeUnavailableError,
     ReportResult,
+    ReportChatResult,
     ShortlistResult,
 )
 
@@ -135,6 +136,36 @@ class TestGenerateReportMarkdown:
         assert result.markdown == "# Report\n\nPlain markdown."
 
 
+class TestReportChat:
+    """OpenCodeClient.answer_report_question via adapter runs."""
+
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_returns_report_chat_result(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        _mock_completed_run(mock_post, mock_get, "Answer grounded in Source A.")
+
+        result = _make_client().answer_report_question(
+            question="What matters?",
+            report_context={"title": "Report", "markdown": "# Report"},
+            source_items=[{"id": "ci-1", "title": "Source A"}],
+            recent_messages=[{"role": "user", "content": "Previous question"}],
+        )
+
+        assert isinstance(result, ReportChatResult)
+        assert result.content == "Answer grounded in Source A."
+        assert result.usage == {"session_id": "sess-1", "total_tokens": 123}
+        assert result.model == DEFAULT_MODEL
+        assert result.session_id == "sess-1"
+
+        payload = mock_post.call_args[1]["json"]
+        assert payload["title"] == "sme-news-report-chat"
+        assert "Use ONLY the report and source_items" in payload["prompt"]
+        assert "What matters?" in payload["prompt"]
+        assert "Source A" in payload["prompt"]
+
+
 class TestOpenCodeDisabled:
     def test_refine_shortlist_raises(self) -> None:
         with pytest.raises(OpenCodeDisabledError, match="disabled"):
@@ -143,6 +174,15 @@ class TestOpenCodeDisabled:
     def test_generate_report_markdown_raises(self) -> None:
         with pytest.raises(OpenCodeDisabledError, match="disabled"):
             _make_client(enabled=False).generate_report_markdown([], {}, {})
+
+    def test_answer_report_question_raises(self) -> None:
+        with pytest.raises(OpenCodeDisabledError, match="disabled"):
+            _make_client(enabled=False).answer_report_question(
+                question="Q?",
+                report_context={},
+                source_items=[],
+                recent_messages=[],
+            )
 
 
 class TestAdapterFailures:

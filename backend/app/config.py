@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     OPENCODE_DEFAULT_AGENT: str = "general"
     OPENCODE_WORKSPACE_DIR: str = "/workspace"
 
+    # Dev/admin bootstrap. Production deployments should override these values
+    # and rotate the password after first launch.
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_PASSWORD: str = "admin"
+    ADMIN_DISPLAY_NAME: str = "Admin"
+    ADMIN_ROLE: str = "admin"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

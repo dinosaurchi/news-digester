@@ -9,7 +9,7 @@ from app.config import settings
 from app.db.base import Base
 
 # Import all models so Base.metadata knows about them
-from app.models import Workspace, WorkspaceProfile, WorkspaceSettings  # noqa: F401
+from app.models import Workspace, WorkspaceProfile, WorkspaceSettings, User  # noqa: F401
 
 config = context.config
 

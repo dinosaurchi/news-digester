@@ -91,7 +91,7 @@ export default function LoginPage() {
 
           <div className="mt-8 pt-6 border-t border-slate-700 text-center">
             <p className="text-sm text-slate-500">
-              Enter any non-empty username and password to sign in.
+              Use the administrator credentials configured for this deployment.
             </p>
           </div>
         </div>

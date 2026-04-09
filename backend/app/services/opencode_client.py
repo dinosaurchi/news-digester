@@ -64,6 +64,16 @@ class ReportResult:
     model: str = ""
 
 
+@dataclass
+class ReportChatResult:
+    """Result of a report-thread QA call."""
+
+    content: str
+    usage: dict[str, Any] = field(default_factory=dict)
+    model: str = ""
+    session_id: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -185,6 +195,34 @@ class OpenCodeClient:
             markdown=markdown,
             usage=raw.get("usage", {}),
             model=raw.get("model", self._default_model),
+        )
+
+    def answer_report_question(
+        self,
+        *,
+        question: str,
+        report_context: dict[str, Any],
+        source_items: list[dict[str, Any]],
+        recent_messages: list[dict[str, Any]],
+    ) -> ReportChatResult:
+        """Answer a user question using one report and that report's sources."""
+        input_data: dict[str, Any] = {
+            "question": question,
+            "report": report_context,
+            "source_items": source_items,
+            "recent_messages": recent_messages,
+        }
+        prompt = self._build_report_chat_prompt(input_data=input_data)
+        raw = self._call_adapter_run(
+            title="sme-news-report-chat",
+            prompt=prompt,
+        )
+
+        return ReportChatResult(
+            content=raw["output_text"].strip(),
+            usage=raw.get("usage", {}),
+            model=raw.get("model", self._default_model),
+            session_id=raw.get("session_id", ""),
         )
 
     # ------------------------------------------------------------------
@@ -379,6 +417,17 @@ class OpenCodeClient:
             "Use markdown. Cite source URLs already present in the input. Do not invent facts.\n\n"
             f"INPUT_JSON:\n{json.dumps(input_data, ensure_ascii=False, indent=2)}\n\n"
             f"METADATA_JSON:\n{json.dumps(metadata, ensure_ascii=False, indent=2)}"
+        )
+
+    @staticmethod
+    def _build_report_chat_prompt(*, input_data: dict[str, Any]) -> str:
+        return (
+            "You answer questions about one SME news intelligence report.\n"
+            "Use ONLY the report and source_items in INPUT_JSON. Do not use unrelated "
+            "workspace history. If the answer is not supported, say what is missing.\n"
+            "Return plain markdown text. Be concise, specific, and cite source titles "
+            "or URLs that are already present in source_items.\n\n"
+            f"INPUT_JSON:\n{json.dumps(input_data, ensure_ascii=False, indent=2)}"
         )
 
     # ------------------------------------------------------------------
