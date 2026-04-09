@@ -290,6 +290,37 @@ class TestRunNow:
         assert len(snippets) == 4
         assert any("fetch_feeds" in s for s in snippets)
 
+    def test_run_now_links_created_content_items(self, client, monkeypatch):
+        """Run detail exposes content item links created during the run."""
+        ws_id = _create_workspace(client)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "Fetched article",
+                    "url": "https://example.com/article",
+                    "source_name": "Example Feed",
+                    "published_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
+                    "author": "Author",
+                    "summary": "Summary",
+                    "content": "Body",
+                }
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+        run_id = resp.json()["id"]
+
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        assert detail_resp.status_code == 200
+        content_ids = detail_resp.json()["links"]["contentItems"]
+        assert content_ids is not None
+        assert isinstance(content_ids, list)
+        assert len(content_ids) == 1
+
 
 class TestGetRunDetail:
     """GET /api/runs/{run_id}"""

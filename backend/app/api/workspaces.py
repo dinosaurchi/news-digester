@@ -37,6 +37,7 @@ def _ws_to_out(ws, db: Session = None) -> dict:
         )
         if last_report and last_report.published_at:
             last_report_at = last_report.published_at.isoformat()
+    next_run_at = ws_service.compute_next_run_at(ws.settings)
     return {
         "id": ws.id,
         "name": ws.name,
@@ -46,7 +47,7 @@ def _ws_to_out(ws, db: Session = None) -> dict:
         "updatedAt": ws.updated_at.isoformat() if ws.updated_at else None,
         "feedCount": feed_count,
         "lastReportAt": last_report_at,
-        "nextRunAt": None,  # stub — no scheduler yet
+        "nextRunAt": next_run_at.isoformat() if next_run_at else None,
     }
 
 

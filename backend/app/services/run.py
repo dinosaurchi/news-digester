@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.models.run import ProcessingRun, ProcessingRunEvent
+from app.models.report import Report, ReportMessage
 
 
 def list_runs(
@@ -53,3 +54,24 @@ def build_log_snippets(events: list[ProcessingRunEvent]) -> list[str]:
         if event.message:
             snippets.append(f"[{event.step_name}] {event.message}")
     return snippets
+
+
+def get_linked_content_item_ids(db: Session, run_id: str) -> list[str] | None:
+    """Return content item IDs referenced by reports generated in the run."""
+    reports = db.query(Report).filter(Report.run_id == run_id).all()
+    ids: list[str] = []
+    seen: set[str] = set()
+    for report in reports:
+        messages = (
+            db.query(ReportMessage)
+            .filter(ReportMessage.thread_id == report.id)
+            .order_by(ReportMessage.created_at)
+            .all()
+        )
+        for message in messages:
+            metadata = message.metadata_json or {}
+            for source_id in metadata.get("sources", []):
+                if source_id not in seen:
+                    ids.append(source_id)
+                    seen.add(source_id)
+    return ids or None

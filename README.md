@@ -1,6 +1,6 @@
 # SME News Admin
 
-A full-stack admin dashboard for managing AI-powered news intelligence workspaces. The application features a React frontend and a FastAPI backend, with PostgreSQL for persistence and Alembic for database migrations.
+A full-stack admin dashboard for managing AI-powered news intelligence workspaces. The application features a React frontend, a FastAPI backend, PostgreSQL for persistence, Redis for task transport, and Celery worker/Beat services for the Pass 6 processing skeleton.
 
 ## Features
 
@@ -27,12 +27,12 @@ A full-stack admin dashboard for managing AI-powered news intelligence workspace
 make up
 ```
 
-This starts all services (frontend, backend, PostgreSQL). On first start, the backend automatically runs database migrations and seeds initial data.
+This starts all services (frontend, backend, PostgreSQL, Redis, Celery worker, Celery Beat). On first start, the backend automatically runs database migrations and seeds initial data.
 
 - **Frontend**: [http://localhost:3000](http://localhost:3000)
 - **API docs**: [http://localhost:8000/api/docs](http://localhost:8000/api/docs)
 
-Sign in with any non-empty credentials — the backend uses a stub session (no real authentication).
+Sign in with stub backend credentials such as `tester` / `whatever`. The backend owns the session contract, but authentication is still intentionally stubbed at this stage.
 
 ### Local Development
 
@@ -41,10 +41,14 @@ Sign in with any non-empty credentials — the backend uses a stub session (no r
 npm install
 npm run dev
 
-# Backend
+# Backend API
 cd backend
 pip install -r requirements.txt
 make backend
+
+# Optional background services for Pass 6
+make worker
+make beat
 ```
 
 ### Production Build
@@ -58,6 +62,7 @@ make build
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DATABASE_URL` | PostgreSQL connection string | `postgresql://sme:sme@localhost:5432/sme_news` |
+| `REDIS_URL` | Redis connection string for Celery broker/backend | `redis://localhost:6379/0` |
 | `CORS_ORIGINS` | Allowed CORS origins (comma-separated) | `http://localhost:3000` |
 | `DEBUG` | Enable debug logging | `false` |
 | `TESTING` | Skip auto-migration on startup (set to `1` for tests) | — |
@@ -73,7 +78,7 @@ The backend exposes a REST API at `/api/`. Key endpoint groups:
 | **Feeds** | `/api/workspaces/{id}/feeds` | Feed source CRUD, toggle, test |
 | **Content** | `/api/workspaces/{id}/content` | Content items list and detail |
 | **Reports** | `/api/workspaces/{id}/reports` | Report threads, messages, feedback |
-| **Runs** | `/api/workspaces/{id}/runs` | Processing runs, trigger run-now |
+| **Runs** | `/api/workspaces/{id}/runs` | Processing runs, trigger run-now, inspect run links |
 | **Feedback** | `/api/workspaces/{id}/feedback` | Feedback events and preferences |
 | **Preferences** | `/api/workspaces/{id}/preferences` | Topic, source, entity preferences |
 | **Settings** | `/api/workspaces/{id}/settings` | Schedule, scoring, retention config |
@@ -90,7 +95,8 @@ Interactive API documentation is available at `/api/docs` (Swagger UI) and `/api
 │   │   ├── models/                   # SQLAlchemy ORM models
 │   │   ├── schemas/                  # Pydantic request/response schemas
 │   │   ├── services/                 # Business logic layer
-│   │   ├── tasks/                    # Pipeline tasks (fetch, normalize, report)
+│   │   ├── tasks/                    # Celery tasks and pipeline helpers
+│   │   ├── celery_app.py             # Celery worker/Beat configuration
 │   │   ├── seed.py                   # Database seed script
 │   │   ├── config.py                 # Settings from environment
 │   │   └── main.py                   # FastAPI app setup and startup
@@ -147,6 +153,13 @@ cd backend && python -m pytest --tb=short
 ```
 
 Backend tests use an in-memory SQLite database and skip auto-migration via the `TESTING=1` environment variable.
+
+## Pass 6 Processing Notes
+
+- `POST /api/workspaces/{id}/run-now` still executes synchronously for immediate operator feedback.
+- The same pipeline is also exposed through Celery so scheduled execution can move off the request path.
+- Celery Beat runs a lightweight scheduler scan every 5 minutes and enqueues enabled workspaces.
+- `nextRunAt` on workspace responses is now computed from workspace settings when scheduling is enabled.
 
 ### Full CI
 

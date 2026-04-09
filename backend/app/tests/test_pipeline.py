@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from app.tasks.pipeline import (
+from app.services.pipeline_steps import (
     fetch_feed,
     generate_report_stub,
     normalize_content,

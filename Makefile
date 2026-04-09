@@ -1,4 +1,4 @@
-.PHONY: lint typecheck test build ci dev up down logs clean install backend backend-test db-migrate db-seed
+.PHONY: lint typecheck test build ci dev up down logs clean install backend backend-test db-migrate db-seed worker beat
 
 # Default target
 all: lint build test
@@ -53,6 +53,14 @@ clean:
 # Run backend locally (uvicorn with reload)
 backend:
 	cd backend && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Run celery worker locally
+worker:
+	cd backend && celery -A app.celery_app:celery_app worker --loglevel=info
+
+# Run celery beat locally
+beat:
+	cd backend && celery -A app.celery_app:celery_app beat --loglevel=info
 
 # Run backend pytest
 backend-test:

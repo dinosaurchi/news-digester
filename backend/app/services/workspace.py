@@ -1,5 +1,7 @@
 """Workspace business logic."""
 
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -112,3 +114,27 @@ def update_settings(db: Session, workspace_id: str, **kwargs) -> WorkspaceSettin
             setattr(settings, key, value)
     db.flush()
     return settings
+
+
+def compute_next_run_at(settings: WorkspaceSettings | None) -> datetime | None:
+    """Compute the next scheduled run time from workspace settings."""
+    if settings is None:
+        return None
+    schedule = settings.schedule or {}
+    if not schedule.get("enabled"):
+        return None
+
+    time_of_day = schedule.get("timeOfDay", "08:00")
+    try:
+        hour_str, minute_str = time_of_day.split(":", 1)
+        hour = int(hour_str)
+        minute = int(minute_str)
+    except (ValueError, TypeError):
+        hour, minute = 8, 0
+
+    now = datetime.now(timezone.utc)
+    next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if next_run <= now:
+        frequency = schedule.get("frequency", "daily")
+        next_run += timedelta(days=7 if frequency == "weekly" else 1)
+    return next_run

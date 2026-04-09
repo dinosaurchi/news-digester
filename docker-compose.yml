@@ -38,6 +38,42 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sme-news-admin-worker
+    command: ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=info"]
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/sme_news
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: dev-secret-key-change-in-production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sme-news-admin-beat
+    command: ["celery", "-A", "app.celery_app:celery_app", "beat", "--loglevel=info"]
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/sme_news
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: dev-secret-key-change-in-production
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   app:
