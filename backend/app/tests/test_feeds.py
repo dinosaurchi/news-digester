@@ -1,5 +1,7 @@
 """Tests for feed CRUD endpoints."""
 
+from unittest.mock import MagicMock, patch
+
 
 class TestListFeeds:
     """GET /api/workspaces/{workspace_id}/feeds"""
@@ -287,7 +289,28 @@ class TestToggleFeed:
 class TestTestFeed:
     """POST /api/feeds/{feed_id}/test"""
 
-    def test_test_feed(self, client):
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_test_feed(self, mock_get, client):
+        response = MagicMock()
+        response.text = """<?xml version="1.0"?>
+        <rss version="2.0">
+          <channel>
+            <title>Real Test Feed</title>
+            <item>
+              <title>Article One</title>
+              <link>https://example.com/one</link>
+              <description>Summary one</description>
+            </item>
+            <item>
+              <title>Article Two</title>
+              <link>https://example.com/two</link>
+              <description>Summary two</description>
+            </item>
+          </channel>
+        </rss>"""
+        response.raise_for_status.return_value = None
+        mock_get.return_value = response
+
         resp = client.post(
             "/api/workspaces", json={"name": "Feed WS", "customer": "Co"}
         )
@@ -308,9 +331,49 @@ class TestTestFeed:
         data = resp.json()
         assert data["success"] is True
         assert data["feedId"] == feed_id
-        assert data["message"] == "Feed test completed successfully"
-        assert data["articlesFound"] == 5
+        assert data["message"] == "Feed test completed successfully: parsed 2 articles"
+        assert data["articlesFound"] == 2
+        assert data["sourceTitle"] == "Real Test Feed"
+        assert data["lastFetchedAt"] is not None
         assert data["lastError"] is None
+
+        feed_resp = client.get(f"/api/feeds/{feed_id}")
+        feed_data = feed_resp.json()
+        assert feed_data["status"] == "healthy"
+        assert feed_data["lastFetchedAt"] is not None
+        assert feed_data["lastError"] is None
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_test_feed_parse_error_updates_feed(self, mock_get, client):
+        response = MagicMock()
+        response.text = "<not-a-feed>"
+        response.raise_for_status.return_value = None
+        mock_get.return_value = response
+
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Bad Feed WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Bad Feed",
+                "url": "https://example.com/bad",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        resp = client.post(f"/api/feeds/{feed_id}/test")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is False
+        assert data["articlesFound"] == 0
+        assert data["lastError"]
+
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["status"] == "error"
+        assert feed_data["lastError"] == data["lastError"]
 
 
 class TestFeedCountInWorkspace:

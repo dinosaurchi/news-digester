@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { useParams, useBlocker } from 'react-router-dom';
+import { useNavigate, useParams, useBlocker } from 'react-router-dom';
 import { useForm, Controller, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { settingsSchema, type SettingsFormValues } from '@/lib/schemas/settings';
@@ -45,6 +45,7 @@ export default function SettingsPage() {
   const params = useParams();
   const workspaceId = params.workspaceId as string;
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
 
   const { data: settings, isLoading } = useQuery({
@@ -60,6 +61,19 @@ export default function SettingsPage() {
     },
     onError: () => {
       toast.error('Failed to save settings. Please try again.');
+    },
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: () => api.workspaces.archive(workspaceId),
+    onSuccess: (workspace) => {
+      queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      queryClient.invalidateQueries({ queryKey: ['workspace', workspaceId] });
+      toast.success(`${workspace.name} archived.`);
+      navigate('/workspaces');
+    },
+    onError: () => {
+      toast.error('Failed to archive workspace. Please try again.');
     },
   });
 
@@ -457,7 +471,8 @@ export default function SettingsPage() {
           <DangerButton
             label="Archive Workspace"
             confirmText="Are you sure you want to archive this workspace? All automated operations will be paused."
-            onConfirm={() => toast.info('Workspace archive initiated (demo mode).')}
+            disabled={archiveMutation.isPending}
+            onConfirm={() => archiveMutation.mutate()}
           />
         </div>
 
@@ -587,7 +602,17 @@ function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: (val:
   );
 }
 
-function DangerButton({ label, confirmText, onConfirm }: { label: string; confirmText: string; onConfirm: () => void }) {
+function DangerButton({
+  label,
+  confirmText,
+  disabled = false,
+  onConfirm,
+}: {
+  label: string;
+  confirmText: string;
+  disabled?: boolean;
+  onConfirm: () => void;
+}) {
   const [showConfirm, setShowConfirm] = useState(false);
 
   if (showConfirm) {
@@ -605,9 +630,10 @@ function DangerButton({ label, confirmText, onConfirm }: { label: string; confir
             onConfirm();
             setShowConfirm(false);
           }}
-          className="px-3 py-1.5 text-sm font-bold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+          disabled={disabled}
+          className="px-3 py-1.5 text-sm font-bold text-white bg-red-600 hover:bg-red-700 disabled:bg-slate-300 rounded-lg transition-colors"
         >
-          Confirm
+          {disabled ? 'Archiving...' : 'Confirm'}
         </button>
       </div>
     );
@@ -616,8 +642,9 @@ function DangerButton({ label, confirmText, onConfirm }: { label: string; confir
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={() => setShowConfirm(true)}
-      className="flex items-center gap-2 px-4 py-2 bg-white border-2 border-red-300 hover:border-red-500 text-red-600 rounded-lg text-sm font-bold transition-colors"
+      className="flex items-center gap-2 px-4 py-2 bg-white border-2 border-red-300 hover:border-red-500 disabled:border-slate-200 disabled:text-slate-400 text-red-600 rounded-lg text-sm font-bold transition-colors"
     >
       <Archive className="w-4 h-4" />
       {label}
