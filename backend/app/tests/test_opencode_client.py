@@ -1,4 +1,4 @@
-"""Tests for the OpenCodeClient class."""
+"""Tests for the OpenCodeClient adapter-run contract."""
 
 from unittest.mock import MagicMock, patch
 
@@ -15,337 +15,180 @@ from app.services.opencode_client import (
     ShortlistResult,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 BASE_URL = "http://localhost:9001"
 DEFAULT_MODEL = "opencode/gpt-5-nano"
 TIMEOUT = 30
 
 
-def _make_client(
-    *,
-    base_url: str = BASE_URL,
-    timeout: int = TIMEOUT,
-    default_model: str = DEFAULT_MODEL,
-    enabled: bool = True,
-) -> OpenCodeClient:
+def _make_client(*, enabled: bool = True, timeout: int = TIMEOUT) -> OpenCodeClient:
     return OpenCodeClient(
-        base_url=base_url,
+        base_url=BASE_URL,
         timeout=timeout,
-        default_model=default_model,
+        default_model=DEFAULT_MODEL,
+        default_agent="general",
+        workspace_dir="/workspace",
         enabled=enabled,
     )
 
 
-def _mock_response(json_data: dict) -> MagicMock:
-    """Build a fake httpx.Response whose .json() returns *json_data*."""
+def _mock_response(json_data: dict, status_code: int = 200) -> MagicMock:
     resp = MagicMock(spec=httpx.Response)
     resp.json.return_value = json_data
-    resp.status_code = 200
+    resp.status_code = status_code
     return resp
 
 
-# ---------------------------------------------------------------------------
-# 1. Successful refine_shortlist call
-# ---------------------------------------------------------------------------
+def _mock_completed_run(mock_post: MagicMock, mock_get: MagicMock, output_text: str):
+    mock_post.return_value = _mock_response(
+        {"accepted": True, "session_id": "sess-1"}, status_code=202
+    )
+    mock_get.side_effect = [
+        _mock_response(
+            {
+                "session_id": "sess-1",
+                "status": "completed",
+                "output_text": output_text,
+            }
+        ),
+        _mock_response({"session_id": "sess-1", "total_tokens": 123}),
+    ]
 
 
 class TestRefineShortlist:
-    """OpenCodeClient.refine_shortlist happy path and request shape."""
+    """OpenCodeClient.refine_shortlist via POST /v1/runs + GET result."""
 
+    @patch("app.services.opencode_client.httpx.get")
     @patch("app.services.opencode_client.httpx.post")
-    def test_returns_shortlist_result(self, mock_post: MagicMock) -> None:
-        """Successful adapter response is unpacked into ShortlistResult."""
-        mock_post.return_value = _mock_response(
-            {
-                "ok": True,
-                "output": {
-                    "selected_items": [
-                        {"title": "Article A", "url": "https://example.com/a"},
-                    ],
-                    "rationale": "Highly relevant",
-                },
-                "usage": {"prompt_tokens": 100, "completion_tokens": 50},
-                "model": DEFAULT_MODEL,
-            }
+    def test_returns_shortlist_result(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        _mock_completed_run(
+            mock_post,
+            mock_get,
+            '{"selected_items":[{"title":"Article A"}],"rationale":"Highly relevant"}',
         )
 
-        client = _make_client()
-        items = [{"title": "Article A", "url": "https://example.com/a"}]
-        ctx = {"customer": "Acme"}
-
-        result = client.refine_shortlist(items, ctx)
+        result = _make_client().refine_shortlist(
+            [{"title": "Article A"}], {"customer": "Acme"}
+        )
 
         assert isinstance(result, ShortlistResult)
-        assert len(result.selected_items) == 1
-        assert result.selected_items[0]["title"] == "Article A"
+        assert result.selected_items == [{"title": "Article A"}]
         assert result.rationale == "Highly relevant"
-        assert result.usage == {"prompt_tokens": 100, "completion_tokens": 50}
+        assert result.usage == {"session_id": "sess-1", "total_tokens": 123}
         assert result.model == DEFAULT_MODEL
 
+    @patch("app.services.opencode_client.httpx.get")
     @patch("app.services.opencode_client.httpx.post")
-    def test_request_shape(self, mock_post: MagicMock) -> None:
-        """The POST payload contains the expected keys and structure."""
-        mock_post.return_value = _mock_response(
-            {
-                "ok": True,
-                "output": {"selected_items": [], "rationale": "ok"},
-                "usage": {},
-                "model": DEFAULT_MODEL,
-            }
+    def test_request_shape(self, mock_post: MagicMock, mock_get: MagicMock) -> None:
+        _mock_completed_run(
+            mock_post,
+            mock_get,
+            '{"selected_items":[],"rationale":"ok"}',
         )
 
-        client = _make_client()
-        items = [{"title": "X"}]
-        ctx = {"customer": "C"}
+        _make_client().refine_shortlist([{"title": "X"}], {"customer": "C"})
 
-        client.refine_shortlist(items, ctx)
-
-        mock_post.assert_called_once()
-        call_kwargs = mock_post.call_args
-        url = call_kwargs[0][0] if call_kwargs[0] else call_kwargs[1].get("url")
-        payload = call_kwargs[1]["json"]
-
-        assert url == f"{BASE_URL}/v1/chat"
-        assert payload["task"] == "shortlist_refinement"
+        assert mock_post.call_args[0][0] == f"{BASE_URL}/v1/runs"
+        payload = mock_post.call_args[1]["json"]
+        assert payload["title"] == "sme-news-shortlist-refinement"
         assert payload["model"] == DEFAULT_MODEL
-        assert payload["input"]["items"] == items
-        assert payload["input"]["workspace_context"] == ctx
-        assert payload["metadata"]["workspace_context"] == ctx
-
-
-# ---------------------------------------------------------------------------
-# 2. Successful generate_report_markdown call
-# ---------------------------------------------------------------------------
+        assert payload["agent"] == "general"
+        assert payload["workspace_dir"] == "/workspace"
+        assert "Return ONLY valid JSON" in payload["prompt"]
+        assert "shortlist" in payload["prompt"].lower()
 
 
 class TestGenerateReportMarkdown:
-    """OpenCodeClient.generate_report_markdown happy path and request shape."""
+    """OpenCodeClient.generate_report_markdown via adapter runs."""
 
+    @patch("app.services.opencode_client.httpx.get")
     @patch("app.services.opencode_client.httpx.post")
-    def test_returns_report_result(self, mock_post: MagicMock) -> None:
-        """Successful adapter response is unpacked into ReportResult."""
-        mock_post.return_value = _mock_response(
-            {
-                "ok": True,
-                "output": "# Weekly Report\n\nSummary here.",
-                "usage": {"prompt_tokens": 200, "completion_tokens": 300},
-                "model": DEFAULT_MODEL,
-            }
+    def test_returns_report_result(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        _mock_completed_run(
+            mock_post,
+            mock_get,
+            '{"markdown":"# Weekly Report\\n\\nSummary here."}',
         )
 
-        client = _make_client()
-        items = [{"title": "Article A"}]
-        ctx = {"customer": "Acme"}
-        period = {"start": "2024-01-01", "end": "2024-01-07"}
-
-        result = client.generate_report_markdown(items, ctx, period)
+        result = _make_client().generate_report_markdown(
+            [{"title": "Article A"}],
+            {"customer": "Acme"},
+            {"start": "2024-01-01", "end": "2024-01-07"},
+        )
 
         assert isinstance(result, ReportResult)
         assert result.markdown == "# Weekly Report\n\nSummary here."
-        assert result.usage == {"prompt_tokens": 200, "completion_tokens": 300}
-        assert result.model == DEFAULT_MODEL
+        assert result.usage == {"session_id": "sess-1", "total_tokens": 123}
 
+    @patch("app.services.opencode_client.httpx.get")
     @patch("app.services.opencode_client.httpx.post")
-    def test_request_shape(self, mock_post: MagicMock) -> None:
-        """The POST payload contains task, model, input, metadata."""
-        mock_post.return_value = _mock_response(
-            {
-                "ok": True,
-                "output": "# Report",
-                "usage": {},
-                "model": DEFAULT_MODEL,
-            }
-        )
+    def test_accepts_plain_markdown(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        _mock_completed_run(mock_post, mock_get, "# Report\n\nPlain markdown.")
 
-        client = _make_client()
-        items = [{"title": "A"}]
-        ctx = {"customer": "C"}
-        period = {"start": "2024-01-01", "end": "2024-01-07"}
+        result = _make_client().generate_report_markdown([], {}, {})
 
-        client.generate_report_markdown(items, ctx, period)
-
-        mock_post.assert_called_once()
-        payload = mock_post.call_args[1]["json"]
-
-        assert payload["task"] == "report_generation"
-        assert payload["model"] == DEFAULT_MODEL
-        assert payload["input"]["items"] == items
-        assert payload["input"]["workspace_context"] == ctx
-        assert payload["input"]["period"] == period
-        assert payload["metadata"]["workspace_context"] == ctx
-        assert payload["metadata"]["period"] == period
-
-
-# ---------------------------------------------------------------------------
-# 3. OPENCODE_ENABLED=false
-# ---------------------------------------------------------------------------
+        assert result.markdown == "# Report\n\nPlain markdown."
 
 
 class TestOpenCodeDisabled:
-    """When enabled=False, both public methods raise OpenCodeDisabledError."""
-
     def test_refine_shortlist_raises(self) -> None:
-        client = _make_client(enabled=False)
         with pytest.raises(OpenCodeDisabledError, match="disabled"):
-            client.refine_shortlist([], {})
+            _make_client(enabled=False).refine_shortlist([], {})
 
     def test_generate_report_markdown_raises(self) -> None:
-        client = _make_client(enabled=False)
         with pytest.raises(OpenCodeDisabledError, match="disabled"):
-            client.generate_report_markdown([], {}, {})
+            _make_client(enabled=False).generate_report_markdown([], {}, {})
 
 
-# ---------------------------------------------------------------------------
-# 4. Adapter timeout
-# ---------------------------------------------------------------------------
-
-
-class TestTimeout:
-    """httpx.TimeoutException is mapped to OpenCodeTimeoutError."""
-
+class TestAdapterFailures:
     @patch("app.services.opencode_client.httpx.post")
-    def test_refine_shortlist_timeout(self, mock_post: MagicMock) -> None:
-        mock_post.side_effect = httpx.TimeoutException("timed out")
-        client = _make_client()
-
-        with pytest.raises(OpenCodeTimeoutError, match="timed out"):
-            client.refine_shortlist([], {})
-
-    @patch("app.services.opencode_client.httpx.post")
-    def test_generate_report_markdown_timeout(self, mock_post: MagicMock) -> None:
-        mock_post.side_effect = httpx.TimeoutException("timed out")
-        client = _make_client()
-
-        with pytest.raises(OpenCodeTimeoutError, match="timed out"):
-            client.generate_report_markdown([], {}, {})
-
-
-# ---------------------------------------------------------------------------
-# 5. Adapter unavailable (connection refused)
-# ---------------------------------------------------------------------------
-
-
-class TestUnavailable:
-    """httpx.ConnectError is mapped to OpenCodeUnavailableError."""
-
-    @patch("app.services.opencode_client.httpx.post")
-    def test_refine_shortlist_connect_error(self, mock_post: MagicMock) -> None:
+    def test_connect_error(self, mock_post: MagicMock) -> None:
         mock_post.side_effect = httpx.ConnectError("Connection refused")
-        client = _make_client()
 
         with pytest.raises(OpenCodeUnavailableError, match="unreachable"):
-            client.refine_shortlist([], {})
+            _make_client().refine_shortlist([], {})
 
     @patch("app.services.opencode_client.httpx.post")
-    def test_generate_report_markdown_connect_error(self, mock_post: MagicMock) -> None:
-        mock_post.side_effect = httpx.ConnectError("Connection refused")
-        client = _make_client()
+    def test_create_run_timeout(self, mock_post: MagicMock) -> None:
+        mock_post.side_effect = httpx.TimeoutException("timed out")
 
-        with pytest.raises(OpenCodeUnavailableError, match="unreachable"):
-            client.generate_report_markdown([], {}, {})
+        with pytest.raises(OpenCodeTimeoutError, match="timed out"):
+            _make_client().generate_report_markdown([], {}, {})
 
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_failed_result_status(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        mock_post.return_value = _mock_response({"session_id": "sess-1"}, 202)
+        mock_get.return_value = _mock_response(
+            {"session_id": "sess-1", "status": "failed", "output_text": None}
+        )
 
-# ---------------------------------------------------------------------------
-# 6. Invalid response (non-JSON)
-# ---------------------------------------------------------------------------
-
-
-class TestInvalidResponse:
-    """Non-JSON response from the adapter raises OpenCodeResponseError."""
+        with pytest.raises(OpenCodeResponseError, match="status=failed"):
+            _make_client().refine_shortlist([], {})
 
     @patch("app.services.opencode_client.httpx.post")
-    def test_refine_shortlist_non_json(self, mock_post: MagicMock) -> None:
+    def test_error_response_from_create_run(self, mock_post: MagicMock) -> None:
+        mock_post.return_value = _mock_response(
+            {"error": {"code": "INVALID_MODEL", "message": "Unknown model"}},
+            status_code=400,
+        )
+
+        with pytest.raises(OpenCodeResponseError, match="Unknown model"):
+            _make_client().generate_report_markdown([], {}, {})
+
+    @patch("app.services.opencode_client.httpx.post")
+    def test_non_json_response(self, mock_post: MagicMock) -> None:
         resp = MagicMock(spec=httpx.Response)
         resp.json.side_effect = ValueError("not json")
+        resp.status_code = 200
         mock_post.return_value = resp
 
-        client = _make_client()
         with pytest.raises(OpenCodeResponseError, match="non-JSON"):
-            client.refine_shortlist([], {})
-
-    @patch("app.services.opencode_client.httpx.post")
-    def test_generate_report_markdown_non_json(self, mock_post: MagicMock) -> None:
-        resp = MagicMock(spec=httpx.Response)
-        resp.json.side_effect = ValueError("not json")
-        mock_post.return_value = resp
-
-        client = _make_client()
-        with pytest.raises(OpenCodeResponseError, match="non-JSON"):
-            client.generate_report_markdown([], {}, {})
-
-
-# ---------------------------------------------------------------------------
-# 7. Error response from adapter (ok=false)
-# ---------------------------------------------------------------------------
-
-
-class TestErrorResponse:
-    """ok=False in the response body raises OpenCodeResponseError."""
-
-    @patch("app.services.opencode_client.httpx.post")
-    def test_refine_shortlist_ok_false(self, mock_post: MagicMock) -> None:
-        mock_post.return_value = _mock_response(
-            {"ok": False, "error": "Model not found"}
-        )
-
-        client = _make_client()
-        with pytest.raises(OpenCodeResponseError, match="Model not found"):
-            client.refine_shortlist([], {})
-
-    @patch("app.services.opencode_client.httpx.post")
-    def test_generate_report_markdown_ok_false(self, mock_post: MagicMock) -> None:
-        mock_post.return_value = _mock_response(
-            {"ok": False, "error": "Model not found"}
-        )
-
-        client = _make_client()
-        with pytest.raises(OpenCodeResponseError, match="Model not found"):
-            client.generate_report_markdown([], {}, {})
-
-
-# ---------------------------------------------------------------------------
-# 8. Configuration-driven model selection
-# ---------------------------------------------------------------------------
-
-
-class TestModelSelection:
-    """The default_model is forwarded to the adapter request payload."""
-
-    @patch("app.services.opencode_client.httpx.post")
-    def test_custom_model_in_payload(self, mock_post: MagicMock) -> None:
-        custom_model = "opencode/claude-4-sonnet"
-        mock_post.return_value = _mock_response(
-            {
-                "ok": True,
-                "output": {"selected_items": [], "rationale": "ok"},
-                "usage": {},
-                "model": custom_model,
-            }
-        )
-
-        client = _make_client(default_model=custom_model)
-        client.refine_shortlist([], {})
-
-        payload = mock_post.call_args[1]["json"]
-        assert payload["model"] == custom_model
-
-    @patch("app.services.opencode_client.httpx.post")
-    def test_custom_model_in_report_request(self, mock_post: MagicMock) -> None:
-        custom_model = "opencode/claude-4-sonnet"
-        mock_post.return_value = _mock_response(
-            {
-                "ok": True,
-                "output": "# Report",
-                "usage": {},
-                "model": custom_model,
-            }
-        )
-
-        client = _make_client(default_model=custom_model)
-        client.generate_report_markdown([], {}, {})
-
-        payload = mock_post.call_args[1]["json"]
-        assert payload["model"] == custom_model
+            _make_client().refine_shortlist([], {})

@@ -1455,21 +1455,6 @@ class TestRunNowReportGeneration:
         assert len(report_ids) == 1
         original_report_id = report_ids[0]
 
-        # The regenerate endpoint requires an agent message to exist.
-        # Add one so the endpoint doesn't 404 with "No agent message found".
-        db = TestingSessionLocal()
-        try:
-            agent_msg = ReportMessage(
-                thread_id=original_report_id,
-                role="agent",
-                content="Original agent summary",
-            )
-            db.add(agent_msg)
-            db.commit()
-            db.flush()
-        finally:
-            db.close()
-
         # Call regenerate endpoint
         regen_resp = client.post(f"/api/reports/{original_report_id}/regenerate")
         assert regen_resp.status_code == 200
@@ -1487,10 +1472,16 @@ class TestRunNowReportGeneration:
         assert "Regenerate test article" in regen_data["content"]
         assert "https://example.com/regen-test" in regen_data["content"]
 
-        # Verify the original report is still intact and a new report was created
+        # Verify regenerate appended content to the same report thread
         db = TestingSessionLocal()
         try:
             all_reports = db.query(Report).filter(Report.workspace_id == ws_id).all()
-            assert len(all_reports) == 2  # original + regenerated
+            assert len(all_reports) == 1
+            messages = (
+                db.query(ReportMessage)
+                .filter(ReportMessage.thread_id == original_report_id)
+                .all()
+            )
+            assert len(messages) == 2  # original + regenerated system messages
         finally:
             db.close()

@@ -207,6 +207,8 @@ def execute_workspace_run(
                 base_url=settings.OPENCODE_BASE_URL,
                 timeout=settings.OPENCODE_TIMEOUT_SECONDS,
                 default_model=settings.OPENCODE_DEFAULT_MODEL,
+                default_agent=settings.OPENCODE_DEFAULT_AGENT,
+                workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
                 enabled=True,
             )
 

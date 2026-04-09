@@ -75,10 +75,12 @@ export default function ReportThreadPage() {
     return [...base, ...pending];
   }, [serverMessages, pendingMessages]);
 
-  // ID of the last agent message (regenerate is thread-scoped, so only show on last agent msg)
-  const lastAgentMessageId = useMemo(() => {
+  // Regenerate is thread-scoped; show it on the latest generated response.
+  const lastGeneratedMessageId = useMemo(() => {
     for (let i = allMessages.length - 1; i >= 0; i--) {
-      if (allMessages[i].role === 'agent') return allMessages[i].id;
+      if (allMessages[i].role === 'agent' || allMessages[i].role === 'system') {
+        return allMessages[i].id;
+      }
     }
     return null;
   }, [allMessages]);
@@ -286,7 +288,9 @@ export default function ReportThreadPage() {
                 onVote={(vote) => voteMutation.mutate({ msgId: msg.id, vote })}
                 onCopy={() => handleCopy(msg.content, msg.id)}
                 onRegenerate={
-                  msg.role === 'agent' && !msg.id.startsWith('pending-') && msg.id === lastAgentMessageId
+                  (msg.role === 'agent' || msg.role === 'system') &&
+                  !msg.id.startsWith('pending-') &&
+                  msg.id === lastGeneratedMessageId
                     ? () => regenerateMutation.mutate()
                     : undefined
                 }
@@ -600,7 +604,7 @@ function MessageBubble({
               {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
             </button>
 
-            {/* Regenerate (agent only, last agent message) */}
+            {/* Regenerate (latest generated report/agent response only) */}
             {onRegenerate && (
               <button
                 onClick={onRegenerate}

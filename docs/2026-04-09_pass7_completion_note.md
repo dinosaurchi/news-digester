@@ -3,7 +3,8 @@
 **Date:** 2026-04-09
 **Branch:** chi/implement-real-backend
 **Base commit (pre-Pass-7):** `92d8335` — Implement real backend (#1)
-**Head commit:** `1474f98` — fix: add missing migration for reports.metadata_json column (Pass 7.6)
+**Head commit:** See branch HEAD
+**Stabilized:** 2026-04-09 — default `make up` now runs with `OPENCODE_ENABLED=false`; optional OpenCode profile uses a local adapter build and the accessible `ghcr.io/anomalyco/opencode:latest` server image.
 
 ---
 
@@ -47,7 +48,7 @@ When `OPENCODE_ENABLED=false` (the default), the pipeline uses **deterministic s
 | `backend/app/tests/test_scoring.py` | 669 lines — scoring unit tests |
 | `backend/app/tests/test_shortlist.py` | 645 lines — shortlist unit and integration tests |
 | `backend/app/tests/test_report_generator.py` | 536 lines — report generation unit tests |
-| `backend/app/tests/test_opencode_client.py` | 351 lines — OpenCode client layer tests |
+| `backend/app/tests/test_opencode_client.py` | OpenCode client tests for the adapter `/v1/runs` + result polling contract |
 | `backend/app/tests/test_feedback_hooks.py` | 601 lines — feedback-aware quality hooks tests |
 
 ### Modified backend files
@@ -93,8 +94,10 @@ When `OPENCODE_ENABLED=false` (the default), the pipeline uses **deterministic s
 ## Deployment Status
 
 - `make up` completes successfully
-- Core services running: `app` (frontend), `backend`, `db` (PostgreSQL), `redis`
-- `opencode-server` and `opencode-agent-adapter` services are **defined** in Compose but require **custom container images** that are not publicly available — they will not start without custom builds
+- Core services running: `app` (frontend), `backend`, `worker`, `beat`, `db` (PostgreSQL), `redis`
+- `opencode-server` and `opencode-agent-adapter` are optional profile services: `OPENCODE_ENABLED=true docker compose --profile opencode up --build -d`
+- `opencode-server` defaults to `ghcr.io/anomalyco/opencode:latest`
+- `opencode-agent-adapter` is built locally from `services/opencode-agent-adapter`
 - All database migrations apply cleanly
 - Seed data loads correctly
 
@@ -111,11 +114,11 @@ When `OPENCODE_ENABLED=false` (the default), the pipeline uses **deterministic s
 | Content detail with scoreBreakdown | PASS — full breakdown returned on detail endpoint |
 | Report list / detail / thread | PASS |
 | Report messages with source references | PASS — source content item IDs linked |
-| Regenerate | PASS — regenerates report from current shortlist |
+| Regenerate | PASS — appends regenerated system report message in the same thread |
 | Feedback persistence (thumbs, comments) | PASS |
 | Run detail with pipeline steps | PASS — shows dedup, clustering, scoring, shortlist, report generation stages |
 | Pipeline failure explicit state | PASS (tested via unit/integration) |
-| OpenCode LLM path | **Not testable** — requires custom adapter/server images |
+| OpenCode LLM path | Optional — requires `OPENCODE_ENABLED=true`, `--profile opencode`, and valid OpenCode/provider configuration |
 
 ---
 
@@ -136,7 +139,7 @@ The deployed frontend container does serve the production build successfully, an
 
 ## Known Limitations
 
-1. **opencode-server and opencode-agent-adapter images not publicly available** — the LLM-powered pipeline path (shortlist refinement, richer report generation) requires custom-built images. Without them, `OPENCODE_ENABLED` must remain `false`, and the pipeline uses deterministic scoring and template-based reports.
+1. **OpenCode LLM path is opt-in** — default `make up` uses deterministic scoring/template reports. To require LLM output, set `OPENCODE_ENABLED=true` and start the optional profile. If the adapter/model/provider fails while enabled, the run fails explicitly.
 
 2. **`OPENCODE_ENABLED=false` is the default** — when disabled, the pipeline uses deterministic scoring (keyword matching, BM25, theme scoring) and a template-based report generator. This works correctly but produces simpler reports than the LLM-powered path.
 
@@ -154,8 +157,8 @@ The deployed frontend container does serve the production build successfully, an
 
 ### Conditional (for LLM-powered pipeline)
 
-- **Custom opencode-server and opencode-agent-adapter images** — build or obtain container images to enable the LLM integration path
-- **End-to-end LLM pipeline QA** — verify shortlist refinement and LLM report generation once images are available
+- **OpenCode provider configuration** — configure OpenCode/provider credentials for `opencode/gpt-5-nano` or override `OPENCODE_DEFAULT_MODEL`
+- **End-to-end LLM pipeline QA** — run `OPENCODE_ENABLED=true docker compose --profile opencode up --build -d`, trigger run-now, and verify shortlist refinement plus LLM report generation
 
 ### Optional improvements
 

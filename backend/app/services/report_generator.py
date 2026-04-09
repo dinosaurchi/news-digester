@@ -85,12 +85,14 @@ def generate_report(
     # ------------------------------------------------------------------
     # 2. Generate report markdown
     # ------------------------------------------------------------------
-    if opencode_client is not None:
-        markdown = _generate_via_llm(
-            opencode_client, workspace, items_data, period_start, period_end
-        )
-    else:
-        markdown = _generate_deterministic(title, period_start, period_end, items_data)
+    markdown = _render_markdown_from_input(
+        workspace,
+        title,
+        period_start,
+        period_end,
+        items_data,
+        opencode_client=opencode_client,
+    )
 
     # ------------------------------------------------------------------
     # 3. Create Report record
@@ -132,9 +134,47 @@ def generate_report(
     return report
 
 
+def render_report_markdown(
+    workspace: Workspace,
+    shortlist_items: list[ContentItem],
+    *,
+    opencode_client: OpenCodeClient | None = None,
+) -> str:
+    """Render report markdown without persisting a new Report thread."""
+    now = datetime.now(timezone.utc)
+    title, period_start, period_end, items_data = _assemble_input(
+        workspace, shortlist_items, now
+    )
+    return _render_markdown_from_input(
+        workspace,
+        title,
+        period_start,
+        period_end,
+        items_data,
+        opencode_client=opencode_client,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _render_markdown_from_input(
+    workspace: Workspace,
+    title: str,
+    period_start: datetime,
+    period_end: datetime,
+    items_data: list[dict[str, Any]],
+    *,
+    opencode_client: OpenCodeClient | None,
+) -> str:
+    """Render markdown via the explicitly configured generation path."""
+    if opencode_client is not None:
+        return _generate_via_llm(
+            opencode_client, workspace, items_data, period_start, period_end
+        )
+    return _generate_deterministic(title, period_start, period_end, items_data)
 
 
 def _load_feedback_context(db: Session, workspace_id: str) -> dict[str, Any] | None:

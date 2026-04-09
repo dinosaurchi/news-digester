@@ -100,3 +100,16 @@ def get_last_agent_message(db: Session, thread_id: str) -> ReportMessage | None:
         .order_by(ReportMessage.created_at.desc())
         .first()
     )
+
+
+def get_last_generated_message(db: Session, thread_id: str) -> ReportMessage | None:
+    """Return the latest generated report/agent message in a thread."""
+    return (
+        db.query(ReportMessage)
+        .filter(
+            ReportMessage.thread_id == thread_id,
+            ReportMessage.role.in_(("system", "agent")),
+        )
+        .order_by(ReportMessage.created_at.desc())
+        .first()
+    )

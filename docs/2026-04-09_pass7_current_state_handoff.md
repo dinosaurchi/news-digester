@@ -2,7 +2,19 @@
 
 **Date:** 2026-04-09
 **Branch:** `chi/implement-real-ai-backend`
-**Status:** Code complete, deployment has a configuration bug
+**Status:** Stabilized in the follow-up fix. Keep this note for historical context; do not follow the obsolete “critical issue” instructions below without first checking current branch HEAD.
+
+## Stabilization Update — 2026-04-09
+
+The default deployment contract was changed:
+
+- `make up` starts only the core app/backend/worker/beat/db/redis stack.
+- `OPENCODE_ENABLED` defaults to `false` in Compose and backend settings.
+- OpenCode is opt-in: `OPENCODE_ENABLED=true docker compose --profile opencode up --build -d`.
+- The backend OpenCode client targets the adapter `/v1/runs` + `/v1/sessions/{id}/result` contract; `/v1/chat` is not used.
+- The optional adapter is built from `services/opencode-agent-adapter`.
+- Report regeneration appends a regenerated `system` message to the same report thread.
+- If `OPENCODE_ENABLED=true` and the adapter/provider fails, the backend raises the OpenCode error and the processing run is marked failed. There is no silent fallback in the enabled path.
 
 ---
 
@@ -43,9 +55,9 @@ Tests work because `conftest.py` forces `OPENCODE_ENABLED=false`, so no LLM call
 
 ---
 
-## The Critical Issue
+## Historical Critical Issue — Fixed In Follow-Up
 
-`OPENCODE_ENABLED` is set to `"true"` in `docker-compose.yml` for the backend service (line 40). The opencode-agent-adapter is **not running** (it's behind a compose profile and has no available image). This means every `run-now` call fails.
+Previously, `OPENCODE_ENABLED` was set to `"true"` in `docker-compose.yml` while the opencode-agent-adapter was not running. That made every `run-now` call fail. The follow-up fix changed the default to explicit deterministic/local mode: `OPENCODE_ENABLED=false`.
 
 ### What happens
 
@@ -74,7 +86,7 @@ This error surfaces in the run detail response (`GET /api/runs/{id}`) as the `me
 
 ---
 
-## The Fix
+## Historical Fix Options
 
 There are three options:
 
@@ -104,20 +116,20 @@ Make the pipeline gracefully skip LLM steps when the adapter is unreachable. **D
 
 ---
 
-## What Works Right Now
+## Historical Verification Before Stabilization
 
 | Endpoint/Feature | Status |
 |------------------|--------|
 | `GET /api/health` | 200 OK |
 | `GET /api/workspaces` | Returns workspaces |
-| `POST /api/workspaces/{id}/run-now` | Triggers pipeline (fails at step 5) |
+| `POST /api/workspaces/{id}/run-now` | Previously failed at step 5 when OpenCode was enabled without adapter |
 | `GET /api/runs/{id}` | Returns full run with step details and error info |
-| `GET /api/workspaces/{id}/reports` | Returns reports (empty — no successful runs) |
+| `GET /api/workspaces/{id}/reports` | Previously empty after failed runs |
 | `GET /api/workspaces/{id}/content` | Returns content items (with scores from step 4) |
 | Feedback endpoints | Working |
 | All CRUD endpoints | Working |
 
-## What Does NOT Work Right Now
+## Historical Broken State Before Stabilization
 
 | Feature | Reason |
 |---------|--------|
@@ -127,12 +139,11 @@ Make the pipeline gracefully skip LLM steps when the adapter is unreachable. **D
 
 ---
 
-## Recommended Next Steps (Prioritized)
+## Recommended Follow-Up (Current)
 
-1. **Fix `OPENCODE_ENABLED` to `"false"` in `docker-compose.yml`** — one-line change, unblocks the entire pipeline in deterministic mode
-2. **Redeploy and verify** — run `make down && make up`, then trigger `run-now` and confirm all 6 steps complete
-3. **Verify reports are generated** — check `GET /api/workspaces/{id}/reports` has entries with real content
-4. **Later: deploy opencode services** — build or obtain real images for the LLM-powered pipeline path
+1. **Default-path QA** — run `make up`, trigger `run-now`, and confirm all 6 steps complete with a report.
+2. **OpenCode-path QA when credentials are available** — run `OPENCODE_ENABLED=true docker compose --profile opencode up --build -d`, trigger `run-now`, and confirm `/v1/runs` creates completed adapter sessions.
+3. **Do not reintroduce `/v1/chat`** — the supported adapter contract is `/v1/runs` plus `/v1/sessions/{id}/result`.
 
 ---
 

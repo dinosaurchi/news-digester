@@ -302,27 +302,28 @@ class TestRegenerateReport:
         ws_id = _create_workspace(client)
         rid = _create_report(client, ws_id, title="Regen Test")
         original_mid = _create_message(
-            client, rid, role="agent", content="Original report content"
+            client, rid, role="system", content="Original report content"
         )
 
         resp = client.post(f"/api/reports/{rid}/regenerate")
         assert resp.status_code == 200
         data = resp.json()
 
-        # The response is the new report's system message (role="system")
+        # The response is a new system message in the same report thread
+        assert data["threadId"] == rid
+        assert data["role"] == "system"
         assert data["metadata"]["regenerated"] is True
         assert data["metadata"]["originalMessageId"] == original_mid
         assert data["metadata"]["originalReportId"] == rid
 
-        # The original agent message should be marked as regenerated
-        # and track the new report ID
+        # The original generated message should be marked as regenerated
         messages_resp = client.get(f"/api/report-threads/{rid}/messages")
         assert messages_resp.status_code == 200
         messages = messages_resp.json()
         original_msg = next(msg for msg in messages if msg["id"] == original_mid)
         assert original_msg["metadata"]["regenerated"] is True
         assert original_msg["metadata"]["originalMessageId"] == original_mid
-        assert "newReportId" in original_msg["metadata"]
+        assert original_msg["metadata"]["regeneratedMessageId"] == data["id"]
 
     def test_report_404(self, client):
         resp = client.post("/api/reports/nonexistent-id/regenerate")
@@ -331,7 +332,7 @@ class TestRegenerateReport:
     def test_regenerate_with_valid_report_id_succeeds(self, client):
         ws_id = _create_workspace(client)
         rid = _create_report(client, ws_id, title="Regen Valid Test")
-        _create_message(client, rid, role="agent", content="Original report content")
+        _create_message(client, rid, role="system", content="Original report content")
 
         resp = client.post(f"/api/reports/{rid}/regenerate")
         assert resp.status_code == 200
