@@ -17,6 +17,7 @@ from app.services.pipeline_steps import (
     generate_report_stub,
     normalize_content,
 )
+from app.services.scoring import score_content_items
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -167,24 +168,31 @@ def execute_workspace_run(
             raise
 
         score_event = _start_event(db, run.id, "score_content", "Scoring content...")
-        for i, item in enumerate(all_items):
-            if i < 5:
-                item.status = "included"
-                item.final_score = 0.8
-                item.inclusion_reason = "High relevance score"
-            else:
-                item.status = "excluded"
-                item.final_score = 0.3
-                item.exclusion_reason = "Below relevance threshold"
-        db.commit()
-        included_count = min(5, len(all_items))
-        _finish_event(
-            db,
-            score_event,
-            status="success",
-            message=f"Scored {len(all_items)} items, {included_count} included",
-            extra_metadata={"included_count": included_count},
-        )
+        try:
+            score_result = score_content_items(db, all_items, workspace)
+            db.commit()
+            _finish_event(
+                db,
+                score_event,
+                status="completed",
+                message=(
+                    f"Scored {len(all_items)} items, "
+                    f"{score_result['included_count']} included"
+                ),
+                extra_metadata={
+                    "included_count": score_result["included_count"],
+                    "excluded_count": score_result["excluded_count"],
+                    "avg_score": score_result["avg_score"],
+                },
+            )
+        except Exception as score_exc:
+            _finish_event(
+                db,
+                score_event,
+                status="error",
+                message=f"Scoring failed: {score_exc}",
+            )
+            raise
 
         report_event = _start_event(
             db,

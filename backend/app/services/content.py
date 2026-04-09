@@ -1,6 +1,5 @@
 """Content business logic."""
 
-import random
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -56,10 +55,26 @@ def get_cluster_items(db: Session, cluster_id: str) -> list[ContentItem]:
 
 
 def build_score_breakdown(item: ContentItem) -> dict:
-    """Compute scoreBreakdown for a content item (with stub values)."""
+    """Return scoreBreakdown for a content item from persisted score data.
+
+    Reads from ``item.score_breakdown_json`` which is populated by the scoring
+    pipeline.  Falls back to ``local_relevance_score`` / ``llm_score`` for
+    items that have not yet been scored by the new pipeline, and returns zeros
+    for components that have no persisted value.
+    """
+    breakdown = item.score_breakdown_json
+    if breakdown and "scores" in breakdown:
+        scores = breakdown["scores"]
+        return {
+            "relevance": round(float(scores.get("keyword", 0)), 4),
+            "llm": round(float(scores.get("bm25", 0)), 4),
+            "freshness": round(float(scores.get("freshness", 0)), 4),
+            "sourceAuthority": round(float(scores.get("source_authority", 0)), 4),
+        }
+    # Fallback for items not yet scored by the new pipeline
     return {
         "relevance": item.local_relevance_score or 0,
         "llm": item.llm_score or 0,
-        "freshness": round(random.uniform(0.5, 1.0), 2),
-        "sourceAuthority": round(random.uniform(0.3, 0.9), 2),
+        "freshness": 0,
+        "sourceAuthority": 0,
     }
