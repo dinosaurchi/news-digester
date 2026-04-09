@@ -18,6 +18,16 @@ from app.services.dedup import normalize_url
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class FeedFetchResult:
+    """Structured result from fetching a single feed source."""
+
+    success: bool
+    entries: list[dict]
+    error: str | None
+    source_title: str
+
+
 @dataclass(frozen=True)
 class FeedValidationResult:
     """Result of fetching/parsing a configured feed source."""
@@ -36,34 +46,68 @@ def parse_rfc2822(date_str: str) -> datetime | None:
         return None
 
 
-def fetch_feed(feed: FeedSource) -> list[dict]:
-    """Fetch and parse a single feed source."""
+def fetch_feed(feed: FeedSource) -> FeedFetchResult:
+    """Fetch and parse a single feed source.
+
+    Returns a :class:`FeedFetchResult` that distinguishes between an empty
+    feed (``success=True, entries=[]``) and a fetch/parse error
+    (``success=False, entries=[], error="..."``).
+    """
+    # --- HTTP fetch ---
     try:
         response = httpx.get(feed.url, follow_redirects=True, timeout=10)
-        parsed = feedparser.parse(response.text)
-        items: list[dict] = []
-        for entry in parsed.entries[:20]:
-            items.append(
-                {
-                    "title": entry.get("title", "Untitled"),
-                    "url": entry.get("link", ""),
-                    "source_name": parsed.feed.get("title", feed.name),
-                    "published_at": parse_rfc2822(
-                        entry.get("published", entry.get("updated", ""))
-                    ),
-                    "author": entry.get("author", ""),
-                    "summary": entry.get("summary", ""),
-                    "content": (
-                        entry.get("content", [{}])[0].get("value", "")
-                        if entry.get("content")
-                        else ""
-                    ),
-                }
-            )
-        return items
     except Exception as exc:
         logger.warning("Failed to fetch feed %s (%s): %s", feed.name, feed.url, exc)
-        return []
+        return FeedFetchResult(
+            success=False,
+            entries=[],
+            error=f"Fetch failed: {exc}",
+            source_title=feed.name,
+        )
+
+    # --- Parse ---
+    parsed = feedparser.parse(response.text)
+    source_title = parsed.feed.get("title", feed.name)
+
+    if parsed.bozo:
+        bozo_exc = getattr(parsed, "bozo_exception", None)
+        logger.warning(
+            "Feed parse error for %s (%s): %s", feed.name, feed.url, bozo_exc
+        )
+        return FeedFetchResult(
+            success=False,
+            entries=[],
+            error=f"Feed parse failed: {bozo_exc}",
+            source_title=source_title,
+        )
+
+    # --- Extract entries ---
+    items: list[dict] = []
+    for entry in parsed.entries[:20]:
+        items.append(
+            {
+                "title": entry.get("title", "Untitled"),
+                "url": entry.get("link", ""),
+                "source_name": source_title,
+                "published_at": parse_rfc2822(
+                    entry.get("published", entry.get("updated", ""))
+                ),
+                "author": entry.get("author", ""),
+                "summary": entry.get("summary", ""),
+                "content": (
+                    entry.get("content", [{}])[0].get("value", "")
+                    if entry.get("content")
+                    else ""
+                ),
+            }
+        )
+
+    return FeedFetchResult(
+        success=True,
+        entries=items,
+        error=None,
+        source_title=source_title,
+    )
 
 
 def validate_feed_source(feed: FeedSource) -> FeedValidationResult:

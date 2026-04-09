@@ -15,6 +15,7 @@ from app.models.workspace import Workspace
 from app.services.clustering import cluster_content_items
 from app.services.opencode_client import OpenCodeClient
 from app.services.pipeline_steps import (
+    FeedFetchResult,
     fetch_feed,
     normalize_content,
 )
@@ -113,8 +114,11 @@ def execute_workspace_run(
     try:
         fetch_event = _start_event(db, run.id, "fetch_feeds", "Fetching feeds...")
         for feed in feeds:
-            raw_items = fetch_feed(feed)
-            content_items = normalize_content(workspace.id, feed, raw_items)
+            result = fetch_feed(feed)
+            if not result.success:
+                logger.warning("Skipping feed %s: %s", feed.name, result.error)
+                continue
+            content_items = normalize_content(workspace.id, feed, result.entries)
             for item in content_items:
                 db.add(item)
             all_items.extend(content_items)

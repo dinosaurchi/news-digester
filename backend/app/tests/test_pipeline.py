@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 
 from app.services.pipeline_steps import (
+    FeedFetchResult,
     fetch_feed,
     normalize_content,
     parse_rfc2822,

@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+from app.services.pipeline_steps import FeedFetchResult
+
 
 def _create_workspace(client):
     """Helper to create a workspace and return its ID."""
@@ -377,17 +379,24 @@ class TestRunNow:
 
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "Fetched article",
-                    "url": "https://example.com/article",
-                    "source_name": "Example Feed",
-                    "published_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
-                    "author": "Author",
-                    "summary": "Summary",
-                    "content": "Body",
-                }
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "Fetched article",
+                        "url": "https://example.com/article",
+                        "source_name": "Example Feed",
+                        "published_at": datetime(
+                            2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc
+                        ),
+                        "author": "Author",
+                        "summary": "Summary",
+                        "content": "Body",
+                    }
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -413,37 +422,46 @@ class TestRunNow:
         # and one unique item — the pipeline should cluster the duplicates.
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "Duplicate Story",
-                    "url": "https://example.com/story?utm_source=twitter",
-                    "source_name": "Example Feed",
-                    "published_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
-                    "author": "Author",
-                    "summary": "Summary A",
-                    "content": "Body A",
-                },
-                {
-                    "title": "Duplicate Story",
-                    "url": "https://example.com/story?fbclid=abc123",
-                    "source_name": "Example Feed",
-                    "published_at": datetime(2024, 3, 20, 9, 0, 0, tzinfo=timezone.utc),
-                    "author": "Author",
-                    "summary": "Summary B",
-                    "content": "Body B",
-                },
-                {
-                    "title": "Unique Story",
-                    "url": "https://example.com/unique",
-                    "source_name": "Example Feed",
-                    "published_at": datetime(
-                        2024, 3, 20, 10, 0, 0, tzinfo=timezone.utc
-                    ),
-                    "author": "Author",
-                    "summary": "Summary C",
-                    "content": "Body C",
-                },
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "Duplicate Story",
+                        "url": "https://example.com/story?utm_source=twitter",
+                        "source_name": "Example Feed",
+                        "published_at": datetime(
+                            2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc
+                        ),
+                        "author": "Author",
+                        "summary": "Summary A",
+                        "content": "Body A",
+                    },
+                    {
+                        "title": "Duplicate Story",
+                        "url": "https://example.com/story?fbclid=abc123",
+                        "source_name": "Example Feed",
+                        "published_at": datetime(
+                            2024, 3, 20, 9, 0, 0, tzinfo=timezone.utc
+                        ),
+                        "author": "Author",
+                        "summary": "Summary B",
+                        "content": "Body B",
+                    },
+                    {
+                        "title": "Unique Story",
+                        "url": "https://example.com/unique",
+                        "source_name": "Example Feed",
+                        "published_at": datetime(
+                            2024, 3, 20, 10, 0, 0, tzinfo=timezone.utc
+                        ),
+                        "author": "Author",
+                        "summary": "Summary C",
+                        "content": "Body C",
+                    },
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -524,37 +542,46 @@ class TestRunNow:
         # Return 3 items: 2 sharing the same base URL, 1 unique
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "Shared Story",
-                    "url": "https://example.com/shared?utm_source=tw",
-                    "source_name": "Example Feed",
-                    "published_at": datetime(2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc),
-                    "author": "Author",
-                    "summary": "Summary",
-                    "content": "Body",
-                },
-                {
-                    "title": "Shared Story",
-                    "url": "https://example.com/shared?fbclid=x",
-                    "source_name": "Example Feed",
-                    "published_at": datetime(2024, 3, 20, 9, 0, 0, tzinfo=timezone.utc),
-                    "author": "Author",
-                    "summary": "Summary",
-                    "content": "Body",
-                },
-                {
-                    "title": "Solo Story",
-                    "url": "https://example.com/solo",
-                    "source_name": "Example Feed",
-                    "published_at": datetime(
-                        2024, 3, 20, 10, 0, 0, tzinfo=timezone.utc
-                    ),
-                    "author": "Author",
-                    "summary": "Summary",
-                    "content": "Body",
-                },
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "Shared Story",
+                        "url": "https://example.com/shared?utm_source=tw",
+                        "source_name": "Example Feed",
+                        "published_at": datetime(
+                            2024, 3, 20, 8, 0, 0, tzinfo=timezone.utc
+                        ),
+                        "author": "Author",
+                        "summary": "Summary",
+                        "content": "Body",
+                    },
+                    {
+                        "title": "Shared Story",
+                        "url": "https://example.com/shared?fbclid=x",
+                        "source_name": "Example Feed",
+                        "published_at": datetime(
+                            2024, 3, 20, 9, 0, 0, tzinfo=timezone.utc
+                        ),
+                        "author": "Author",
+                        "summary": "Summary",
+                        "content": "Body",
+                    },
+                    {
+                        "title": "Solo Story",
+                        "url": "https://example.com/solo",
+                        "source_name": "Example Feed",
+                        "published_at": datetime(
+                            2024, 3, 20, 10, 0, 0, tzinfo=timezone.utc
+                        ),
+                        "author": "Author",
+                        "summary": "Summary",
+                        "content": "Body",
+                    },
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -677,17 +704,22 @@ class TestRunNowScoring:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "AI and machine learning advances in analytics",
-                    "url": "https://example.com/article",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=1),
-                    "author": "Author",
-                    "summary": "AI breakthrough in machine learning analytics",
-                    "content": "Body about AI and machine learning analytics",
-                }
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "AI and machine learning advances in analytics",
+                        "url": "https://example.com/article",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "AI breakthrough in machine learning analytics",
+                        "content": "Body about AI and machine learning analytics",
+                    }
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -746,35 +778,40 @@ class TestRunNowScoring:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "AI revolutionizes machine learning analytics",
-                    "url": "https://example.com/ai-article",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=1),
-                    "author": "Author",
-                    "summary": "AI breakthrough",
-                    "content": "Body about AI and machine learning",
-                },
-                {
-                    "title": "CompetitorCorp launches new product",
-                    "url": "https://example.com/competitor-article",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=2),
-                    "author": "Author",
-                    "summary": "CompetitorCorp news",
-                    "content": "Body about CompetitorCorp",
-                },
-                {
-                    "title": "Generic weather update with no keywords",
-                    "url": "https://example.com/weather",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=3),
-                    "author": "Author",
-                    "summary": "Weather forecast",
-                    "content": "Sunny with a chance of rain",
-                },
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "AI revolutionizes machine learning analytics",
+                        "url": "https://example.com/ai-article",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "AI breakthrough",
+                        "content": "Body about AI and machine learning",
+                    },
+                    {
+                        "title": "CompetitorCorp launches new product",
+                        "url": "https://example.com/competitor-article",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=2),
+                        "author": "Author",
+                        "summary": "CompetitorCorp news",
+                        "content": "Body about CompetitorCorp",
+                    },
+                    {
+                        "title": "Generic weather update with no keywords",
+                        "url": "https://example.com/weather",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=3),
+                        "author": "Author",
+                        "summary": "Weather forecast",
+                        "content": "Sunny with a chance of rain",
+                    },
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -811,17 +848,22 @@ class TestRunNowScoring:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "AI and machine learning in analytics",
-                    "url": "https://example.com/article",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=1),
-                    "author": "Author",
-                    "summary": "AI analytics summary",
-                    "content": "Body about AI machine learning analytics",
-                }
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "AI and machine learning in analytics",
+                        "url": "https://example.com/article",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "AI analytics summary",
+                        "content": "Body about AI machine learning analytics",
+                    }
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -882,35 +924,40 @@ class TestRunNowScoring:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "Some generic article",
-                    "url": "https://example.com/generic",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=1),
-                    "author": "Author",
-                    "summary": "A generic article with no keywords",
-                    "content": "Generic body text about nothing in particular",
-                },
-                {
-                    "title": "AI and machine learning advances",
-                    "url": "https://example.com/ai",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=2),
-                    "author": "Author",
-                    "summary": "AI summary",
-                    "content": "Body about AI and machine learning",
-                },
-                {
-                    "title": "Another generic article about weather",
-                    "url": "https://example.com/weather",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=3),
-                    "author": "Author",
-                    "summary": "Weather summary",
-                    "content": "Sunny weather today",
-                },
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "Some generic article",
+                        "url": "https://example.com/generic",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "A generic article with no keywords",
+                        "content": "Generic body text about nothing in particular",
+                    },
+                    {
+                        "title": "AI and machine learning advances",
+                        "url": "https://example.com/ai",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=2),
+                        "author": "Author",
+                        "summary": "AI summary",
+                        "content": "Body about AI and machine learning",
+                    },
+                    {
+                        "title": "Another generic article about weather",
+                        "url": "https://example.com/weather",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=3),
+                        "author": "Author",
+                        "summary": "Weather summary",
+                        "content": "Sunny weather today",
+                    },
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -1000,18 +1047,23 @@ class TestRunNowShortlist:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": f"AI article {i}",
-                    "url": f"https://example.com/article-{i}",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=i),
-                    "author": "Author",
-                    "summary": f"AI and machine learning article {i}",
-                    "content": f"Body about AI and machine learning {i}",
-                }
-                for i in range(5)
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": f"AI article {i}",
+                        "url": f"https://example.com/article-{i}",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=i),
+                        "author": "Author",
+                        "summary": f"AI and machine learning article {i}",
+                        "content": f"Body about AI and machine learning {i}",
+                    }
+                    for i in range(5)
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -1049,37 +1101,42 @@ class TestRunNowShortlist:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                # Two duplicate stories (will be clustered)
-                {
-                    "title": "Duplicate AI Story",
-                    "url": "https://example.com/dup?utm_source=twitter",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=1),
-                    "author": "Author",
-                    "summary": "AI breakthrough story",
-                    "content": "Body about AI breakthrough",
-                },
-                {
-                    "title": "Duplicate AI Story",
-                    "url": "https://example.com/dup?fbclid=abc123",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=2),
-                    "author": "Author",
-                    "summary": "AI breakthrough story duplicate",
-                    "content": "Body about AI breakthrough duplicate",
-                },
-                # One unique story
-                {
-                    "title": "Unique ML Story",
-                    "url": "https://example.com/unique-ml",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=3),
-                    "author": "Author",
-                    "summary": "Machine learning advances",
-                    "content": "Body about ML advances",
-                },
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    # Two duplicate stories (will be clustered)
+                    {
+                        "title": "Duplicate AI Story",
+                        "url": "https://example.com/dup?utm_source=twitter",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "AI breakthrough story",
+                        "content": "Body about AI breakthrough",
+                    },
+                    {
+                        "title": "Duplicate AI Story",
+                        "url": "https://example.com/dup?fbclid=abc123",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=2),
+                        "author": "Author",
+                        "summary": "AI breakthrough story duplicate",
+                        "content": "Body about AI breakthrough duplicate",
+                    },
+                    # One unique story
+                    {
+                        "title": "Unique ML Story",
+                        "url": "https://example.com/unique-ml",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=3),
+                        "author": "Author",
+                        "summary": "Machine learning advances",
+                        "content": "Body about ML advances",
+                    },
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -1119,17 +1176,22 @@ class TestRunNowShortlist:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "AI article",
-                    "url": "https://example.com/article",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=1),
-                    "author": "Author",
-                    "summary": "AI summary",
-                    "content": "Body about AI",
-                }
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "AI article",
+                        "url": "https://example.com/article",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "AI summary",
+                        "content": "Body about AI",
+                    }
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         # Enable OpenCode and mock the client to raise an error
@@ -1181,17 +1243,22 @@ class TestRunNowShortlist:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "AI article",
-                    "url": "https://example.com/article",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=1),
-                    "author": "Author",
-                    "summary": "AI summary",
-                    "content": "Body about AI",
-                }
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "AI article",
+                        "url": "https://example.com/article",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "AI summary",
+                        "content": "Body about AI",
+                    }
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         # Enable OpenCode and mock the client: shortlist succeeds, report fails
@@ -1260,26 +1327,31 @@ class TestRunNowReportGeneration:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "AI breakthrough in healthcare",
-                    "url": "https://example.com/ai-health",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=1),
-                    "author": "Author",
-                    "summary": "AI transforms diagnostics",
-                    "content": "Body about AI healthcare",
-                },
-                {
-                    "title": "Machine learning trends 2025",
-                    "url": "https://example.com/ml-trends",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=2),
-                    "author": "Author",
-                    "summary": "ML is evolving fast",
-                    "content": "Body about ML trends",
-                },
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "AI breakthrough in healthcare",
+                        "url": "https://example.com/ai-health",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "AI transforms diagnostics",
+                        "content": "Body about AI healthcare",
+                    },
+                    {
+                        "title": "Machine learning trends 2025",
+                        "url": "https://example.com/ml-trends",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=2),
+                        "author": "Author",
+                        "summary": "ML is evolving fast",
+                        "content": "Body about ML trends",
+                    },
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -1315,17 +1387,22 @@ class TestRunNowReportGeneration:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "AI governance framework",
-                    "url": "https://example.com/ai-gov",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=1),
-                    "author": "Author",
-                    "summary": "New AI regulations",
-                    "content": "Body about AI governance",
-                }
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "AI governance framework",
+                        "url": "https://example.com/ai-gov",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "New AI regulations",
+                        "content": "Body about AI governance",
+                    }
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -1358,26 +1435,31 @@ class TestRunNowReportGeneration:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "AI in finance",
-                    "url": "https://finance.example.com/ai-report",
-                    "source_name": "Finance Feed",
-                    "published_at": now - timedelta(hours=1),
-                    "author": "Author",
-                    "summary": "AI disrupts banking",
-                    "content": "Body about AI in finance",
-                },
-                {
-                    "title": "ML in retail",
-                    "url": "https://retail.example.com/ml-analysis",
-                    "source_name": "Retail Feed",
-                    "published_at": now - timedelta(hours=2),
-                    "author": "Author",
-                    "summary": "ML transforms shopping",
-                    "content": "Body about ML in retail",
-                },
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "AI in finance",
+                        "url": "https://finance.example.com/ai-report",
+                        "source_name": "Finance Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "AI disrupts banking",
+                        "content": "Body about AI in finance",
+                    },
+                    {
+                        "title": "ML in retail",
+                        "url": "https://retail.example.com/ml-analysis",
+                        "source_name": "Retail Feed",
+                        "published_at": now - timedelta(hours=2),
+                        "author": "Author",
+                        "summary": "ML transforms shopping",
+                        "content": "Body about ML in retail",
+                    },
+                ],
+                error=None,
+                source_title="Finance Feed",
+            ),
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
@@ -1432,17 +1514,22 @@ class TestRunNowReportGeneration:
         now = datetime.now(timezone.utc)
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
-            lambda feed: [
-                {
-                    "title": "Regenerate test article",
-                    "url": "https://example.com/regen-test",
-                    "source_name": "Example Feed",
-                    "published_at": now - timedelta(hours=1),
-                    "author": "Author",
-                    "summary": "Article for regenerate test",
-                    "content": "Body about regenerate test",
-                }
-            ],
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "Regenerate test article",
+                        "url": "https://example.com/regen-test",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "Article for regenerate test",
+                        "content": "Body about regenerate test",
+                    }
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
         )
 
         # Create initial report via run-now
