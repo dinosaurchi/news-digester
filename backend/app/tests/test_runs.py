@@ -1,6 +1,6 @@
 """Tests for runs API endpoints."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def _create_workspace(client):
@@ -86,6 +86,82 @@ def _create_feed(client, workspace_id, **overrides):
     finally:
         db.close()
     return feed_id
+
+
+def _create_workspace_profile(client, workspace_id, **overrides):
+    """Helper to create a workspace profile via direct DB insert."""
+    from app.tests.conftest import TestingSessionLocal
+    from app.models.workspace import WorkspaceProfile
+
+    defaults = {
+        "id": overrides.pop("id", None),
+        "workspace_id": workspace_id,
+        "business_name": "Test Business",
+        "description": "Test Description",
+        "products": ["Product A"],
+        "competitors": ["CompetitorCorp"],
+        "priority_themes": overrides.pop("priority_themes", ["AI", "machine learning"]),
+        "excluded_topics": overrides.pop("excluded_topics", []),
+        "notes": None,
+    }
+    defaults.update(overrides)
+
+    db = TestingSessionLocal()
+    try:
+        profile = WorkspaceProfile(**defaults)
+        db.add(profile)
+        db.commit()
+        profile_id = profile.id
+    finally:
+        db.close()
+    return profile_id
+
+
+def _create_workspace_settings(client, workspace_id, **overrides):
+    """Helper to create workspace settings via direct DB insert."""
+    from app.tests.conftest import TestingSessionLocal
+    from app.models.workspace import WorkspaceSettings
+
+    defaults = {
+        "id": overrides.pop("id", None),
+        "workspace_id": workspace_id,
+        "schedule": {
+            "enabled": False,
+            "frequency": "daily",
+            "timeOfDay": "08:00",
+            "timezone": "UTC",
+        },
+        "report_style": "detailed",
+        "thresholds": overrides.pop(
+            "thresholds",
+            {
+                "min_relevance_score": 0.1,
+                "min_final_score": 0.1,
+                "max_articles_per_report": 15,
+            },
+        ),
+        "retention": {
+            "contentDays": 90,
+            "reportDays": 365,
+            "runHistoryDays": 180,
+        },
+        "email_delivery": {
+            "enabled": False,
+            "recipients": [],
+            "subjectPrefix": "[Intel Report]",
+        },
+    }
+    defaults.update(overrides)
+
+    db = TestingSessionLocal()
+    try:
+        settings = WorkspaceSettings(**defaults)
+        db.add(settings)
+        db.commit()
+        settings_id = settings.id
+    finally:
+        db.close()
+    return settings_id
 
 
 class TestListRuns:
@@ -575,3 +651,283 @@ class TestGetRunDetail:
         assert data["affectedCounts"]["articles"] == 20
         assert data["affectedCounts"]["reports"] == 1
         assert data["error"] == "Some error"
+
+
+# ---------------------------------------------------------------------------
+# Scoring integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunNowScoring:
+    """Integration tests verifying that run-now produces correctly scored content items."""
+
+    def test_run_now_produces_scored_content_items(self, client, monkeypatch):
+        """After run-now, content items have score_breakdown_json and final_score set."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.content import ContentItem
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI and machine learning advances in analytics",
+                    "url": "https://example.com/article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI breakthrough in machine learning analytics",
+                    "content": "Body about AI and machine learning analytics",
+                }
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+
+        db = TestingSessionLocal()
+        try:
+            items = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).all()
+            )
+            assert len(items) == 1
+
+            item = items[0]
+            assert item.final_score is not None
+            assert item.score_breakdown_json is not None
+            breakdown = item.score_breakdown_json
+
+            # Verify breakdown has expected structure
+            assert "scores" in breakdown
+            assert "weights" in breakdown
+            assert "combined_score" in breakdown
+            assert "filter_reason" in breakdown
+
+            # Verify individual scores are real (not None, numeric)
+            scores = breakdown["scores"]
+            for key in (
+                "keyword",
+                "competitor_mention",
+                "freshness",
+                "source_authority",
+                "bm25",
+            ):
+                assert key in scores
+                assert isinstance(scores[key], (int, float))
+        finally:
+            db.close()
+
+    def test_included_items_have_scores_above_threshold(self, client, monkeypatch):
+        """Items with status='included' have final_score >= min_relevance_score."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.content import ContentItem
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(
+            client,
+            ws_id,
+            thresholds={
+                "min_relevance_score": 0.1,
+                "min_final_score": 0.1,
+                "max_articles_per_report": 15,
+            },
+        )
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI revolutionizes machine learning analytics",
+                    "url": "https://example.com/ai-article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI breakthrough",
+                    "content": "Body about AI and machine learning",
+                },
+                {
+                    "title": "CompetitorCorp launches new product",
+                    "url": "https://example.com/competitor-article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Author",
+                    "summary": "CompetitorCorp news",
+                    "content": "Body about CompetitorCorp",
+                },
+                {
+                    "title": "Generic weather update with no keywords",
+                    "url": "https://example.com/weather",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=3),
+                    "author": "Author",
+                    "summary": "Weather forecast",
+                    "content": "Sunny with a chance of rain",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+
+        db = TestingSessionLocal()
+        try:
+            items = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).all()
+            )
+            assert len(items) == 3
+
+            included = [i for i in items if i.status == "included"]
+            for item in included:
+                assert item.final_score is not None
+                assert item.final_score >= 0.1, (
+                    f"Included item {item.id} has score {item.final_score} below threshold"
+                )
+        finally:
+            db.close()
+
+    def test_score_breakdown_queryable_via_content_detail_api(
+        self, client, monkeypatch
+    ):
+        """After run-now, the content detail API returns scoreBreakdown with real values."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.content import ContentItem
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "AI and machine learning in analytics",
+                    "url": "https://example.com/article",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "AI analytics summary",
+                    "content": "Body about AI machine learning analytics",
+                }
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+
+        # Get the content item ID from the DB
+        db = TestingSessionLocal()
+        try:
+            item = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).first()
+            )
+            assert item is not None
+            content_id = item.id
+        finally:
+            db.close()
+
+        # Call the content detail API
+        detail_resp = client.get(f"/api/content/{content_id}")
+        assert detail_resp.status_code == 200
+        data = detail_resp.json()
+
+        # Verify scoreBreakdown is present and has real values
+        assert "scoreBreakdown" in data
+        sb = data["scoreBreakdown"]
+        assert "relevance" in sb
+        assert "llm" in sb
+        assert "freshness" in sb
+        assert "sourceAuthority" in sb
+
+        # Values should be non-negative floats
+        for key in ("relevance", "llm", "freshness", "sourceAuthority"):
+            assert isinstance(sb[key], (int, float))
+            assert sb[key] >= 0.0
+
+        # Since the article mentions "AI" and "machine learning" (priority themes),
+        # the relevance (keyword) score should be > 0
+        assert sb["relevance"] > 0.0
+
+    def test_workspace_thresholds_respected(self, client, monkeypatch):
+        """A high min_relevance_score causes more items to be excluded."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.content import ContentItem
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        # Set a very high threshold — almost nothing should pass
+        _create_workspace_settings(
+            client,
+            ws_id,
+            thresholds={
+                "min_relevance_score": 0.95,
+                "min_final_score": 0.95,
+                "max_articles_per_report": 15,
+            },
+        )
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: [
+                {
+                    "title": "Some generic article",
+                    "url": "https://example.com/generic",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Author",
+                    "summary": "A generic article with no keywords",
+                    "content": "Generic body text about nothing in particular",
+                },
+                {
+                    "title": "AI and machine learning advances",
+                    "url": "https://example.com/ai",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Author",
+                    "summary": "AI summary",
+                    "content": "Body about AI and machine learning",
+                },
+                {
+                    "title": "Another generic article about weather",
+                    "url": "https://example.com/weather",
+                    "source_name": "Example Feed",
+                    "published_at": now - timedelta(hours=3),
+                    "author": "Author",
+                    "summary": "Weather summary",
+                    "content": "Sunny weather today",
+                },
+            ],
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 201
+
+        db = TestingSessionLocal()
+        try:
+            items = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).all()
+            )
+            assert len(items) == 3
+
+            excluded = [i for i in items if i.status == "excluded"]
+            # With a 0.95 threshold, all items should be excluded since
+            # maximum possible score is ~0.5 (source_authority=0.5 * 0.15
+            # + freshness up to 1.0 * 0.20 + some keyword/bm25 < 0.25 + 0.20)
+            assert len(excluded) == 3
+
+            # Verify the exclusion reasons reference the threshold
+            reasons = {i.exclusion_reason for i in excluded}
+            assert reasons == {"below_relevance_threshold"}
+        finally:
+            db.close()
