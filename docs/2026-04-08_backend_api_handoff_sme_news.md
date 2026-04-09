@@ -1115,6 +1115,13 @@ The goal is a working backend pipeline skeleton that populates real content and 
 
 # Pass 7 — Relevance pipeline and report generation quality
 
+Pass 7 continuation is now specified in detail in:
+
+- [docs/2026-04-09_pass7_relevance_pipeline_handoff.md](/workspace/projects/sme-news-admin/docs/2026-04-09_pass7_relevance_pipeline_handoff.md)
+
+Use that document for implementation sequencing, acceptance criteria, redeploy, and QA.
+This section remains the high-level roadmap summary.
+
 ## Scope
 Add the first meaningful intelligence layer after the system foundation is stable.
 
