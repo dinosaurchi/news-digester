@@ -14,7 +14,9 @@ from typing import TYPE_CHECKING
 
 import feedparser
 import httpx
+import trafilatura
 
+from app.config import settings
 from app.models.content import ContentItem
 from app.models.feed import FeedSource
 from app.services.dedup import normalize_url
@@ -116,6 +118,64 @@ def _extract_raw_text(entry) -> str:
             return _strip_html_tags(value)
     # Fallback to summary or description
     return _strip_html_tags(entry.get("summary", "") or entry.get("description", ""))
+
+
+# ---------------------------------------------------------------------------
+# Article body enrichment
+# ---------------------------------------------------------------------------
+
+
+def enrich_article_body(url: str, timeout: int = 5) -> str | None:
+    """Fetch an article URL and extract readable body text.
+
+    This is an optional pipeline step.  All exceptions are caught and
+    logged; the function returns ``None`` on any failure so that the
+    ingestion pipeline is never disrupted.
+
+    Args:
+        url: The article URL to fetch and extract text from.
+        timeout: HTTP request timeout in seconds.
+
+    Returns:
+        The extracted article body text (capped to
+        :pydata:`settings.ARTICLE_BODY_MAX_LENGTH`), or ``None`` on
+        any failure.
+    """
+    max_length = settings.ARTICLE_BODY_MAX_LENGTH
+    try:
+        response = httpx.get(
+            url,
+            follow_redirects=True,
+            timeout=timeout,
+            headers={"User-Agent": "SmeNewsAdminBot/1.0"},
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        logger.debug("Article enrichment fetch failed for %s: %s", url, exc)
+        return None
+
+    content_type = response.headers.get("content-type", "")
+    if "text/html" not in content_type:
+        logger.debug(
+            "Article enrichment skipped non-HTML content for %s (%s)",
+            url,
+            content_type,
+        )
+        return None
+
+    try:
+        extracted = trafilatura.extract(response.text)
+    except Exception as exc:
+        logger.debug("Article enrichment extraction failed for %s: %s", url, exc)
+        return None
+
+    if not extracted:
+        return None
+
+    if len(extracted) > max_length:
+        extracted = extracted[:max_length]
+
+    return extracted
 
 
 @dataclass
