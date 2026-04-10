@@ -211,3 +211,108 @@ class TestAdapterFailures:
 
         with pytest.raises(OpenCodeResponseError, match="non-JSON"):
             _make_client().refine_shortlist([], {})
+
+
+class TestErrorPropagationByMethod:
+    """Each public method correctly maps adapter errors to typed exceptions."""
+
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_report_chat_connect_error(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        """answer_report_question raises OpenCodeUnavailableError on connect failure."""
+        mock_post.side_effect = httpx.ConnectError("Connection refused")
+
+        with pytest.raises(OpenCodeUnavailableError, match="unreachable"):
+            _make_client().answer_report_question(
+                question="What?",
+                report_context={"title": "Report"},
+                source_items=[],
+                recent_messages=[],
+            )
+
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_report_chat_timeout(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        """answer_report_question raises OpenCodeTimeoutError on timeout."""
+        mock_post.side_effect = httpx.TimeoutException("timed out")
+
+        with pytest.raises(OpenCodeTimeoutError, match="timed out"):
+            _make_client().answer_report_question(
+                question="What?",
+                report_context={"title": "Report"},
+                source_items=[],
+                recent_messages=[],
+            )
+
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_shortlist_timeout(self, mock_post: MagicMock, mock_get: MagicMock) -> None:
+        """refine_shortlist raises OpenCodeTimeoutError on timeout."""
+        mock_post.side_effect = httpx.TimeoutException("timed out")
+
+        with pytest.raises(OpenCodeTimeoutError, match="timed out"):
+            _make_client().refine_shortlist([], {})
+
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_report_generation_connect_error(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        """generate_report_markdown raises OpenCodeUnavailableError on connect failure."""
+        mock_post.side_effect = httpx.ConnectError("Connection refused")
+
+        with pytest.raises(OpenCodeUnavailableError, match="unreachable"):
+            _make_client().generate_report_markdown([], {}, {})
+
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_report_chat_response_error(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        """answer_report_question raises OpenCodeResponseError on bad response."""
+        mock_post.return_value = _mock_response(
+            {"error": {"code": "RATE_LIMIT", "message": "Too many requests"}},
+            status_code=429,
+        )
+
+        with pytest.raises(OpenCodeResponseError, match="Too many requests"):
+            _make_client().answer_report_question(
+                question="What?",
+                report_context={"title": "Report"},
+                source_items=[],
+                recent_messages=[],
+            )
+
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_poll_result_connect_error(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        """Polling raises OpenCodeUnavailableError if result endpoint is unreachable."""
+        mock_post.return_value = _mock_response(
+            {"accepted": True, "session_id": "sess-poll-fail"}, status_code=202
+        )
+        mock_get.side_effect = httpx.ConnectError("Connection refused")
+
+        with pytest.raises(OpenCodeUnavailableError, match="unreachable"):
+            _make_client().refine_shortlist([], {})
+
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_poll_result_aborted(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        """Polling raises OpenCodeResponseError if run status is aborted."""
+        mock_post.return_value = _mock_response(
+            {"accepted": True, "session_id": "sess-abort"}, status_code=202
+        )
+        mock_get.return_value = _mock_response(
+            {"session_id": "sess-abort", "status": "aborted", "output_text": None}
+        )
+
+        with pytest.raises(OpenCodeResponseError, match="aborted"):
+            _make_client().refine_shortlist([], {})
