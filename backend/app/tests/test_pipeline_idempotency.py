@@ -478,3 +478,190 @@ class TestCrossWorkspaceIsolation:
 
         assert db_session.query(ContentItem).filter_by(workspace_id="ws-a").count() == 2
         assert db_session.query(ContentItem).filter_by(workspace_id="ws-b").count() == 2
+
+
+# ---------------------------------------------------------------------------
+# 6. Within-batch deduplication
+# ---------------------------------------------------------------------------
+
+
+class TestWithinBatchDedup:
+    """Duplicate entries *within the same batch* are collapsed."""
+
+    def test_identical_urls_produce_one_item(self, db_session):
+        """A batch with 2 identical URLs yields 1 ContentItem; skipped_count=1."""
+        feed = FakeFeed()
+        raw_items = [
+            {
+                "title": "Article",
+                "url": "https://example.com/article",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "Summary",
+                "raw_text": "Content",
+            },
+            {
+                "title": "Article (duplicate)",
+                "url": "https://example.com/article",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "Summary",
+                "raw_text": "Content",
+            },
+        ]
+
+        items, skipped = normalize_content("ws-1", feed, raw_items, db=db_session)
+        assert len(items) == 1
+        assert skipped == 1
+        assert items[0].url == "https://example.com/article"
+
+    def test_tracking_params_treated_as_same_url(self, db_session):
+        """URL and URL+fbclid normalize to the same entry; 1 item, skipped=1."""
+        feed = FakeFeed()
+        raw_items = [
+            {
+                "title": "Article",
+                "url": "https://example.com/article",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "Summary",
+                "raw_text": "Content",
+            },
+            {
+                "title": "Article (fbclid)",
+                "url": "https://example.com/article?fbclid=123",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "Summary",
+                "raw_text": "Content",
+            },
+        ]
+
+        items, skipped = normalize_content("ws-1", feed, raw_items, db=db_session)
+        assert len(items) == 1
+        assert skipped == 1
+        # The stored URL should be the first one seen (without fbclid)
+        assert "fbclid" not in items[0].url
+
+    def test_mixed_duplicates_and_new(self, db_session):
+        """Batch A, B, A, C → 3 items (A, B, C) with skipped_count=1."""
+        feed = FakeFeed()
+        raw_items = [
+            {
+                "title": "Entry A",
+                "url": "https://example.com/a",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "Sum A",
+                "raw_text": "Text A",
+            },
+            {
+                "title": "Entry B",
+                "url": "https://example.com/b",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 21, tzinfo=timezone.utc),
+                "author": "Bob",
+                "summary": "Sum B",
+                "raw_text": "Text B",
+            },
+            {
+                "title": "Entry A (again)",
+                "url": "https://example.com/a",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "Sum A",
+                "raw_text": "Text A",
+            },
+            {
+                "title": "Entry C",
+                "url": "https://example.com/c",
+                "source_name": "Example",
+                "published_at": datetime(2024, 3, 22, tzinfo=timezone.utc),
+                "author": "Carol",
+                "summary": "Sum C",
+                "raw_text": "Text C",
+            },
+        ]
+
+        items, skipped = normalize_content("ws-1", feed, raw_items, db=db_session)
+        assert len(items) == 3
+        assert skipped == 1
+        urls = {item.url for item in items}
+        assert urls == {
+            "https://example.com/a",
+            "https://example.com/b",
+            "https://example.com/c",
+        }
+
+    def test_within_batch_and_db_dedup_combined(self, db_session):
+        """First batch A, B, C. Second batch A, D → 4 total, 1 skipped in second."""
+        feed = FakeFeed()
+
+        entry_a = {
+            "title": "Entry A",
+            "url": "https://example.com/a",
+            "source_name": "Example",
+            "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+            "author": "Alice",
+            "summary": "Sum A",
+            "raw_text": "Text A",
+        }
+        entry_b = {
+            "title": "Entry B",
+            "url": "https://example.com/b",
+            "source_name": "Example",
+            "published_at": datetime(2024, 3, 21, tzinfo=timezone.utc),
+            "author": "Bob",
+            "summary": "Sum B",
+            "raw_text": "Text B",
+        }
+        entry_c = {
+            "title": "Entry C",
+            "url": "https://example.com/c",
+            "source_name": "Example",
+            "published_at": datetime(2024, 3, 22, tzinfo=timezone.utc),
+            "author": "Carol",
+            "summary": "Sum C",
+            "raw_text": "Text C",
+        }
+        entry_d = {
+            "title": "Entry D",
+            "url": "https://example.com/d",
+            "source_name": "Example",
+            "published_at": datetime(2024, 3, 23, tzinfo=timezone.utc),
+            "author": "Dave",
+            "summary": "Sum D",
+            "raw_text": "Text D",
+        }
+
+        # --- First batch: A, B, C ---
+        items_1, skipped_1 = normalize_content(
+            "ws-1", feed, [entry_a, entry_b, entry_c], db=db_session
+        )
+        assert len(items_1) == 3
+        assert skipped_1 == 0
+        for item in items_1:
+            db_session.add(item)
+        db_session.commit()
+
+        # --- Second batch: A (already in DB), D (new) ---
+        items_2, skipped_2 = normalize_content(
+            "ws-1", feed, [entry_a, entry_d], db=db_session
+        )
+        assert len(items_2) == 1
+        assert skipped_2 == 1
+        assert items_2[0].title == "Entry D"
+
+        for item in items_2:
+            db_session.add(item)
+        db_session.commit()
+
+        # Total should be 4 (A + B + C + D).
+        total = db_session.query(ContentItem).filter_by(workspace_id="ws-1").count()
+        assert total == 4
