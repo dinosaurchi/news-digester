@@ -1519,8 +1519,33 @@ class TestRunNowReportGeneration:
         self, client, monkeypatch
     ):
         """Regenerate endpoint creates a new report with content from workspace items."""
+        from unittest.mock import MagicMock
+        from app.services.opencode_client import ReportResult
         from app.tests.conftest import TestingSessionLocal
         from app.models.report import Report, ReportMessage
+
+        # Mock the OpenCodeClient used by the regenerate endpoint in
+        # app.api.reports so it returns deterministic content that
+        # includes the article title.
+        _mock_client = MagicMock()
+        _mock_client.generate_report_markdown.return_value = ReportResult(
+            markdown=(
+                "# TestCo — Daily News Digest\n\n"
+                "## Top Highlights\n\n"
+                "1. Regenerate test article — Article for regenerate test [Read more](https://example.com/regen-test)\n\n"
+                "## Source Details\n\n"
+                "### Regenerate test article\n\n"
+                "Published: 2026-04-10T00:00:00+00:00\n\n"
+                "Score: 0.8\n\n"
+                "Article for regenerate test\n\n"
+                "[Read more](https://example.com/regen-test)"
+            ),
+            model="test-model",
+        )
+        monkeypatch.setattr(
+            "app.api.reports.OpenCodeClient",
+            lambda **kwargs: _mock_client,
+        )
 
         ws_id = _create_workspace(client)
         _create_workspace_profile(client, ws_id)

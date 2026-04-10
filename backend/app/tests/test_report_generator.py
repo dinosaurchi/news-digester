@@ -95,75 +95,19 @@ def _make_enabled_client() -> OpenCodeClient:
     )
 
 
-# ---------------------------------------------------------------------------
-# 1. Deterministic report generation (template-based fallback for testing)
-# ---------------------------------------------------------------------------
-
-
-class TestDeterministicReportGeneration:
-    """Template-based report generation produces real markdown structure."""
-
-    def test_produces_markdown_with_title(self, db_session):
-        ws = _make_workspace(db_session)
-        run = _make_run(db_session, ws.id)
-        item = _make_item(db_session, ws.id, title="AI Breakthrough")
-
-        report = generate_report(db_session, ws, [item], run)
-
-        assert report.markdown_body is not None
-        assert "# TestCo — Daily News Digest" in report.markdown_body
-
-    def test_produces_markdown_with_period(self, db_session):
-        ws = _make_workspace(db_session)
-        run = _make_run(db_session, ws.id)
-
-        pub_date = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-        item = _make_item(db_session, ws.id, title="Article", published_at=pub_date)
-
-        report = generate_report(db_session, ws, [item], run)
-
-        assert "2025-06-01" in report.markdown_body
-        assert "**Period**:" in report.markdown_body
-
-    def test_produces_markdown_with_highlights_section(self, db_session):
-        ws = _make_workspace(db_session)
-        run = _make_run(db_session, ws.id)
-        item = _make_item(db_session, ws.id, title="Highlight Article")
-
-        report = generate_report(db_session, ws, [item], run)
-
-        assert "## Top Highlights" in report.markdown_body
-        assert "1. Highlight Article" in report.markdown_body
-        assert "A summary" in report.markdown_body
-
-    def test_produces_markdown_with_source_details_section(self, db_session):
-        ws = _make_workspace(db_session)
-        run = _make_run(db_session, ws.id)
-        item = _make_item(db_session, ws.id, title="Source Article")
-
-        report = generate_report(db_session, ws, [item], run)
-
-        assert "## Source Details" in report.markdown_body
-        assert "### Source Article" in report.markdown_body
-        assert "Published:" in report.markdown_body
-        assert "Score:" in report.markdown_body
-        assert "[Read more]" in report.markdown_body
-
-    def test_multiple_items_in_highlights(self, db_session):
-        ws = _make_workspace(db_session)
-        run = _make_run(db_session, ws.id)
-        item_a = _make_item(db_session, ws.id, title="First")
-        item_b = _make_item(db_session, ws.id, title="Second")
-
-        report = generate_report(db_session, ws, [item_a, item_b], run)
-
-        body = report.markdown_body
-        assert "1. First" in body
-        assert "2. Second" in body
+def _make_mock_client(
+    markdown: str = "# TestCo — Daily News Digest\n\nLLM report body.",
+) -> OpenCodeClient:
+    """Create an OpenCodeClient with generate_report_markdown mocked to return *markdown*."""
+    client = _make_enabled_client()
+    client.generate_report_markdown = MagicMock(  # type: ignore[assignment]
+        return_value=ReportResult(markdown=markdown, model="test-model"),
+    )
+    return client
 
 
 # ---------------------------------------------------------------------------
-# 2. LLM report generation path (mocked)
+# 1. LLM report generation path (mocked)
 # ---------------------------------------------------------------------------
 
 
@@ -230,26 +174,28 @@ class TestLLMReportGeneration:
 
 
 class TestEmptyShortlist:
-    """Empty shortlist produces a minimal report."""
+    """Empty shortlist produces a report via the LLM path."""
 
-    def test_empty_shortlist_produces_minimal_report(self, db_session):
+    def test_empty_shortlist_produces_report(self, db_session):
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
+        client = _make_mock_client(
+            markdown="# TestCo — Daily News Digest\n\nNo items found."
+        )
 
-        report = generate_report(db_session, ws, [], run)
+        report = generate_report(db_session, ws, [], run, opencode_client=client)
 
         assert report.markdown_body is not None
         assert "No items found" in report.markdown_body
-        assert "# TestCo — Daily News Digest" in report.markdown_body
 
-    def test_empty_shortlist_no_highlights_or_details(self, db_session):
+    def test_empty_shortlist_sources_is_empty_list(self, db_session):
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [], run)
+        report = generate_report(db_session, ws, [], run, opencode_client=client)
 
-        assert "## Top Highlights" not in report.markdown_body
-        assert "## Source Details" not in report.markdown_body
+        assert report.metadata_json["sources"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -265,8 +211,11 @@ class TestSourceMetadata:
         run = _make_run(db_session, ws.id)
         item_a = _make_item(db_session, ws.id, title="A")
         item_b = _make_item(db_session, ws.id, title="B")
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [item_a, item_b], run)
+        report = generate_report(
+            db_session, ws, [item_a, item_b], run, opencode_client=client
+        )
 
         assert report.metadata_json is not None
         sources = report.metadata_json["sources"]
@@ -278,8 +227,9 @@ class TestSourceMetadata:
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
         item = _make_item(db_session, ws.id, title="A")
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(db_session, ws, [item], run, opencode_client=client)
 
         messages = (
             db_session.query(ReportMessage)
@@ -296,8 +246,9 @@ class TestSourceMetadata:
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
         item = _make_item(db_session, ws.id, title="A")
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(db_session, ws, [item], run, opencode_client=client)
 
         messages = (
             db_session.query(ReportMessage)
@@ -310,8 +261,9 @@ class TestSourceMetadata:
     def test_empty_shortlist_sources_is_empty_list(self, db_session):
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [], run)
+        report = generate_report(db_session, ws, [], run, opencode_client=client)
 
         assert report.metadata_json["sources"] == []
 
@@ -328,13 +280,15 @@ class TestReportPeriod:
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
         pub_date = datetime(2025, 3, 20, 10, 0, 0, tzinfo=timezone.utc)
-        _make_item(db_session, ws.id, title="A", published_at=pub_date)
+        item = _make_item(db_session, ws.id, title="A", published_at=pub_date)
+        client = _make_mock_client()
 
         report = generate_report(
             db_session,
             ws,
-            [_make_item(db_session, ws.id, title="A", published_at=pub_date)],
+            [item],
             run,
+            opencode_client=client,
         )
 
         # Get fresh instance to verify flushed values
@@ -350,8 +304,11 @@ class TestReportPeriod:
         late = datetime(2025, 3, 31, 23, 59, 59, tzinfo=timezone.utc)
         item_early = _make_item(db_session, ws.id, title="Early", published_at=early)
         item_late = _make_item(db_session, ws.id, title="Late", published_at=late)
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [item_early, item_late], run)
+        report = generate_report(
+            db_session, ws, [item_early, item_late], run, opencode_client=client
+        )
 
         report = db_session.get(Report, report.id)
         assert report.period_start == early
@@ -366,8 +323,9 @@ class TestReportPeriod:
             title="No Date",
             published_at=None,
         )
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(db_session, ws, [item], run, opencode_client=client)
 
         report = db_session.get(Report, report.id)
         assert report.period_start is not None
@@ -381,8 +339,13 @@ class TestReportPeriod:
         late = datetime(2025, 2, 14, 0, 0, 0, tzinfo=timezone.utc)
         item_early = _make_item(db_session, ws.id, title="Early", published_at=early)
         item_late = _make_item(db_session, ws.id, title="Late", published_at=late)
+        client = _make_mock_client(
+            markdown="# TestCo — Daily News Digest\n\n**Period**: 2025-02-01 to 2025-02-14\n\nContent."
+        )
 
-        report = generate_report(db_session, ws, [item_early, item_late], run)
+        report = generate_report(
+            db_session, ws, [item_early, item_late], run, opencode_client=client
+        )
 
         assert "2025-02-01" in report.markdown_body
         assert "2025-02-14" in report.markdown_body
@@ -470,8 +433,9 @@ class TestReportStructure:
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
         item = _make_item(db_session, ws.id, title="A")
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(db_session, ws, [item], run, opencode_client=client)
 
         assert report.workspace_id == ws.id
         assert report.run_id == run.id
@@ -480,8 +444,9 @@ class TestReportStructure:
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
         item = _make_item(db_session, ws.id, title="A")
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(db_session, ws, [item], run, opencode_client=client)
 
         assert report.status == "published"
 
@@ -489,8 +454,9 @@ class TestReportStructure:
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
         item = _make_item(db_session, ws.id, title="A")
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(db_session, ws, [item], run, opencode_client=client)
 
         assert report.id is not None
         assert len(report.id) > 0
@@ -499,8 +465,9 @@ class TestReportStructure:
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
         item = _make_item(db_session, ws.id, title="A")
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(db_session, ws, [item], run, opencode_client=client)
 
         assert "TestCo" in report.title
         assert "Daily News Digest" in report.title
@@ -509,8 +476,9 @@ class TestReportStructure:
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
         item = _make_item(db_session, ws.id, title="A")
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(db_session, ws, [item], run, opencode_client=client)
 
         messages = (
             db_session.query(ReportMessage)
@@ -524,8 +492,9 @@ class TestReportStructure:
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
         item = _make_item(db_session, ws.id, title="A")
+        client = _make_mock_client()
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(db_session, ws, [item], run, opencode_client=client)
 
         messages = (
             db_session.query(ReportMessage)
