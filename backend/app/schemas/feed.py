@@ -30,6 +30,7 @@ class FeedOut(BaseModel):
     status: str
     last_fetched_at: Optional[str] = Field(default=None, alias="lastFetchedAt")
     last_error: Optional[str] = Field(default=None, alias="lastError")
+    last_error_at: Optional[str] = Field(default=None, alias="lastErrorAt")
     cadence: str
     tags: list[str] = Field(default_factory=list)
     created_at: Optional[str] = Field(default=None, alias="createdAt")
@@ -51,6 +52,7 @@ def _feed_to_out(feed) -> dict:
         if feed.last_fetched_at
         else None,
         "lastError": feed.last_error,
+        "lastErrorAt": feed.last_error_at.isoformat() if feed.last_error_at else None,
         "cadence": feed.cadence,
         "tags": feed.tags or [],
         "createdAt": feed.created_at.isoformat() if feed.created_at else None,

@@ -10,6 +10,7 @@ export interface FeedSource {
   status: FeedStatus;
   lastFetchedAt?: string;
   lastError?: string;
+  lastErrorAt?: string;
   cadence: 'hourly' | 'daily' | 'weekly';
   tags?: string[];
 }

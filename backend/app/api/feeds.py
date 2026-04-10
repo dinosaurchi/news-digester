@@ -115,9 +115,15 @@ def test_feed(feed_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Feed not found")
 
     result = validate_feed_source(feed)
-    feed.last_fetched_at = datetime.now(timezone.utc)
-    feed.last_error = result.error
-    feed.status = "healthy" if result.success else "error"
+    if result.success:
+        feed.status = "healthy"
+        feed.last_error = None
+        feed.last_error_at = None
+        feed.last_fetched_at = datetime.now(timezone.utc)
+    else:
+        feed.status = "error"
+        feed.last_error = result.error
+        feed.last_error_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(feed)
 
@@ -131,6 +137,9 @@ def test_feed(feed_id: str, db: Session = Depends(get_db)):
         ),
         "articlesFound": result.articles_found,
         "sourceTitle": result.source_title,
-        "lastFetchedAt": feed.last_fetched_at.isoformat(),
+        "lastFetchedAt": feed.last_fetched_at.isoformat()
+        if feed.last_fetched_at
+        else None,
         "lastError": result.error,
+        "lastErrorAt": feed.last_error_at.isoformat() if feed.last_error_at else None,
     }

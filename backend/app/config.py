@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     ADMIN_DISPLAY_NAME: str = "Admin"
     ADMIN_ROLE: str = "admin"
 
+    # Article body enrichment (optional pipeline step)
+    ARTICLE_ENRICHMENT_ENABLED: bool = False
+    ARTICLE_ENRICHMENT_TIMEOUT_SECONDS: int = 5
+    ARTICLE_BODY_MAX_LENGTH: int = 10000
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

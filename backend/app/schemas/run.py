@@ -5,10 +5,27 @@ from typing import Optional
 from pydantic import BaseModel, Field, ConfigDict
 
 
+class FeedDetail(BaseModel):
+    feed_id: str = Field(alias="feedId")
+    feed_name: str = Field(alias="feedName")
+    feed_url: str = Field(alias="feedUrl")
+    status: str
+    entries_count: int = Field(alias="entriesCount")
+    error: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
 class AffectedCounts(BaseModel):
     feeds: int = 0
     articles: int = 0
     reports: int = 0
+    entries_imported: int = Field(default=0, alias="entriesImported")
+    entries_skipped: int = Field(default=0, alias="entriesSkipped")
+    feeds_succeeded: int = Field(default=0, alias="feedsSucceeded")
+    feeds_failed: int = Field(default=0, alias="feedsFailed")
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 class RunSummaryOut(BaseModel):
@@ -27,6 +44,20 @@ class RunSummaryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
+class RunStepMetadata(BaseModel):
+    """Metadata attached to a run step event (varies by step type)."""
+
+    feeds_succeeded: Optional[int] = Field(default=None, alias="feedsSucceeded")
+    feeds_failed: Optional[int] = Field(default=None, alias="feedsFailed")
+    feeds_attempted: Optional[int] = Field(default=None, alias="feedsAttempted")
+    entries_fetched: Optional[int] = Field(default=None, alias="entriesFetched")
+    entries_imported: Optional[int] = Field(default=None, alias="entriesImported")
+    entries_skipped: Optional[int] = Field(default=None, alias="entriesSkipped")
+    feed_details: Optional[list[FeedDetail]] = Field(default=None, alias="feedDetails")
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
 class RunStepOut(BaseModel):
     id: str
     name: str
@@ -36,6 +67,7 @@ class RunStepOut(BaseModel):
     duration_ms: Optional[int] = Field(default=None, alias="durationMs")
     details: Optional[str] = None
     error: Optional[str] = None
+    metadata: Optional[RunStepMetadata] = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -70,6 +102,10 @@ def _run_summary_to_out(run) -> dict:
             "feeds": affected.get("feeds", 0),
             "articles": affected.get("articles", 0),
             "reports": affected.get("reports", 0),
+            "entriesImported": affected.get("entries_imported", 0),
+            "entriesSkipped": affected.get("entries_skipped", 0),
+            "feedsSucceeded": affected.get("feeds_succeeded", 0),
+            "feedsFailed": affected.get("feeds_failed", 0),
         },
         "error": run.error_summary,
     }
@@ -79,7 +115,7 @@ def _run_event_to_step(event) -> dict:
     """Convert a ProcessingRunEvent ORM object to RunStepOut dict."""
     meta = event.metadata_json or {}
     duration_ms = meta.get("duration_ms") if meta else None
-    return {
+    step: dict = {
         "id": event.id,
         "name": event.step_name,
         "status": event.status,
@@ -89,3 +125,26 @@ def _run_event_to_step(event) -> dict:
         "details": event.message,
         "error": meta.get("error") if meta else None,
     }
+    # Expose enriched fetch metadata when present
+    if any(
+        meta.get(k)
+        for k in (
+            "feeds_succeeded",
+            "feeds_failed",
+            "feeds_attempted",
+            "entries_fetched",
+            "entries_imported",
+            "entries_skipped",
+            "feed_details",
+        )
+    ):
+        step["metadata"] = {
+            "feedsSucceeded": meta.get("feeds_succeeded"),
+            "feedsFailed": meta.get("feeds_failed"),
+            "feedsAttempted": meta.get("feeds_attempted"),
+            "entriesFetched": meta.get("entries_fetched"),
+            "entriesImported": meta.get("entries_imported"),
+            "entriesSkipped": meta.get("entries_skipped"),
+            "feedDetails": meta.get("feed_details"),
+        }
+    return step

@@ -26,6 +26,7 @@ class FeedSource(Base):
     )  # healthy, error, disabled
     last_fetched_at: Mapped[str | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error_at: Mapped[str | None] = mapped_column(DateTime, nullable=True)
     cadence: Mapped[str] = mapped_column(
         String(20), nullable=False, default="daily"
     )  # hourly, daily, weekly

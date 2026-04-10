@@ -8,6 +8,7 @@ from app.models.workspace import Workspace
 from app.services import workspace as workspace_service
 from app.services.pipeline import execute_workspace_run
 from app.services.pipeline_steps import (
+    FeedFetchResult,
     fetch_feed,
     normalize_content,
     parse_rfc2822,

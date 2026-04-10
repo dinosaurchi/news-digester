@@ -58,6 +58,7 @@ class TestCreateFeed:
         assert "updatedAt" in data
         assert data["lastFetchedAt"] is None
         assert data["lastError"] is None
+        assert data["lastErrorAt"] is None
 
     def test_create_feed_validation_missing_name(self, client):
         """Missing name → 422."""
@@ -342,6 +343,7 @@ class TestTestFeed:
         assert feed_data["status"] == "healthy"
         assert feed_data["lastFetchedAt"] is not None
         assert feed_data["lastError"] is None
+        assert feed_data["lastErrorAt"] is None
 
     @patch("app.services.pipeline_steps.httpx.get")
     def test_test_feed_parse_error_updates_feed(self, mock_get, client):
@@ -374,6 +376,242 @@ class TestTestFeed:
         feed_data = client.get(f"/api/feeds/{feed_id}").json()
         assert feed_data["status"] == "error"
         assert feed_data["lastError"] == data["lastError"]
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_test_feed_failure_sets_last_error_at(self, mock_get, client):
+        """On failure, last_error_at should be set to a non-null datetime."""
+        response = MagicMock()
+        response.text = "<not-a-feed>"
+        response.raise_for_status.return_value = None
+        mock_get.return_value = response
+
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Bad Feed WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Bad Feed",
+                "url": "https://example.com/bad",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        resp = client.post(f"/api/feeds/{feed_id}/test")
+        assert resp.status_code == 200
+        assert resp.json()["success"] is False
+
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["status"] == "error"
+        assert feed_data["lastError"] is not None
+        assert feed_data["lastErrorAt"] is not None
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_test_feed_failure_does_not_update_last_fetched_at(self, mock_get, client):
+        """On failure, last_fetched_at should NOT be updated."""
+        # First, succeed to set last_fetched_at to a known value
+        success_response = MagicMock()
+        success_response.text = """<?xml version="1.0"?>
+        <rss version="2.0">
+          <channel>
+            <title>Test Feed</title>
+            <item>
+              <title>Article One</title>
+              <link>https://example.com/one</link>
+              <description>Summary one</description>
+            </item>
+          </channel>
+        </rss>"""
+        success_response.raise_for_status.return_value = None
+        mock_get.return_value = success_response
+
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Recovery WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Flip Feed",
+                "url": "https://example.com/flip",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        # Successful test sets last_fetched_at
+        client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        fetched_at_before = feed_data["lastFetchedAt"]
+        assert fetched_at_before is not None
+
+        # Now fail — last_fetched_at must not change
+        fail_response = MagicMock()
+        fail_response.text = "<not-a-feed>"
+        fail_response.raise_for_status.return_value = None
+        mock_get.return_value = fail_response
+
+        client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["status"] == "error"
+        assert feed_data["lastFetchedAt"] == fetched_at_before
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_test_feed_success_clears_error_state(self, mock_get, client):
+        """Success after error clears last_error, last_error_at, sets healthy."""
+        # First, fail to put feed into error state
+        fail_response = MagicMock()
+        fail_response.text = "<not-a-feed>"
+        fail_response.raise_for_status.return_value = None
+        mock_get.return_value = fail_response
+
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Recovery WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Recovery Feed",
+                "url": "https://example.com/recovery",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["status"] == "error"
+        assert feed_data["lastError"] is not None
+        assert feed_data["lastErrorAt"] is not None
+
+        # Now succeed — error state should be cleared
+        success_response = MagicMock()
+        success_response.text = """<?xml version="1.0"?>
+        <rss version="2.0">
+          <channel>
+            <title>Recovered Feed</title>
+            <item>
+              <title>Article One</title>
+              <link>https://example.com/one</link>
+              <description>Summary one</description>
+            </item>
+          </channel>
+        </rss>"""
+        success_response.raise_for_status.return_value = None
+        mock_get.return_value = success_response
+
+        resp = client.post(f"/api/feeds/{feed_id}/test")
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["status"] == "healthy"
+        assert feed_data["lastError"] is None
+        assert feed_data["lastErrorAt"] is None
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_test_feed_success_updates_last_fetched_at(self, mock_get, client):
+        """On success, last_fetched_at should be set to a non-null datetime."""
+        response = MagicMock()
+        response.text = """<?xml version="1.0"?>
+        <rss version="2.0">
+          <channel>
+            <title>Fetch Test Feed</title>
+            <item>
+              <title>Article One</title>
+              <link>https://example.com/one</link>
+              <description>Summary one</description>
+            </item>
+          </channel>
+        </rss>"""
+        response.raise_for_status.return_value = None
+        mock_get.return_value = response
+
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Fetch WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Fetch Feed",
+                "url": "https://example.com/fetch",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        # Confirm last_fetched_at is None before test
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["lastFetchedAt"] is None
+
+        resp = client.post(f"/api/feeds/{feed_id}/test")
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+        assert resp.json()["lastFetchedAt"] is not None
+
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["lastFetchedAt"] is not None
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_test_feed_recovery_then_failure(self, mock_get, client):
+        """Success then failure: feed goes healthy, then back to error."""
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Flip WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Flip Feed",
+                "url": "https://example.com/flip",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        # Step 1: succeed
+        success_response = MagicMock()
+        success_response.text = """<?xml version="1.0"?>
+        <rss version="2.0">
+          <channel>
+            <title>Flip Feed</title>
+            <item>
+              <title>Article One</title>
+              <link>https://example.com/one</link>
+              <description>Summary one</description>
+            </item>
+          </channel>
+        </rss>"""
+        success_response.raise_for_status.return_value = None
+        mock_get.return_value = success_response
+
+        client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["status"] == "healthy"
+        assert feed_data["lastError"] is None
+        assert feed_data["lastErrorAt"] is None
+        fetched_at_after_success = feed_data["lastFetchedAt"]
+        assert fetched_at_after_success is not None
+
+        # Step 2: fail — feed goes back to error, last_fetched_at unchanged
+        fail_response = MagicMock()
+        fail_response.text = "<not-a-feed>"
+        fail_response.raise_for_status.return_value = None
+        mock_get.return_value = fail_response
+
+        resp = client.post(f"/api/feeds/{feed_id}/test")
+        assert resp.status_code == 200
+        assert resp.json()["success"] is False
+
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["status"] == "error"
+        assert feed_data["lastError"] is not None
+        assert feed_data["lastErrorAt"] is not None
+        assert feed_data["lastFetchedAt"] == fetched_at_after_success
 
 
 class TestFeedCountInWorkspace:
