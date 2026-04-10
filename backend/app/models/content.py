@@ -48,7 +48,7 @@ class ContentItem(Base):
     inclusion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     exclusion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     report_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    source_entry_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_entry_id: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[str | None] = mapped_column(
         DateTime, default=_now, onupdate=_now
