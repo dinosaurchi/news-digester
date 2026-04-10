@@ -172,7 +172,56 @@ Make the final redeploy QA repeatable enough that operators can re-run it withou
 
 ---
 
-## Pass 5 - Redeploy and full-stack QA
+## Pass 5 - Seeded end-to-end workspace/run coverage
+
+### Goal
+
+Prove that a brand-new workspace can be created, seeded with feeds, ingested, and turned into a report without depending on pre-existing manual data setup.
+
+### Required work
+
+1. Add an end-to-end backend coverage path that:
+   - creates a new workspace
+   - creates a small predefined set of feeds for that workspace
+   - fetches/imports related content
+   - triggers `run-now`
+   - verifies report generation and source linkage
+2. Keep automated coverage deterministic:
+   - prefer local RSS fixtures, mocked HTTP responses, or controlled test fixtures
+   - do not rely on live public feeds in CI-facing tests
+3. For manual deployed QA, define a small curated real-feed set that can be added to a new workspace after `make up`.
+4. Ensure the seeded run path exercises the real ingestion/report pipeline, not a side-channel shortcut.
+
+### Implementation notes
+
+- This pass is intended to remove hidden dependence on pre-existing `ws-1` state for meaningful QA.
+- Automated tests should use deterministic feed fixtures.
+- Real public feeds are acceptable for manual QA only, because they are temporally unstable.
+
+### Suggested shape
+
+- Add one backend integration test that:
+  - creates a workspace
+  - creates 2-3 feed records
+  - returns related feed entries through fixture/mocked HTTP fetches
+  - calls `POST /api/workspaces/{workspace_id}/run-now`
+  - asserts:
+    - content items were imported
+    - fetch metadata was recorded
+    - a report was created
+    - report sources resolve to valid `ContentItem` rows
+- Optionally add a manual helper under `tests/manual/` or docs that creates a fresh workspace and seeds a curated real-feed set after deploy.
+
+### Pass 5 acceptance criteria
+
+- There is automated coverage for the create-workspace -> add-feeds -> run pipeline -> generate report path using deterministic fixtures.
+- The automated seeded flow does not require pre-existing manual workspace/feed setup.
+- The seeded flow verifies generated report/source integrity, not only content import.
+- Manual QA docs include a clear fresh-workspace flow with a predefined real-feed set for deployed validation.
+
+---
+
+## Pass 6 - Redeploy and full-stack QA
 
 ### Goal
 
@@ -197,20 +246,23 @@ At minimum verify all of the following against the running stack:
 1. `GET /api/health` returns OK.
 2. Login with the configured admin user succeeds.
 3. `GET /api/session/me` returns the authenticated user.
-4. `POST /api/workspaces/ws-1/run-now` succeeds.
-5. Run detail shows fetch-step metadata with accurate:
+4. Create a fresh workspace if needed for QA, or clearly state which existing workspace is used.
+5. Add a predefined feed set to the workspace under test.
+6. `POST /api/workspaces/{workspace_id}/run-now` succeeds.
+7. The run imports content and produces a report from those configured feeds.
+8. Run detail shows fetch-step metadata with accurate:
    - feeds attempted
    - feeds succeeded
    - feeds failed
    - entries fetched
    - entries imported
    - entries skipped
-6. Re-running `run-now` against unchanged feeds does not create duplicate imports.
-7. A deliberately broken feed appears as explicit error state in API output.
-8. A recovered feed returns to healthy state after correction.
-9. Generated report creation still succeeds.
-10. Report source metadata still resolves to valid `ContentItem` records.
-11. Logout invalidates the session.
+9. Re-running `run-now` against unchanged feeds does not create duplicate imports.
+10. A deliberately broken feed appears as explicit error state in API output.
+11. A recovered feed returns to healthy state after correction.
+12. Generated report creation still succeeds.
+13. Report source metadata still resolves to valid `ContentItem` records.
+14. Logout invalidates the session.
 
 ### Web UI QA after `make up`
 
@@ -218,17 +270,19 @@ At minimum verify all of the following against the running stack:
 
 1. Open the production Web UI.
 2. Log in successfully.
-3. Open a workspace with configured feeds.
-4. Trigger a run.
-5. Confirm the run completes and the UI shows updated ingestion state.
-6. Confirm a healthy feed is visibly healthy after a successful run.
-7. Confirm a broken feed is visibly identifiable from the UI.
-8. Confirm a recovered feed returns to a non-error display state.
-9. Open the run detail view and confirm fetch-step metadata is visible and coherent.
-10. Open the generated report.
-11. Open report sources and confirm they still resolve correctly.
-12. Refresh the browser and confirm session restore still works.
-13. Logout and confirm protected data is no longer shown.
+3. Create a fresh workspace if needed, or clearly state which workspace is used.
+4. Add the predefined QA feed set if it is not already present.
+5. Trigger a run.
+6. Confirm the run completes and the UI shows updated ingestion state.
+7. Confirm imported content/report output appears for that workspace.
+8. Confirm a healthy feed is visibly healthy after a successful run.
+9. Confirm a broken feed is visibly identifiable from the UI.
+10. Confirm a recovered feed returns to a non-error display state.
+11. Open the run detail view and confirm fetch-step metadata is visible and coherent.
+12. Open the generated report.
+13. Open report sources and confirm they still resolve correctly.
+14. Refresh the browser and confirm session restore still works.
+15. Logout and confirm protected data is no longer shown.
 
 ### Optional manual Playwright QA
 
@@ -249,7 +303,7 @@ Recommended coverage:
 
 These tests must remain outside the `make ci` path.
 
-### Pass 5 acceptance criteria
+### Pass 6 acceptance criteria
 
 - `make ci` passes.
 - `make up` completes successfully.
@@ -270,16 +324,17 @@ Do not call this handoff complete unless all of the following are true:
 3. feed failure state is explicit, persisted, and consistent across pipeline runs and feed-test actions
 4. `source_entry_id` storage is safe for the chosen identity strategy
 5. ingested content quality improvements remain intact
-6. existing downstream report generation still works
-7. existing report source metadata still resolves correctly
-8. auth/session behavior still works
-9. report chat behavior still works
-10. `make ci` passes
-11. `make up` passes
-12. deployed API QA passes
-13. deployed Web UI QA passes
-14. any manual Playwright QA added under `tests/manual/` is clearly outside CI and usable
-15. remaining known gaps, if any, are stated explicitly rather than implied away
+6. a fresh workspace can be created, seeded with predefined feeds, and taken through ingestion to report generation
+7. existing downstream report generation still works
+8. existing report source metadata still resolves correctly
+9. auth/session behavior still works
+10. report chat behavior still works
+11. `make ci` passes
+12. `make up` passes
+13. deployed API QA passes
+14. deployed Web UI QA passes
+15. any manual Playwright QA added under `tests/manual/` is clearly outside CI and usable
+16. remaining known gaps, if any, are stated explicitly rather than implied away
 
 ---
 
