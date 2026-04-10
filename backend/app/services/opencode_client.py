@@ -24,10 +24,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class OpenCodeDisabledError(RuntimeError):
-    """Raised when OPENCODE_ENABLED=False and an LLM call is attempted."""
-
-
 class OpenCodeUnavailableError(RuntimeError):
     """Raised when the adapter is unreachable (connection refused)."""
 
@@ -88,14 +84,12 @@ class OpenCodeClient:
         base_url: str,
         timeout: int,
         default_model: str,
-        enabled: bool,
         default_agent: str = "general",
         workspace_dir: str = "/workspace",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._default_model = default_model
-        self._enabled = enabled
         self._default_agent = default_agent
         self._workspace_dir = workspace_dir
 
@@ -238,8 +232,6 @@ class OpenCodeClient:
 
         Raises
         ------
-        OpenCodeDisabledError
-            If ``self._enabled`` is ``False``.
         OpenCodeUnavailableError
             If the adapter is unreachable.
         OpenCodeTimeoutError
@@ -247,11 +239,6 @@ class OpenCodeClient:
         OpenCodeResponseError
             If the adapter returns an error or an unexpected payload.
         """
-        if not self._enabled:
-            raise OpenCodeDisabledError(
-                "OpenCode adapter is disabled (OPENCODE_ENABLED=False)"
-            )
-
         payload: dict[str, Any] = {
             "title": title,
             "model": self._default_model,

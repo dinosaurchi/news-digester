@@ -1,7 +1,6 @@
 import os
 
 os.environ["TESTING"] = "1"
-os.environ["OPENCODE_ENABLED"] = "false"
 
 """Shared test fixtures for the backend API tests."""
 
@@ -91,6 +90,74 @@ def seed_test_admin(db_session):
 
     bootstrap_admin_user(db_session)
     db_session.commit()
+
+
+@pytest.fixture(autouse=True)
+def mock_opencode_client(monkeypatch):
+    """Provide a default mock OpenCodeClient for the pipeline so tests don't
+    make real HTTP calls.
+
+    Only the pipeline import site is patched.  Tests that exercise the
+    reports API (which creates its own OpenCodeClient) should provide their
+    own mocks.
+    """
+    from unittest.mock import MagicMock
+    from app.services.opencode_client import ShortlistResult, ReportResult
+
+    def _passthrough_shortlist(items, workspace_context):
+        return ShortlistResult(
+            selected_items=items,
+            rationale="Test mock",
+        )
+
+    def _passthrough_report(items, workspace_context, period):
+        customer = workspace_context.get("customer", "Test")
+        title = f"{customer} — Daily News Digest"
+        period_str = f"{period.get('start', '')} to {period.get('end', '')}"
+
+        if not items:
+            return ReportResult(
+                markdown=f"# {title}\n\n**Period**: {period_str}\n\n## Summary\n\nNo items found for this reporting period.",
+            )
+
+        highlights = []
+        for i, item in enumerate(items, 1):
+            summary = item.get("summary", "")
+            url = item.get("url", "")
+            link = f" [Read more]({url})" if url else ""
+            highlights.append(f"{i}. {item.get('title', 'Untitled')} — {summary}{link}")
+
+        sources = []
+        for item in items:
+            published = item.get("published_at", "")
+            score = item.get("score", 0)
+            sources.append(
+                f"### {item.get('title', 'Untitled')}\n\n"
+                f"Published: {published}\n\n"
+                f"Score: {score}\n\n"
+                f"{item.get('summary', '')}\n\n"
+                f"[Read more]({item.get('url', '')})"
+            )
+
+        return ReportResult(
+            markdown=(
+                f"# {title}\n\n"
+                f"**Period**: {period_str}\n\n"
+                f"## Top Highlights\n\n"
+                + "\n\n".join(highlights)
+                + "\n\n## Source Details\n\n"
+                + "\n\n".join(sources)
+            ),
+        )
+
+    mock_client = MagicMock()
+    mock_client.refine_shortlist.side_effect = _passthrough_shortlist
+    mock_client.generate_report_markdown.side_effect = _passthrough_report
+
+    monkeypatch.setattr(
+        "app.services.pipeline.OpenCodeClient",
+        lambda **kwargs: mock_client,
+    )
 
 
 @pytest.fixture(scope="function")

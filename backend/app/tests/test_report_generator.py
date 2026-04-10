@@ -87,17 +87,16 @@ def _make_item(
 
 
 def _make_enabled_client() -> OpenCodeClient:
-    """Create an enabled OpenCodeClient (mocked at call site)."""
+    """Create an OpenCodeClient (mocked at call site)."""
     return OpenCodeClient(
         base_url="http://localhost:9001",
         timeout=30,
         default_model="test-model",
-        enabled=True,
     )
 
 
 # ---------------------------------------------------------------------------
-# 1. Deterministic report generation (OPENCODE_ENABLED=false)
+# 1. Deterministic report generation (template-based fallback for testing)
 # ---------------------------------------------------------------------------
 
 

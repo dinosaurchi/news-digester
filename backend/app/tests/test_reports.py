@@ -213,29 +213,7 @@ class TestGetThreadMessages:
 class TestSendMessage:
     """POST /api/report-threads/{thread_id}/messages"""
 
-    def test_send_message_persists_user_and_returns_503_when_assistant_disabled(
-        self, client, monkeypatch
-    ):
-        monkeypatch.setattr(settings, "OPENCODE_ENABLED", False)
-        ws_id = _create_workspace(client)
-        rid = _create_report(client, ws_id, title="Send Test")
-
-        resp = client.post(
-            f"/api/report-threads/{rid}/messages",
-            json={"content": "This is my feedback"},
-        )
-        assert resp.status_code == 503
-        assert resp.json()["detail"] == "Report chat assistant is not configured"
-
-        messages_resp = client.get(f"/api/report-threads/{rid}/messages")
-        messages = messages_resp.json()
-        assert [msg["role"] for msg in messages] == ["user"]
-        assert messages[0]["content"] == "This is my feedback"
-
-    def test_send_message_creates_real_agent_message(
-        self, client, monkeypatch
-    ):
-        monkeypatch.setattr(settings, "OPENCODE_ENABLED", True)
+    def test_send_message_creates_real_agent_message(self, client, monkeypatch):
         captured = {}
 
         def fake_answer(self, **kwargs):
@@ -251,8 +229,12 @@ class TestSendMessage:
 
         ws_id = _create_workspace(client)
         source_ids = [
-            _create_content_item_by_id(client, ws_id, "chat-source-a", title="Source A"),
-            _create_content_item_by_id(client, ws_id, "chat-source-b", title="Source B"),
+            _create_content_item_by_id(
+                client, ws_id, "chat-source-a", title="Source A"
+            ),
+            _create_content_item_by_id(
+                client, ws_id, "chat-source-b", title="Source B"
+            ),
         ]
         rid = _create_report(client, ws_id, title="Send Test")
         _create_message_with_metadata(
@@ -287,8 +269,6 @@ class TestSendMessage:
     def test_send_message_provider_failure_persists_user_only(
         self, client, monkeypatch
     ):
-        monkeypatch.setattr(settings, "OPENCODE_ENABLED", True)
-
         def fail_answer(self, **kwargs):
             raise OpenCodeResponseError("provider rejected request")
 

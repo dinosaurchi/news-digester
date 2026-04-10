@@ -1180,7 +1180,7 @@ class TestRunNowShortlist:
             db.close()
 
     def test_run_now_llm_failure_causes_run_failure(self, client, monkeypatch):
-        """When OPENCODE_ENABLED=True and LLM fails, run fails with explicit error."""
+        """When LLM fails, run fails with explicit error."""
         from app.tests.conftest import TestingSessionLocal
         from app.models.run import ProcessingRunEvent
         from app.services.opencode_client import OpenCodeUnavailableError
@@ -1212,8 +1212,7 @@ class TestRunNowShortlist:
             ),
         )
 
-        # Enable OpenCode and mock the client to raise an error
-        monkeypatch.setattr("app.services.pipeline.settings.OPENCODE_ENABLED", True)
+        # Mock the client to raise an error
         mock_client = MagicMock()
         mock_client.refine_shortlist.side_effect = OpenCodeUnavailableError(
             "adapter unreachable"
@@ -1279,8 +1278,7 @@ class TestRunNowShortlist:
             ),
         )
 
-        # Enable OpenCode and mock the client: shortlist succeeds, report fails
-        monkeypatch.setattr("app.services.pipeline.settings.OPENCODE_ENABLED", True)
+        # Mock the client: shortlist succeeds, report fails
         mock_client = MagicMock()
         mock_client.refine_shortlist.return_value = MagicMock(
             selected_items=[

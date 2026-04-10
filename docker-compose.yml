@@ -41,7 +41,6 @@ services:
       ADMIN_ROLE: "${ADMIN_ROLE:-admin}"
       OPENCODE_BASE_URL: http://opencode-agent-adapter:8080
       OPENCODE_TIMEOUT_SECONDS: "${OPENCODE_TIMEOUT_SECONDS:-60}"
-      OPENCODE_ENABLED: "${OPENCODE_ENABLED:-false}"
       OPENCODE_DEFAULT_MODEL: "${OPENCODE_DEFAULT_MODEL:-opencode/gpt-5-nano}"
       OPENCODE_DEFAULT_AGENT: "${OPENCODE_DEFAULT_AGENT:-general}"
       OPENCODE_WORKSPACE_DIR: /workspace
@@ -68,7 +67,6 @@ services:
       ADMIN_ROLE: "${ADMIN_ROLE:-admin}"
       OPENCODE_BASE_URL: http://opencode-agent-adapter:8080
       OPENCODE_TIMEOUT_SECONDS: "${OPENCODE_TIMEOUT_SECONDS:-60}"
-      OPENCODE_ENABLED: "${OPENCODE_ENABLED:-false}"
       OPENCODE_DEFAULT_MODEL: "${OPENCODE_DEFAULT_MODEL:-opencode/gpt-5-nano}"
       OPENCODE_DEFAULT_AGENT: "${OPENCODE_DEFAULT_AGENT:-general}"
       OPENCODE_WORKSPACE_DIR: /workspace
@@ -95,7 +93,6 @@ services:
       ADMIN_ROLE: "${ADMIN_ROLE:-admin}"
       OPENCODE_BASE_URL: http://opencode-agent-adapter:8080
       OPENCODE_TIMEOUT_SECONDS: "${OPENCODE_TIMEOUT_SECONDS:-60}"
-      OPENCODE_ENABLED: "${OPENCODE_ENABLED:-false}"
       OPENCODE_DEFAULT_MODEL: "${OPENCODE_DEFAULT_MODEL:-opencode/gpt-5-nano}"
       OPENCODE_DEFAULT_AGENT: "${OPENCODE_DEFAULT_AGENT:-general}"
       OPENCODE_WORKSPACE_DIR: /workspace

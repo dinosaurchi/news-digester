@@ -109,12 +109,6 @@ def send_message(thread_id: str, body: MessageSendIn, db: Session = Depends(get_
     db.commit()
     db.refresh(user_msg)
 
-    if not settings.OPENCODE_ENABLED:
-        raise HTTPException(
-            status_code=503,
-            detail="Report chat assistant is not configured",
-        )
-
     messages = report_service.get_thread_messages(db, thread_id)
     source_ids = report_chat_service.get_report_chat_source_ids(report, messages)
     source_items = report_chat_service.load_report_chat_source_items(
@@ -130,7 +124,6 @@ def send_message(thread_id: str, body: MessageSendIn, db: Session = Depends(get_
         default_model=settings.OPENCODE_DEFAULT_MODEL,
         default_agent=settings.OPENCODE_DEFAULT_AGENT,
         workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
-        enabled=True,
     )
     try:
         chat_result = report_chat_service.generate_report_chat_reply(
@@ -248,9 +241,7 @@ def regenerate_report(report_id: str, db: Session = Depends(get_db)):
             )
         }
         shortlisted_items = [
-            items_by_id[item_id]
-            for item_id in source_ids
-            if item_id in items_by_id
+            items_by_id[item_id] for item_id in source_ids if item_id in items_by_id
         ]
     else:
         shortlisted_items = (
@@ -273,17 +264,14 @@ def regenerate_report(report_id: str, db: Session = Depends(get_db)):
     db.add(new_run)
     db.flush()
 
-    # Create OpenCode client if enabled
-    opencode_client: OpenCodeClient | None = None
-    if settings.OPENCODE_ENABLED:
-        opencode_client = OpenCodeClient(
-            base_url=settings.OPENCODE_BASE_URL,
-            timeout=settings.OPENCODE_TIMEOUT_SECONDS,
-            default_model=settings.OPENCODE_DEFAULT_MODEL,
-            default_agent=settings.OPENCODE_DEFAULT_AGENT,
-            workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
-            enabled=True,
-        )
+    # Create OpenCode client
+    opencode_client = OpenCodeClient(
+        base_url=settings.OPENCODE_BASE_URL,
+        timeout=settings.OPENCODE_TIMEOUT_SECONDS,
+        default_model=settings.OPENCODE_DEFAULT_MODEL,
+        default_agent=settings.OPENCODE_DEFAULT_AGENT,
+        workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
+    )
 
     # Generate fresh markdown without creating a hidden replacement thread.
     markdown = render_report_markdown(

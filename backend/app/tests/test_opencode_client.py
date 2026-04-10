@@ -7,7 +7,6 @@ import pytest
 
 from app.services.opencode_client import (
     OpenCodeClient,
-    OpenCodeDisabledError,
     OpenCodeResponseError,
     OpenCodeTimeoutError,
     OpenCodeUnavailableError,
@@ -21,14 +20,13 @@ DEFAULT_MODEL = "opencode/gpt-5-nano"
 TIMEOUT = 30
 
 
-def _make_client(*, enabled: bool = True, timeout: int = TIMEOUT) -> OpenCodeClient:
+def _make_client(*, timeout: int = TIMEOUT) -> OpenCodeClient:
     return OpenCodeClient(
         base_url=BASE_URL,
         timeout=timeout,
         default_model=DEFAULT_MODEL,
         default_agent="general",
         workspace_dir="/workspace",
-        enabled=enabled,
     )
 
 
@@ -164,25 +162,6 @@ class TestReportChat:
         assert "Use ONLY the report and source_items" in payload["prompt"]
         assert "What matters?" in payload["prompt"]
         assert "Source A" in payload["prompt"]
-
-
-class TestOpenCodeDisabled:
-    def test_refine_shortlist_raises(self) -> None:
-        with pytest.raises(OpenCodeDisabledError, match="disabled"):
-            _make_client(enabled=False).refine_shortlist([], {})
-
-    def test_generate_report_markdown_raises(self) -> None:
-        with pytest.raises(OpenCodeDisabledError, match="disabled"):
-            _make_client(enabled=False).generate_report_markdown([], {}, {})
-
-    def test_answer_report_question_raises(self) -> None:
-        with pytest.raises(OpenCodeDisabledError, match="disabled"):
-            _make_client(enabled=False).answer_report_question(
-                question="Q?",
-                report_context={},
-                source_items=[],
-                recent_messages=[],
-            )
 
 
 class TestAdapterFailures:
