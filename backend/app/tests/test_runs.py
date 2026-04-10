@@ -411,7 +411,11 @@ class TestRunNow:
         assert len(content_ids) == 1
 
     def test_run_now_produces_clustered_content_items(self, client, monkeypatch):
-        """After run-now, content items have cluster_id assigned."""
+        """After run-now, content items have cluster_id assigned.
+
+        Also verifies that duplicates within the same fetched batch are
+        deduplicated at ingestion time (same normalized URL → skip).
+        """
         from app.tests.conftest import TestingSessionLocal
         from app.models.content import ContentItem
 
@@ -419,7 +423,8 @@ class TestRunNow:
         _create_feed(client, ws_id, url="https://example.com/feed.xml")
 
         # Return two items sharing the same base URL (different tracking params)
-        # and one unique item — the pipeline should cluster the duplicates.
+        # and one unique item.  The second duplicate should be skipped at
+        # ingestion time so only 2 ContentItems are created.
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
             lambda feed: FeedFetchResult(
@@ -473,7 +478,9 @@ class TestRunNow:
             items = (
                 db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).all()
             )
-            assert len(items) == 3
+            # The fbclid variant was deduplicated at ingestion time (same
+            # normalized URL as the utm_source variant), so only 2 items exist.
+            assert len(items) == 2
 
             # Every item should have a cluster_id
             for item in items:
@@ -481,12 +488,11 @@ class TestRunNow:
                     f"ContentItem {item.id} has no cluster_id"
                 )
 
-            # The two duplicate items should share the same cluster
+            # The first duplicate was kept; the fbclid variant was skipped.
             dup_items = [i for i in items if "story?utm" in (i.url or "")]
             dup_fb = [i for i in items if "story?fbclid" in (i.url or "")]
             assert len(dup_items) == 1
-            assert len(dup_fb) == 1
-            assert dup_items[0].cluster_id == dup_fb[0].cluster_id
+            assert len(dup_fb) == 0  # deduplicated at ingestion time
 
             # The unique item should be in a different cluster
             unique_items = [i for i in items if "/unique" in (i.url or "")]
@@ -532,14 +538,18 @@ class TestRunNow:
             db.close()
 
     def test_run_now_clustering_event_with_items(self, client, monkeypatch):
-        """Clustering event metadata reflects actual clustered item counts."""
+        """Clustering event metadata reflects actual clustered item counts.
+
+        The second duplicate (fbclid variant) is deduplicated at ingestion
+        time, so only 2 items reach the clustering step.
+        """
         from app.tests.conftest import TestingSessionLocal
         from app.models.run import ProcessingRunEvent
 
         ws_id = _create_workspace(client)
         _create_feed(client, ws_id, url="https://example.com/feed.xml")
 
-        # Return 3 items: 2 sharing the same base URL, 1 unique
+        # Return 3 items: 2 sharing the same base URL (one will be deduped), 1 unique
         monkeypatch.setattr(
             "app.services.pipeline.fetch_feed",
             lambda feed: FeedFetchResult(
@@ -603,9 +613,11 @@ class TestRunNow:
 
             meta = cluster_event.metadata_json
             assert meta is not None
-            assert meta["items_clustered"] == 3
-            assert meta["clusters_created"] == 2  # 1 multi-item + 1 singleton
-            assert meta["singleton_clusters"] == 1
+            # The fbclid duplicate was deduped at ingestion, so only 2 items
+            # reach clustering — both become singletons.
+            assert meta["items_clustered"] == 2
+            assert meta["clusters_created"] == 2  # 2 singletons
+            assert meta["singleton_clusters"] == 2
         finally:
             db.close()
 
@@ -1089,7 +1101,12 @@ class TestRunNowShortlist:
             db.close()
 
     def test_run_now_shortlist_respects_cluster_dedup(self, client, monkeypatch):
-        """Shortlist deduplicates items from the same cluster."""
+        """Shortlist deduplicates items from the same cluster.
+
+        When duplicates share the same normalized URL within a batch, they
+        are deduplicated at ingestion time (only the first is kept), so the
+        shortlist step receives fewer items.
+        """
         from app.tests.conftest import TestingSessionLocal
         from app.models.run import ProcessingRunEvent
 
@@ -1104,7 +1121,7 @@ class TestRunNowShortlist:
             lambda feed: FeedFetchResult(
                 success=True,
                 entries=[
-                    # Two duplicate stories (will be clustered)
+                    # Two duplicate stories (same normalized URL)
                     {
                         "title": "Duplicate AI Story",
                         "url": "https://example.com/dup?utm_source=twitter",
@@ -1154,9 +1171,10 @@ class TestRunNowShortlist:
             assert len(shortlist_events) == 1
 
             meta = shortlist_events[0].metadata_json
-            # Should have 3 included items (all pass threshold)
-            assert meta["included_count"] == 3
-            # But shortlist should deduplicate: 2 duplicates → 1, plus 1 unique = 2
+            # The fbclid duplicate was deduped at ingestion time, so only 2
+            # items reach the shortlist step.
+            assert meta["included_count"] == 2
+            # Both items are singletons, so shortlist_size equals included_count.
             assert meta["shortlist_size"] == 2
         finally:
             db.close()

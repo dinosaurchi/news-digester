@@ -383,6 +383,11 @@ def normalize_content(
 
         items.append(item)
 
+        # Track accepted entry in the in-memory set so that later items
+        # in the same batch with the same source_entry_id are also skipped.
+        if db is not None and existing_ids is not None and entry_id is not None:
+            existing_ids.add(entry_id)
+
     return items, skipped_count
 
 
