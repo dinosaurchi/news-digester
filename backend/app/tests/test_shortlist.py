@@ -104,6 +104,24 @@ def _make_enabled_client() -> OpenCodeClient:
     )
 
 
+def _make_passthrough_client() -> OpenCodeClient:
+    """Create a mock OpenCode client that returns items unchanged.
+
+    Used by tests that exercise pre-processing logic (filtering, dedup,
+    capping) without needing to verify LLM reordering behaviour.
+    """
+    client = _make_enabled_client()
+
+    def _passthrough(item_dicts, workspace_context):
+        return ShortlistResult(
+            selected_items=list(item_dicts),
+            rationale="passthrough",
+        )
+
+    client.refine_shortlist = MagicMock(side_effect=_passthrough)  # type: ignore[assignment]
+    return client
+
+
 # ---------------------------------------------------------------------------
 # 1. Basic shortlist selection: top N items by score
 # ---------------------------------------------------------------------------
@@ -115,6 +133,7 @@ class TestBasicShortlistSelection:
     def test_selects_included_items_sorted_by_score(self, db_session):
         ws = _make_workspace(db_session, max_articles=5)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         items = [
             _make_item(db_session, ws.id, title="Low", final_score=0.1),
@@ -122,7 +141,7 @@ class TestBasicShortlistSelection:
             _make_item(db_session, ws.id, title="Mid", final_score=0.5),
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         assert len(result) == 3
         assert [i.title for i in result] == ["High", "Mid", "Low"]
@@ -130,6 +149,7 @@ class TestBasicShortlistSelection:
     def test_excludes_non_included_items(self, db_session):
         ws = _make_workspace(db_session, max_articles=10)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         items = [
             _make_item(
@@ -143,7 +163,7 @@ class TestBasicShortlistSelection:
             ),
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         assert len(result) == 1
         assert result[0].title == "Included"
@@ -160,6 +180,7 @@ class TestClusterDedup:
     def test_keeps_lead_item_from_cluster(self, db_session):
         ws = _make_workspace(db_session, max_articles=10)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         cluster_id = "cluster-1"
         items = [
@@ -189,7 +210,7 @@ class TestClusterDedup:
             ),
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         cluster_items = [i for i in result if i.cluster_id == cluster_id]
         assert len(cluster_items) == 1
@@ -198,6 +219,7 @@ class TestClusterDedup:
     def test_keeps_highest_scored_when_no_lead(self, db_session):
         ws = _make_workspace(db_session, max_articles=10)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         cluster_id = "cluster-2"
         items = [
@@ -227,7 +249,7 @@ class TestClusterDedup:
             ),
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         cluster_items = [i for i in result if i.cluster_id == cluster_id]
         assert len(cluster_items) == 1
@@ -236,6 +258,7 @@ class TestClusterDedup:
     def test_different_clusters_are_independent(self, db_session):
         ws = _make_workspace(db_session, max_articles=10)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         items = [
             _make_item(
@@ -272,7 +295,7 @@ class TestClusterDedup:
             ),
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         assert len(result) == 2
         titles = {i.title for i in result}
@@ -282,6 +305,7 @@ class TestClusterDedup:
         """Items with cluster_id=None are not deduplicated."""
         ws = _make_workspace(db_session, max_articles=10)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         items = [
             _make_item(
@@ -300,7 +324,7 @@ class TestClusterDedup:
             ),
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         assert len(result) == 2
 
@@ -316,13 +340,14 @@ class TestShortlistCap:
     def test_caps_at_setting_value(self, db_session):
         ws = _make_workspace(db_session, max_articles=3)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         items = [
             _make_item(db_session, ws.id, title=f"Article {i}", final_score=float(i))
             for i in range(10)
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         assert len(result) == 3
         # Should be the top 3 by score
@@ -336,13 +361,14 @@ class TestShortlistCap:
 
         ws = _make_workspace(db_session, max_articles=None)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         items = [
             _make_item(db_session, ws.id, title=f"Article {i}", final_score=float(i))
             for i in range(20)
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         assert len(result) == _DEFAULT_MAX_ARTICLES
 
@@ -356,13 +382,14 @@ class TestShortlistCap:
         db_session.add(ws)
         db_session.flush()
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         items = [
             _make_item(db_session, ws.id, title=f"Article {i}", final_score=float(i))
             for i in range(20)
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         assert len(result) == _DEFAULT_MAX_ARTICLES
 
@@ -378,21 +405,23 @@ class TestEmptyInput:
     def test_empty_items_list(self, db_session):
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
-        result = select_shortlist(db_session, [], ws, run)
+        result = select_shortlist(db_session, [], ws, run, opencode_client=client)
 
         assert result == []
 
     def test_no_included_items(self, db_session):
         ws = _make_workspace(db_session)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         items = [
             _make_item(db_session, ws.id, title="Excluded", status="excluded"),
             _make_item(db_session, ws.id, title="Pending", status="pending"),
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         assert result == []
 
@@ -408,25 +437,27 @@ class TestFewerItemsThanCap:
     def test_all_items_included_when_below_cap(self, db_session):
         ws = _make_workspace(db_session, max_articles=15)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         items = [
             _make_item(db_session, ws.id, title=f"Article {i}", final_score=float(i))
             for i in range(5)
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         assert len(result) == 5
 
     def test_single_item(self, db_session):
         ws = _make_workspace(db_session, max_articles=10)
         run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
 
         items = [
             _make_item(db_session, ws.id, title="Only one", final_score=0.8),
         ]
 
-        result = select_shortlist(db_session, items, ws, run)
+        result = select_shortlist(db_session, items, ws, run, opencode_client=client)
 
         assert len(result) == 1
         assert result[0].title == "Only one"
@@ -604,41 +635,3 @@ class TestLLMFailure:
                 run,
                 opencode_client=client,
             )
-
-
-# ---------------------------------------------------------------------------
-# 8. LLM disabled: uses score-based shortlist without calling LLM
-# ---------------------------------------------------------------------------
-
-
-class TestLLMDisabled:
-    """When no opencode_client is provided, score-based shortlist is used."""
-
-    def test_no_client_no_llm_call(self, db_session):
-        ws = _make_workspace(db_session, max_articles=10)
-        run = _make_run(db_session, ws.id)
-
-        item_a = _make_item(db_session, ws.id, title="High", final_score=0.9)
-        item_b = _make_item(db_session, ws.id, title="Low", final_score=0.1)
-
-        result = select_shortlist(db_session, [item_a, item_b], ws, run)
-
-        assert len(result) == 2
-        assert result[0].id == item_a.id
-        assert result[1].id == item_b.id
-
-    def test_none_client_uses_score_order(self, db_session):
-        """Items are returned in score-descending order without LLM."""
-        ws = _make_workspace(db_session, max_articles=10)
-        run = _make_run(db_session, ws.id)
-
-        items = [
-            _make_item(db_session, ws.id, title=f"Item {i}", final_score=float(i))
-            for i in range(5, 0, -1)  # 5.0, 4.0, ..., 1.0
-        ]
-
-        result = select_shortlist(db_session, items, ws, run)
-
-        assert len(result) == 5
-        scores = [i.final_score for i in result]
-        assert scores == sorted(scores, reverse=True)
