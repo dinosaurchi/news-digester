@@ -665,3 +665,148 @@ class TestWithinBatchDedup:
         # Total should be 4 (A + B + C + D).
         total = db_session.query(ContentItem).filter_by(workspace_id="ws-1").count()
         assert total == 4
+
+
+# ---------------------------------------------------------------------------
+# 7. Long URL / source_entry_id persistence
+# ---------------------------------------------------------------------------
+
+
+class TestSourceEntryIdLongUrl:
+    """Long URLs (300+ chars) persist correctly and dedup works."""
+
+    @staticmethod
+    def _build_long_url(min_length: int = 300) -> str:
+        """Construct a deterministic URL exceeding *min_length* characters."""
+        base = "https://example.com/articles/"
+        # Pad with path segments to reach the desired length
+        path = "a" * (min_length - len(base) - 30)
+        query = "?page=1&category=tech&sort=date"
+        url = base + path + query
+        assert len(url) >= min_length
+        return url
+
+    @staticmethod
+    def _build_very_long_url(min_length: int = 500) -> str:
+        """Construct a URL exceeding *min_length* with many query params."""
+        base = "https://example.com/very/deeply/nested/path/"
+        path = "b" * (min_length - len(base) - 200)
+        # Non-tracking query params so they survive normalization
+        params = "&".join(f"param{k}=value{k}" for k in range(1, 16))
+        url = base + path + "?" + params
+        assert len(url) >= min_length
+        return url
+
+    def test_long_url_persists_correctly(self, db_session):
+        """A URL with 300+ chars is stored without truncation."""
+        long_url = self._build_long_url(300)
+        expected_entry_id = compute_source_entry_id({"url": long_url})
+
+        feed = FakeFeed()
+        raw_items = [
+            {
+                "title": "Long URL Article",
+                "url": long_url,
+                "source_name": "Example",
+                "published_at": datetime(2024, 7, 1, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "Summary",
+                "raw_text": "Content",
+            },
+        ]
+
+        items, skipped = normalize_content("ws-1", feed, raw_items, db=db_session)
+        assert len(items) == 1
+        assert skipped == 0
+
+        item = items[0]
+        # source_entry_id must be set to the full normalized URL
+        assert item.source_entry_id == expected_entry_id
+        # Must not be truncated — should be the same length as the computed ID
+        assert len(item.source_entry_id) == len(expected_entry_id)
+        assert len(item.source_entry_id) > 255
+
+        # Persist and verify from DB
+        db_session.add(item)
+        db_session.commit()
+
+        row = db_session.query(ContentItem).filter_by(workspace_id="ws-1").one()
+        assert row.source_entry_id == expected_entry_id
+        assert row.source_entry_id is not None
+        assert len(row.source_entry_id) == len(expected_entry_id)
+
+    def test_very_long_url_with_query_params(self, db_session):
+        """A URL with 500+ chars and many query params persists and dedup works."""
+        very_long_url = self._build_very_long_url(500)
+        expected_entry_id = compute_source_entry_id({"url": very_long_url})
+
+        feed = FakeFeed()
+        raw_items = [
+            {
+                "title": "Very Long URL Article",
+                "url": very_long_url,
+                "source_name": "Example",
+                "published_at": datetime(2024, 7, 2, tzinfo=timezone.utc),
+                "author": "Bob",
+                "summary": "Summary",
+                "raw_text": "Content",
+            },
+        ]
+
+        # --- First ingestion ---
+        items_1, skipped_1 = normalize_content("ws-1", feed, raw_items, db=db_session)
+        assert len(items_1) == 1
+        assert skipped_1 == 0
+        assert items_1[0].source_entry_id == expected_entry_id
+
+        for item in items_1:
+            db_session.add(item)
+        db_session.commit()
+
+        # --- Second ingestion of the same long URL ---
+        items_2, skipped_2 = normalize_content("ws-1", feed, raw_items, db=db_session)
+        assert len(items_2) == 0
+        assert skipped_2 == 1
+
+        # Total rows should still be exactly 1
+        total = db_session.query(ContentItem).filter_by(workspace_id="ws-1").count()
+        assert total == 1
+
+    def test_long_url_dedup_across_runs(self, db_session):
+        """Ingesting the same long URL in a second run produces 0 new items."""
+        long_url = self._build_long_url(300)
+        expected_entry_id = compute_source_entry_id({"url": long_url})
+
+        feed = FakeFeed()
+        raw_items = [
+            {
+                "title": "Dedup Test Article",
+                "url": long_url,
+                "source_name": "Example",
+                "published_at": datetime(2024, 7, 3, tzinfo=timezone.utc),
+                "author": "Carol",
+                "summary": "Summary",
+                "raw_text": "Content",
+            },
+        ]
+
+        # --- Batch 1 ---
+        items_1, skipped_1 = normalize_content("ws-1", feed, raw_items, db=db_session)
+        assert len(items_1) == 1
+        assert skipped_1 == 0
+        assert items_1[0].source_entry_id == expected_entry_id
+
+        for item in items_1:
+            db_session.add(item)
+        db_session.commit()
+
+        # --- Batch 2 (identical) ---
+        items_2, skipped_2 = normalize_content("ws-1", feed, raw_items, db=db_session)
+        assert len(items_2) == 0
+        assert skipped_2 == 1
+
+        # Verify the DB row still has the full source_entry_id
+        total = db_session.query(ContentItem).filter_by(workspace_id="ws-1").count()
+        assert total == 1
+        row = db_session.query(ContentItem).filter_by(workspace_id="ws-1").one()
+        assert row.source_entry_id == expected_entry_id
