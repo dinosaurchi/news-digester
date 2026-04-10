@@ -273,12 +273,19 @@ def regenerate_report(report_id: str, db: Session = Depends(get_db)):
         workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
     )
 
-    # Generate fresh markdown without creating a hidden replacement thread.
-    markdown = render_report_markdown(
-        workspace,
-        shortlisted_items,
-        opencode_client=opencode_client,
-    )
+    # Generate fresh markdown — fail explicitly if OpenCode is unavailable.
+    try:
+        markdown = render_report_markdown(
+            workspace,
+            shortlisted_items,
+            opencode_client=opencode_client,
+        )
+    except OpenCodeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OpenCodeTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except OpenCodeResponseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     source_ids = [item.id for item in shortlisted_items]
     metadata = {

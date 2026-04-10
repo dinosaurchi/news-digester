@@ -75,12 +75,25 @@ export default function WorkspaceOverviewPage() {
 
   const runMutation = useMutation({
     mutationFn: () => api.runs.trigger(workspaceId),
-    onSuccess: () => {
-      setRunToast({ success: true, message: 'Intelligence cycle triggered successfully.' });
+    onSuccess: (run) => {
+      if (run.status === 'failed') {
+        setRunToast({
+          success: false,
+          message: run.error
+            ? `Run failed: ${run.error.length > 80 ? run.error.slice(0, 80) + '…' : run.error}`
+            : 'Intelligence cycle run failed.',
+        });
+      } else {
+        setRunToast({ success: true, message: 'Intelligence cycle triggered successfully.' });
+      }
       queryClient.invalidateQueries({ queryKey: ['runs', workspaceId] });
     },
-    onError: () => {
-      setRunToast({ success: false, message: 'Failed to trigger run. Please try again.' });
+    onError: (err) => {
+      const msg =
+        err instanceof Error && err.message
+          ? `Failed to trigger run: ${err.message}`
+          : 'Failed to trigger run. Please try again.';
+      setRunToast({ success: false, message: msg });
     },
   });
 
