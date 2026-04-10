@@ -1,269 +1,274 @@
-"""Seeded end-to-end backend integration test.
+"""Seeded end-to-end backend integration tests.
 
-Verifies that a brand-new workspace can be created, seeded with feeds,
-ingested, and turned into a report — all using deterministic fixtures
-(mocked HTTP), without depending on pre-existing manual data.
+These tests create a fresh workspace, seed deterministic feed fixtures,
+run the real ``run-now`` API path, and verify that content import,
+run metadata, report generation, and report-source resolution all work
+without depending on pre-existing manual data.
 """
 
-from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
 
-from app.models.content import ContentItem
-from app.models.run import ProcessingRun
-from app.services.pipeline import execute_workspace_run
 from app.services.pipeline_steps import FeedFetchResult
-
-from app.tests.test_pipeline_feed_failure import (
-    _fake_generate_report,
-    _make_entry,
-    _make_feed,
-    _make_workspace,
-    _setup_downstream_mocks,
+from app.tests.conftest import TestingSessionLocal
+from app.tests.test_runs import (
+    _create_feed,
+    _create_workspace,
+    _create_workspace_profile,
+    _create_workspace_settings,
 )
 
 
+def _fetch_step(detail_json: dict) -> dict:
+    return next(step for step in detail_json["steps"] if step["name"] == "fetch_feeds")
+
+
 class TestSeededEndToEndPipeline:
-    """End-to-end pipeline test with deterministic seeded fixtures."""
+    """End-to-end pipeline coverage with deterministic seeded fixtures."""
 
-    @patch("app.services.pipeline.select_shortlist")
-    @patch("app.services.pipeline.generate_report")
-    @patch("app.services.pipeline.score_content_items")
-    @patch("app.services.pipeline.cluster_content_items")
-    @patch("app.services.pipeline.fetch_feed")
-    def test_fresh_workspace_full_pipeline_to_report(
-        self,
-        mock_fetch,
-        mock_cluster,
-        mock_score,
-        mock_report,
-        mock_shortlist,
-        db_session,
+    def test_fresh_workspace_run_now_generates_report_with_resolvable_sources(
+        self, client, monkeypatch
     ):
-        """Full pipeline: workspace → feeds → fetch → normalize → cluster → score → shortlist → report."""
-        # 1. Create a fresh workspace with 3 feeds
-        ws = _make_workspace(db_session, name="E2E Test WS", customer="TestCo")
-
-        feed_a = _make_feed(
-            db_session,
-            ws.id,
-            name="Tech News Feed",
-            url="https://tech.example.com/rss",
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(
+            client,
+            ws_id,
+            priority_themes=["AI", "automation", "cloud"],
         )
-        feed_b = _make_feed(
-            db_session,
-            ws.id,
-            name="Industry Feed",
-            url="https://industry.example.com/rss",
-        )
-        feed_c = _make_feed(
-            db_session,
-            ws.id,
-            name="Blog Feed",
-            url="https://blog.example.com/rss",
-            feed_type="blog",
+        _create_workspace_settings(
+            client,
+            ws_id,
+            thresholds={
+                "min_relevance_score": 0.1,
+                "min_final_score": 0.1,
+                "max_articles_per_report": 15,
+            },
         )
 
-        # 2. Deterministic entries: 2 + 3 + 2 = 7 total
-        entries_by_feed = {
-            feed_a.id: [
-                _make_entry(
-                    title="AI Breakthrough in Healthcare Diagnostics",
-                    url="https://tech.example.com/ai-healthcare",
-                ),
-                _make_entry(
-                    title="Cloud Computing Trends for 2025",
-                    url="https://tech.example.com/cloud-trends",
-                ),
+        feed_ids = [
+            _create_feed(client, ws_id, name="Tech News Feed", url="https://tech.example.com/rss"),
+            _create_feed(
+                client,
+                ws_id,
+                name="Industry Feed",
+                url="https://industry.example.com/rss",
+            ),
+            _create_feed(client, ws_id, name="Cloud Feed", url="https://cloud.example.com/rss"),
+        ]
+
+        now = datetime.now(timezone.utc)
+        entries_by_url = {
+            "https://tech.example.com/rss": [
+                {
+                    "title": "AI Breakthrough in Healthcare Diagnostics",
+                    "url": "https://tech.example.com/ai-healthcare",
+                    "source_name": "Tech News Feed",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Reporter",
+                    "summary": "AI diagnostics are improving patient triage.",
+                    "raw_text": "Detailed article about AI diagnostics in healthcare.",
+                },
+                {
+                    "title": "Cloud Computing Trends for 2026",
+                    "url": "https://tech.example.com/cloud-trends",
+                    "source_name": "Tech News Feed",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Reporter",
+                    "summary": "Enterprises are consolidating cloud spend.",
+                    "raw_text": "Detailed article about cloud cost optimization.",
+                },
             ],
-            feed_b.id: [
-                _make_entry(
-                    title="Manufacturing Sector Embraces Automation",
-                    url="https://industry.example.com/manufacturing-auto",
-                ),
-                _make_entry(
-                    title="Supply Chain Innovations Post-Pandemic",
-                    url="https://industry.example.com/supply-chain",
-                ),
-                _make_entry(
-                    title="Small Business Grant Programs Announced",
-                    url="https://industry.example.com/grants",
-                ),
+            "https://industry.example.com/rss": [
+                {
+                    "title": "Manufacturing Sector Embraces Automation",
+                    "url": "https://industry.example.com/manufacturing-auto",
+                    "source_name": "Industry Feed",
+                    "published_at": now - timedelta(hours=3),
+                    "author": "Analyst",
+                    "summary": "Factories are scaling robotics deployments.",
+                    "raw_text": "Detailed article about factory automation.",
+                },
+                {
+                    "title": "Supply Chain Innovations Post-Pandemic",
+                    "url": "https://industry.example.com/supply-chain",
+                    "source_name": "Industry Feed",
+                    "published_at": now - timedelta(hours=4),
+                    "author": "Analyst",
+                    "summary": "Vendors are using AI to rebalance logistics.",
+                    "raw_text": "Detailed article about supply-chain analytics.",
+                },
             ],
-            feed_c.id: [
-                _make_entry(
-                    title="Entrepreneurship Lessons from Founders",
-                    url="https://blog.example.com/entrepreneurship",
-                ),
-                _make_entry(
-                    title="Remote Work Productivity Tips",
-                    url="https://blog.example.com/remote-work",
-                ),
+            "https://cloud.example.com/rss": [
+                {
+                    "title": "FinOps Teams Standardize Cloud Guardrails",
+                    "url": "https://cloud.example.com/finops-guardrails",
+                    "source_name": "Cloud Feed",
+                    "published_at": now - timedelta(hours=5),
+                    "author": "Editor",
+                    "summary": "Cloud governance is moving into daily operations.",
+                    "raw_text": "Detailed article about cloud governance and FinOps.",
+                }
             ],
         }
 
-        def fetch_side_effect(feed):
-            entries = entries_by_feed.get(feed.id, [])
-            return FeedFetchResult(
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: FeedFetchResult(
                 success=True,
-                entries=entries,
+                entries=entries_by_url[feed.url],
                 error=None,
                 source_title=feed.name,
+            ),
+        )
+
+        run_resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert run_resp.status_code == 201
+        run_id = run_resp.json()["id"]
+        assert run_resp.json()["status"] == "success"
+
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        assert detail_resp.status_code == 200
+        detail = detail_resp.json()
+        fetch_step = _fetch_step(detail)
+        assert fetch_step["metadata"]["feedsAttempted"] == 3
+        assert fetch_step["metadata"]["feedsSucceeded"] == 3
+        assert fetch_step["metadata"]["feedsFailed"] == 0
+        assert fetch_step["metadata"]["entriesFetched"] == 5
+        assert fetch_step["metadata"]["entriesImported"] == 5
+        assert fetch_step["metadata"]["entriesSkipped"] == 0
+        assert len(fetch_step["metadata"]["feedDetails"]) == 3
+
+        report_ids = detail["links"]["reports"]
+        assert len(report_ids) == 1
+        report_id = report_ids[0]
+
+        report_resp = client.get(f"/api/reports/{report_id}")
+        assert report_resp.status_code == 200
+        assert report_resp.json()["status"] == "published"
+        assert report_resp.json()["messageCount"] >= 1
+
+        msg_resp = client.get(f"/api/report-threads/{report_id}/messages")
+        assert msg_resp.status_code == 200
+        messages = msg_resp.json()
+        system_messages = [m for m in messages if m["role"] == "system"]
+        assert len(system_messages) == 1
+        system_message = system_messages[0]
+        assert "AI Breakthrough in Healthcare Diagnostics" in system_message["content"]
+
+        source_ids = system_message["metadata"]["sources"]
+        assert len(source_ids) > 0
+        assert all(not source_id.startswith("http") for source_id in source_ids)
+
+        for source_id in source_ids:
+            content_resp = client.get(f"/api/content/{source_id}")
+            assert content_resp.status_code == 200
+            assert content_resp.json()["workspaceId"] == ws_id
+
+        db = TestingSessionLocal()
+        try:
+            from app.models.content import ContentItem
+
+            db_count = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).count()
             )
+            assert db_count == 5
+        finally:
+            db.close()
 
-        mock_fetch.side_effect = fetch_side_effect
-        _setup_downstream_mocks(mock_cluster, mock_score, mock_report, mock_shortlist)
+        assert len(feed_ids) == 3
 
-        # 3. Execute the pipeline
-        run, items, report = execute_workspace_run(db_session, ws)
+    def test_fresh_workspace_second_run_is_idempotent(self, client, monkeypatch):
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id, priority_themes=["AI", "automation"])
+        _create_workspace_settings(client, ws_id)
 
-        # 4. Assertions
+        _create_feed(client, ws_id, name="Source X", url="https://source-x.example.com/rss")
+        _create_feed(client, ws_id, name="Source Y", url="https://source-y.example.com/rss")
 
-        # Run was created with status "success"
-        assert run.status == "success"
-        assert run.workspace_id == ws.id
-        assert run.finished_at is not None
-        assert run.duration_ms is not None
-
-        # Content items were imported (7 total)
-        assert len(items) == 7
-        db_items = (
-            db_session.query(ContentItem)
-            .filter(ContentItem.workspace_id == ws.id)
-            .all()
-        )
-        assert len(db_items) == 7
-
-        # Each content item has a valid source_entry_id
-        for item in db_items:
-            assert item.source_entry_id is not None
-            assert len(item.source_entry_id) > 0
-            assert item.id is not None
-
-        # Feed statuses were updated to "healthy" with last_fetched_at set
-        for feed in [feed_a, feed_b, feed_c]:
-            db_session.refresh(feed)
-            assert feed.status == "healthy"
-            assert feed.last_fetched_at is not None
-            assert feed.last_error is None
-
-        # A report was created and linked to the run
-        assert report is not None
-        assert report.run_id == run.id
-        assert report.workspace_id == ws.id
-
-        # Report sources resolve to valid ContentItem records:
-        # all items returned from the pipeline are queryable from the DB
-        item_ids = {item.id for item in items}
-        db_item_ids = {
-            row.id
-            for row in db_session.query(ContentItem.id)
-            .filter(ContentItem.workspace_id == ws.id)
-            .all()
-        }
-        assert item_ids == db_item_ids
-
-    @patch("app.services.pipeline.select_shortlist")
-    @patch("app.services.pipeline.generate_report")
-    @patch("app.services.pipeline.score_content_items")
-    @patch("app.services.pipeline.cluster_content_items")
-    @patch("app.services.pipeline.fetch_feed")
-    def test_fresh_workspace_idempotent_re_run(
-        self,
-        mock_fetch,
-        mock_cluster,
-        mock_score,
-        mock_report,
-        mock_shortlist,
-        db_session,
-    ):
-        """Running the pipeline twice with the same entries is idempotent."""
-        # 1. Create workspace with 2 feeds
-        ws = _make_workspace(db_session, name="Idempotent WS", customer="TestCo")
-
-        feed_x = _make_feed(
-            db_session,
-            ws.id,
-            name="Source X",
-            url="https://source-x.example.com/rss",
-        )
-        feed_y = _make_feed(
-            db_session,
-            ws.id,
-            name="Source Y",
-            url="https://source-y.example.com/rss",
-        )
-
-        # 2. Deterministic entries: 2 + 2 = 4 total
-        entries_by_feed = {
-            feed_x.id: [
-                _make_entry(
-                    title="First article from Source X",
-                    url="https://source-x.example.com/article-1",
-                ),
-                _make_entry(
-                    title="Second article from Source X",
-                    url="https://source-x.example.com/article-2",
-                ),
+        now = datetime.now(timezone.utc)
+        entries_by_url = {
+            "https://source-x.example.com/rss": [
+                {
+                    "title": "First article from Source X",
+                    "url": "https://source-x.example.com/article-1",
+                    "source_name": "Source X",
+                    "published_at": now - timedelta(hours=1),
+                    "author": "Writer",
+                    "summary": "Source X summary one.",
+                    "raw_text": "Source X article one body.",
+                },
+                {
+                    "title": "Second article from Source X",
+                    "url": "https://source-x.example.com/article-2",
+                    "source_name": "Source X",
+                    "published_at": now - timedelta(hours=2),
+                    "author": "Writer",
+                    "summary": "Source X summary two.",
+                    "raw_text": "Source X article two body.",
+                },
             ],
-            feed_y.id: [
-                _make_entry(
-                    title="First article from Source Y",
-                    url="https://source-y.example.com/article-1",
-                ),
-                _make_entry(
-                    title="Second article from Source Y",
-                    url="https://source-y.example.com/article-2",
-                ),
+            "https://source-y.example.com/rss": [
+                {
+                    "title": "First article from Source Y",
+                    "url": "https://source-y.example.com/article-1",
+                    "source_name": "Source Y",
+                    "published_at": now - timedelta(hours=3),
+                    "author": "Writer",
+                    "summary": "Source Y summary one.",
+                    "raw_text": "Source Y article one body.",
+                },
+                {
+                    "title": "Second article from Source Y",
+                    "url": "https://source-y.example.com/article-2",
+                    "source_name": "Source Y",
+                    "published_at": now - timedelta(hours=4),
+                    "author": "Writer",
+                    "summary": "Source Y summary two.",
+                    "raw_text": "Source Y article two body.",
+                },
             ],
         }
 
-        def fetch_side_effect(feed):
-            entries = entries_by_feed.get(feed.id, [])
-            return FeedFetchResult(
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: FeedFetchResult(
                 success=True,
-                entries=entries,
+                entries=entries_by_url[feed.url],
                 error=None,
                 source_title=feed.name,
+            ),
+        )
+
+        first_run_resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert first_run_resp.status_code == 201
+        first_run_id = first_run_resp.json()["id"]
+
+        second_run_resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert second_run_resp.status_code == 201
+        second_run_id = second_run_resp.json()["id"]
+
+        second_detail_resp = client.get(f"/api/runs/{second_run_id}")
+        assert second_detail_resp.status_code == 200
+        second_detail = second_detail_resp.json()
+        fetch_step = _fetch_step(second_detail)
+        assert fetch_step["metadata"]["feedsAttempted"] == 2
+        assert fetch_step["metadata"]["feedsSucceeded"] == 2
+        assert fetch_step["metadata"]["feedsFailed"] == 0
+        assert fetch_step["metadata"]["entriesFetched"] == 4
+        assert fetch_step["metadata"]["entriesImported"] == 0
+        assert fetch_step["metadata"]["entriesSkipped"] == 4
+
+        db = TestingSessionLocal()
+        try:
+            from app.models.content import ContentItem
+            from app.models.run import ProcessingRun
+
+            content_count = (
+                db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).count()
             )
+            run_count = db.query(ProcessingRun).filter(ProcessingRun.workspace_id == ws_id).count()
+            assert content_count == 4
+            assert run_count == 2
+        finally:
+            db.close()
 
-        mock_fetch.side_effect = fetch_side_effect
-        _setup_downstream_mocks(mock_cluster, mock_score, mock_report, mock_shortlist)
-
-        # 3. First run
-        run1, items1, report1 = execute_workspace_run(db_session, ws)
-
-        total_after_run1 = (
-            db_session.query(ContentItem)
-            .filter(ContentItem.workspace_id == ws.id)
-            .count()
-        )
-        assert total_after_run1 == 4
-        assert len(items1) == 4
-
-        # 4. Second run (same mocks → same entries returned)
-        run2, items2, report2 = execute_workspace_run(db_session, ws)
-
-        # 5. Assertions
-
-        # Second run imported 0 new content items (all skipped as duplicates)
-        assert len(items2) == 0
-
-        # Total content items still equals first-run count only
-        total_after_run2 = (
-            db_session.query(ContentItem)
-            .filter(ContentItem.workspace_id == ws.id)
-            .count()
-        )
-        assert total_after_run2 == 4
-
-        # Run count is 2
-        run_count = (
-            db_session.query(ProcessingRun)
-            .filter(ProcessingRun.workspace_id == ws.id)
-            .count()
-        )
-        assert run_count == 2
-
-        # Both runs succeeded with distinct IDs
-        assert run1.status == "success"
-        assert run2.status == "success"
-        assert run1.id != run2.id
+        assert first_run_id != second_run_id
