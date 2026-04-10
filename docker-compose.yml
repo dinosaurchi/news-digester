@@ -49,6 +49,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      opencode-agent-adapter:
+        condition: service_healthy
     restart: unless-stopped
 
   worker:
@@ -75,6 +77,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      opencode-agent-adapter:
+        condition: service_healthy
     restart: unless-stopped
 
   beat:
@@ -101,6 +105,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      opencode-agent-adapter:
+        condition: service_healthy
     restart: unless-stopped
 
   app:
@@ -122,11 +128,8 @@ services:
       retries: 3
       start_period: 5s
 
-  # Opencode services are gated behind the 'opencode' profile so they are
-  # NOT started by default with `make up` / `docker compose up`.
-  # To include them, run: docker compose --profile opencode up --build -d
+  # OpenCode server — required infrastructure for the intelligence pipeline.
   opencode-server:
-    profiles: ["opencode"]
     image: ${OPENCODE_SERVER_IMAGE:-ghcr.io/anomalyco/opencode:latest}
     container_name: sme-news-admin-opencode-server
     entrypoint: ["opencode"]
@@ -142,11 +145,8 @@ services:
     volumes:
       - opencode-config:/opencode/config
 
-  # Opencode services are gated behind the 'opencode' profile so they are
-  # NOT started by default with `make up` / `docker compose up`.
-  # To include them, run: docker compose --profile opencode up --build -d
+  # OpenCode agent adapter — required infrastructure for the intelligence pipeline.
   opencode-agent-adapter:
-    profiles: ["opencode"]
     image: ${OPENCODE_ADAPTER_IMAGE:-sme-news-admin-opencode-agent-adapter:latest}
     build:
       context: ./services/opencode-agent-adapter
