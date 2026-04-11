@@ -19,8 +19,15 @@ class ThresholdsSchema(BaseModel):
     min_relevance_score: float = Field(0.65, alias="minRelevanceScore")
     min_final_score: float = Field(0.70, alias="minFinalScore")
     max_articles_per_report: int = Field(15, alias="maxArticlesPerReport")
+    scoring_weights: dict[str, float] | None = Field(None, alias="scoring_weights")
+    clustering_similarity_threshold: float | None = Field(
+        None, alias="clustering_similarity_threshold"
+    )
+    clustering_domain_title_threshold: float | None = Field(
+        None, alias="clustering_domain_title_threshold"
+    )
 
-    model_config = {"populate_by_name": True, "from_attributes": True}
+    model_config = {"populate_by_name": True, "from_attributes": True, "extra": "allow"}
 
 
 class RetentionSchema(BaseModel):
