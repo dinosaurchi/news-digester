@@ -1,5 +1,13 @@
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { cn } from '@/lib/utils';
+
+function truncateUrl(url: string, max = 60): string {
+  if (url.length <= max) return url;
+  const start = url.slice(0, 35);
+  const end = url.slice(-15);
+  return `${start}…${end}`;
+}
 
 interface MarkdownRendererProps {
   content: string;
@@ -19,12 +27,16 @@ export function MarkdownRenderer({ content, className, variant = 'system' }: Mar
       )}
     >
       <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
         components={{
-          a: ({ href, children, ...props }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:text-indigo-800 underline decoration-indigo-300 hover:decoration-indigo-500 transition-colors" {...props}>
-              {children}
-            </a>
-          ),
+          a: ({ href, children, ...props }) => {
+            const text = typeof children === 'string' && children.startsWith('http') ? truncateUrl(children) : children;
+            return (
+              <a href={href} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:text-indigo-800 underline decoration-indigo-300 hover:decoration-indigo-500 transition-colors" {...props}>
+                {text}
+              </a>
+            );
+          },
           code: ({ className: codeClassName, children, ...props }) => {
             const isInline = !codeClassName;
             if (isInline) {

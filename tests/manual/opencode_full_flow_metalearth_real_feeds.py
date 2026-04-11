@@ -110,7 +110,7 @@ class ApiClient:
             method=method,
         )
         try:
-            with self._opener.open(req, timeout=180) as resp:
+            with self._opener.open(req, timeout=600) as resp:
                 raw = resp.read().decode("utf-8")
                 data = json.loads(raw) if raw else {}
                 return resp.status, data

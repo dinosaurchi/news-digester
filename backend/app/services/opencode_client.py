@@ -401,7 +401,8 @@ class OpenCodeClient:
             "You are generating a concise SME news intelligence report.\n"
             "Return ONLY valid JSON with shape:\n"
             '{"markdown":"# <report title>\\n\\n<markdown report body>"}\n'
-            "Use markdown. Cite source URLs already present in the input. Do not invent facts.\n\n"
+            "Use markdown. Format source citations as markdown links: [Article Title](url). "
+            "Never paste bare URLs. Do not invent facts.\n\n"
             f"INPUT_JSON:\n{json.dumps(input_data, ensure_ascii=False, indent=2)}\n\n"
             f"METADATA_JSON:\n{json.dumps(metadata, ensure_ascii=False, indent=2)}"
         )
