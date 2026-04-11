@@ -210,13 +210,70 @@ def compute_source_authority_score(
 # ---------------------------------------------------------------------------
 
 
-def compute_bm25_score(text: str, query_terms: list[str]) -> float:
+def compute_document_frequencies(
+    items_texts: list[str],
+    query_terms: list[str],
+) -> dict[str, float]:
+    """Compute IDF values for query terms across a batch of item texts.
+
+    For each query term, counts how many item texts contain that term
+    (case-insensitive).  Returns ``{term: idf}`` where
+    ``idf = log(N / (1 + df))`` and *N* is the total number of items.
+
+    Parameters
+    ----------
+    items_texts:
+        List of text strings (one per item in the batch).
+    query_terms:
+        List of query terms to compute IDF for.
+
+    Returns
+    -------
+    Dict mapping each query term (lowercased) to its IDF value.
+    Returns an empty dict when *items_texts* or *query_terms* is empty.
+    """
+    if not items_texts or not query_terms:
+        return {}
+
+    N = len(items_texts)
+
+    # Count document frequency for each query term
+    df: dict[str, int] = {}
+    for term in query_terms:
+        term_lower = term.lower()
+        count = 0
+        for text in items_texts:
+            if term_lower in text.lower():
+                count += 1
+        df[term_lower] = count
+
+    # Compute IDF: log(N / (1 + df)), clamped at 0 so that common terms
+    # (appearing in most documents) contribute less than rare terms, but
+    # never produce a negative multiplier.
+    idf: dict[str, float] = {}
+    for term_lower, doc_freq in df.items():
+        idf[term_lower] = max(0.0, math.log(N / (1 + doc_freq)))
+
+    return idf
+
+
+def compute_bm25_score(
+    text: str,
+    query_terms: list[str],
+    idf: dict[str, float] | None = None,
+) -> float:
     """Return a simplified BM25-style score based on term frequency.
 
     The text is tokenised by whitespace and lowercased.  For each *query_term*
     the raw term frequency (TF) in the text is computed.  The final score is
     the average of ``log(1 + tf)`` across all query terms (missing terms
     contribute 0), capped at 1.0.
+
+    When *idf* is provided, each term's ``log(1 + tf)`` is multiplied by its
+    IDF value before averaging, so that common terms (appearing in many
+    documents) contribute less than rare terms.  When *idf* is ``None``
+    (default), the function behaves in TF-only mode, identical to the
+    previous implementation.
 
     Returns 0.0 when *text* or *query_terms* is empty.
     """
@@ -232,12 +289,15 @@ def compute_bm25_score(text: str, query_terms: list[str]) -> float:
     for token in tokens:
         tf[token] = tf.get(token, 0) + 1
 
-    # Sum log(1 + tf) for each query term present
+    # Sum log(1 + tf) * idf (when provided) for each query term present
     raw_score = 0.0
     for term in query_terms:
         term_lower = term.lower()
         if term_lower in tf:
-            raw_score += math.log(1 + tf[term_lower])
+            tf_score = math.log(1 + tf[term_lower])
+            if idf is not None and term_lower in idf:
+                tf_score *= idf[term_lower]
+            raw_score += tf_score
 
     # Normalise by number of query terms so the score reflects match density
     normalised = raw_score / len(query_terms)
@@ -628,23 +688,32 @@ def score_content_items(
     )
 
     # ------------------------------------------------------------------
-    # 2. Score each item
+    # 1c. Pre-compute item texts and batch IDF for BM25 scoring
     # ------------------------------------------------------------------
-    included_count = 0
-    excluded_count = 0
-    scores_list: list[float] = []
-
+    items_texts: list[str] = []
     for item in items:
-        # Build the text blob to score: title + summary (with raw_text as fallback)
         parts: list[str] = []
         if item.title:
             parts.append(item.title)
         if item.summary_snippet:
             parts.append(item.summary_snippet)
         elif item.raw_text:
-            # Use first 1000 chars of raw_text as a fallback summary
             parts.append(item.raw_text[:1000])
-        item_text = " ".join(parts)
+        items_texts.append(" ".join(parts))
+
+    batch_idf: dict[str, float] = compute_document_frequencies(
+        items_texts, priority_themes
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Score each item
+    # ------------------------------------------------------------------
+    included_count = 0
+    excluded_count = 0
+    scores_list: list[float] = []
+
+    for idx, item in enumerate(items):
+        item_text = items_texts[idx]
 
         # Compute individual scores
         individual_scores: dict[str, float] = {
@@ -661,7 +730,7 @@ def score_content_items(
                 _extract_domain(item.url),
                 trusted_domains,
             ),
-            "bm25": compute_bm25_score(item_text, priority_themes),
+            "bm25": compute_bm25_score(item_text, priority_themes, idf=batch_idf),
         }
 
         # Combined weighted score
@@ -673,6 +742,10 @@ def score_content_items(
         # Check excluded topics
         excluded_score = compute_excluded_topic_score(item_text, excluded_topics)
         breakdown["excluded_topic_score"] = excluded_score
+
+        # Include IDF values in the breakdown for transparency
+        if batch_idf:
+            breakdown["bm25_idf"] = batch_idf
 
         # ------------------------------------------------------------------
         # 2b. Apply feedback adjustment
