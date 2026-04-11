@@ -220,7 +220,9 @@ def execute_workspace_run(
             "Clustering content items...",
         )
         try:
-            cluster_stats = cluster_content_items(db, all_items, workspace.id)
+            cluster_stats = cluster_content_items(
+                db, all_items, workspace.id, workspace=workspace
+            )
             _finish_event(
                 db,
                 cluster_event,
