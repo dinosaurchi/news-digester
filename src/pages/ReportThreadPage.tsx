@@ -130,7 +130,15 @@ export default function ReportThreadPage() {
   const regenerateMutation = useMutation({
     mutationFn: () => api.reports.regenerate(threadId),
     onSuccess: () => {
+      setAssistantError(null);
       queryClient.invalidateQueries({ queryKey: ['thread-messages', threadId] });
+    },
+    onError: (err) => {
+      setAssistantError(
+        err instanceof ApiError && typeof err.detail === 'string'
+          ? err.detail
+          : 'Report regeneration failed. The assistant could not generate a new response.',
+      );
     },
   });
 
@@ -456,13 +464,25 @@ export default function ReportThreadPage() {
 }
 
 function chatErrorMessage(err: unknown): string {
-  if (err instanceof ApiError && err.status === 503) {
-    return typeof err.detail === 'string'
-      ? err.detail
-      : 'Report chat assistant is not configured';
-  }
-  if (err instanceof ApiError && typeof err.detail === 'string') {
-    return err.detail;
+  if (err instanceof ApiError) {
+    if (err.status === 503) {
+      return typeof err.detail === 'string'
+        ? err.detail
+        : 'Report chat assistant is not available';
+    }
+    if (err.status === 504) {
+      return typeof err.detail === 'string'
+        ? err.detail
+        : 'Report chat assistant timed out';
+    }
+    if (err.status === 502) {
+      return typeof err.detail === 'string'
+        ? err.detail
+        : 'Report chat assistant returned an error';
+    }
+    if (typeof err.detail === 'string') {
+      return err.detail;
+    }
   }
   return 'The report chat assistant failed. Your message was saved.';
 }

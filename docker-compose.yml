@@ -41,7 +41,6 @@ services:
       ADMIN_ROLE: "${ADMIN_ROLE:-admin}"
       OPENCODE_BASE_URL: http://opencode-agent-adapter:8080
       OPENCODE_TIMEOUT_SECONDS: "${OPENCODE_TIMEOUT_SECONDS:-60}"
-      OPENCODE_ENABLED: "${OPENCODE_ENABLED:-false}"
       OPENCODE_DEFAULT_MODEL: "${OPENCODE_DEFAULT_MODEL:-opencode/gpt-5-nano}"
       OPENCODE_DEFAULT_AGENT: "${OPENCODE_DEFAULT_AGENT:-general}"
       OPENCODE_WORKSPACE_DIR: /workspace
@@ -50,6 +49,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      opencode-agent-adapter:
+        condition: service_healthy
     restart: unless-stopped
 
   worker:
@@ -68,7 +69,6 @@ services:
       ADMIN_ROLE: "${ADMIN_ROLE:-admin}"
       OPENCODE_BASE_URL: http://opencode-agent-adapter:8080
       OPENCODE_TIMEOUT_SECONDS: "${OPENCODE_TIMEOUT_SECONDS:-60}"
-      OPENCODE_ENABLED: "${OPENCODE_ENABLED:-false}"
       OPENCODE_DEFAULT_MODEL: "${OPENCODE_DEFAULT_MODEL:-opencode/gpt-5-nano}"
       OPENCODE_DEFAULT_AGENT: "${OPENCODE_DEFAULT_AGENT:-general}"
       OPENCODE_WORKSPACE_DIR: /workspace
@@ -77,6 +77,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      opencode-agent-adapter:
+        condition: service_healthy
     restart: unless-stopped
 
   beat:
@@ -95,7 +97,6 @@ services:
       ADMIN_ROLE: "${ADMIN_ROLE:-admin}"
       OPENCODE_BASE_URL: http://opencode-agent-adapter:8080
       OPENCODE_TIMEOUT_SECONDS: "${OPENCODE_TIMEOUT_SECONDS:-60}"
-      OPENCODE_ENABLED: "${OPENCODE_ENABLED:-false}"
       OPENCODE_DEFAULT_MODEL: "${OPENCODE_DEFAULT_MODEL:-opencode/gpt-5-nano}"
       OPENCODE_DEFAULT_AGENT: "${OPENCODE_DEFAULT_AGENT:-general}"
       OPENCODE_WORKSPACE_DIR: /workspace
@@ -104,6 +105,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      opencode-agent-adapter:
+        condition: service_healthy
     restart: unless-stopped
 
   app:
@@ -125,11 +128,8 @@ services:
       retries: 3
       start_period: 5s
 
-  # Opencode services are gated behind the 'opencode' profile so they are
-  # NOT started by default with `make up` / `docker compose up`.
-  # To include them, run: docker compose --profile opencode up --build -d
+  # OpenCode server — required infrastructure for the intelligence pipeline.
   opencode-server:
-    profiles: ["opencode"]
     image: ${OPENCODE_SERVER_IMAGE:-ghcr.io/anomalyco/opencode:latest}
     container_name: sme-news-admin-opencode-server
     entrypoint: ["opencode"]
@@ -145,11 +145,8 @@ services:
     volumes:
       - opencode-config:/opencode/config
 
-  # Opencode services are gated behind the 'opencode' profile so they are
-  # NOT started by default with `make up` / `docker compose up`.
-  # To include them, run: docker compose --profile opencode up --build -d
+  # OpenCode agent adapter — required infrastructure for the intelligence pipeline.
   opencode-agent-adapter:
-    profiles: ["opencode"]
     image: ${OPENCODE_ADAPTER_IMAGE:-sme-news-admin-opencode-agent-adapter:latest}
     build:
       context: ./services/opencode-agent-adapter

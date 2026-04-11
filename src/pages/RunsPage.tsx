@@ -1,5 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { ApiError } from '@/lib/api-client';
+import { toast } from '@/components/ui/toast';
 import { useParams } from 'react-router-dom';
 import {
   Play, Info, Activity, ChevronDown, ChevronUp, ChevronRight,
@@ -194,8 +196,24 @@ export default function RunsPage() {
   /* ---- trigger mutation ---- */
   const triggerMutation = useMutation({
     mutationFn: () => api.runs.trigger(workspaceId),
-    onSuccess: () => {
+    onSuccess: (run) => {
       queryClient.invalidateQueries({ queryKey: ['runs', workspaceId] });
+      if (run.status === 'failed') {
+        toast.error(
+          run.error
+            ? `Run failed: ${run.error.length > 80 ? run.error.slice(0, 80) + '…' : run.error}`
+            : 'Intelligence cycle run failed.',
+        );
+      }
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof ApiError && typeof err.detail === 'string'
+          ? err.detail
+          : err instanceof Error
+            ? err.message
+            : 'Failed to trigger run. Please try again.';
+      toast.error(`Failed to trigger run: ${msg}`);
     },
   });
 

@@ -24,10 +24,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class OpenCodeDisabledError(RuntimeError):
-    """Raised when OPENCODE_ENABLED=False and an LLM call is attempted."""
-
-
 class OpenCodeUnavailableError(RuntimeError):
     """Raised when the adapter is unreachable (connection refused)."""
 
@@ -88,14 +84,12 @@ class OpenCodeClient:
         base_url: str,
         timeout: int,
         default_model: str,
-        enabled: bool,
         default_agent: str = "general",
         workspace_dir: str = "/workspace",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._default_model = default_model
-        self._enabled = enabled
         self._default_agent = default_agent
         self._workspace_dir = workspace_dir
 
@@ -202,6 +196,7 @@ class OpenCodeClient:
         *,
         question: str,
         report_context: dict[str, Any],
+        workspace_context: dict[str, Any] | None = None,
         source_items: list[dict[str, Any]],
         recent_messages: list[dict[str, Any]],
     ) -> ReportChatResult:
@@ -212,6 +207,8 @@ class OpenCodeClient:
             "source_items": source_items,
             "recent_messages": recent_messages,
         }
+        if workspace_context:
+            input_data["workspace_context"] = workspace_context
         prompt = self._build_report_chat_prompt(input_data=input_data)
         raw = self._call_adapter_run(
             title="sme-news-report-chat",
@@ -238,8 +235,6 @@ class OpenCodeClient:
 
         Raises
         ------
-        OpenCodeDisabledError
-            If ``self._enabled`` is ``False``.
         OpenCodeUnavailableError
             If the adapter is unreachable.
         OpenCodeTimeoutError
@@ -247,11 +242,6 @@ class OpenCodeClient:
         OpenCodeResponseError
             If the adapter returns an error or an unexpected payload.
         """
-        if not self._enabled:
-            raise OpenCodeDisabledError(
-                "OpenCode adapter is disabled (OPENCODE_ENABLED=False)"
-            )
-
         payload: dict[str, Any] = {
             "title": title,
             "model": self._default_model,
@@ -414,7 +404,8 @@ class OpenCodeClient:
             "You are generating a concise SME news intelligence report.\n"
             "Return ONLY valid JSON with shape:\n"
             '{"markdown":"# <report title>\\n\\n<markdown report body>"}\n'
-            "Use markdown. Cite source URLs already present in the input. Do not invent facts.\n\n"
+            "Use markdown. Format source citations as markdown links: [Article Title](url). "
+            "Never paste bare URLs. Do not invent facts.\n\n"
             f"INPUT_JSON:\n{json.dumps(input_data, ensure_ascii=False, indent=2)}\n\n"
             f"METADATA_JSON:\n{json.dumps(metadata, ensure_ascii=False, indent=2)}"
         )
@@ -423,8 +414,9 @@ class OpenCodeClient:
     def _build_report_chat_prompt(*, input_data: dict[str, Any]) -> str:
         return (
             "You answer questions about one SME news intelligence report.\n"
-            "Use ONLY the report and source_items in INPUT_JSON. Do not use unrelated "
-            "workspace history. If the answer is not supported, say what is missing.\n"
+            "Use the report, source_items, and workspace_context in INPUT_JSON. "
+            "The workspace_context describes the business this report was generated for. "
+            "If the answer is not supported by the provided context, say what is missing.\n"
             "Return plain markdown text. Be concise, specific, and cite source titles "
             "or URLs that are already present in source_items.\n\n"
             f"INPUT_JSON:\n{json.dumps(input_data, ensure_ascii=False, indent=2)}"
@@ -435,8 +427,19 @@ class OpenCodeClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_json_object(text: str) -> dict[str, Any]:
+    def _strip_code_fences(text: str) -> str:
+        """Remove markdown code fences (```json ... ```) wrapping the text."""
         stripped = text.strip()
+        match = re.match(
+            r"^```(?:json|JSON)?\s*\n(.*?)```\s*$", stripped, flags=re.DOTALL
+        )
+        if match:
+            return match.group(1).strip()
+        return stripped
+
+    @classmethod
+    def _extract_json_object(cls, text: str) -> dict[str, Any]:
+        stripped = cls._strip_code_fences(text.strip())
         try:
             parsed = json.loads(stripped)
         except json.JSONDecodeError:
@@ -464,9 +467,19 @@ class OpenCodeClient:
         try:
             parsed = cls._extract_json_object(stripped)
         except (OpenCodeResponseError, json.JSONDecodeError):
+            # If extraction failed but the raw text looks like JSON, something
+            # went wrong — don't silently store raw JSON as report content.
+            if stripped.startswith("{") and stripped.endswith("}"):
+                raise OpenCodeResponseError(
+                    "OpenCode returned JSON but failed to extract the markdown field"
+                )
             return stripped
 
         markdown = parsed.get("markdown")
         if isinstance(markdown, str) and markdown.strip():
             return markdown.strip()
-        return stripped
+
+        # The LLM returned valid JSON but no usable markdown field.
+        raise OpenCodeResponseError(
+            "OpenCode JSON response did not contain a 'markdown' field"
+        )

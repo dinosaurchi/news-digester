@@ -109,11 +109,7 @@ def send_message(thread_id: str, body: MessageSendIn, db: Session = Depends(get_
     db.commit()
     db.refresh(user_msg)
 
-    if not settings.OPENCODE_ENABLED:
-        raise HTTPException(
-            status_code=503,
-            detail="Report chat assistant is not configured",
-        )
+    workspace = ws_service.get_workspace(db, report.workspace_id)
 
     messages = report_service.get_thread_messages(db, thread_id)
     source_ids = report_chat_service.get_report_chat_source_ids(report, messages)
@@ -130,13 +126,13 @@ def send_message(thread_id: str, body: MessageSendIn, db: Session = Depends(get_
         default_model=settings.OPENCODE_DEFAULT_MODEL,
         default_agent=settings.OPENCODE_DEFAULT_AGENT,
         workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
-        enabled=True,
     )
     try:
         chat_result = report_chat_service.generate_report_chat_reply(
             client=opencode_client,
             question=body.content,
             report=report,
+            workspace=workspace,
             source_items=source_items,
             recent_messages=recent_messages,
         )
@@ -248,9 +244,7 @@ def regenerate_report(report_id: str, db: Session = Depends(get_db)):
             )
         }
         shortlisted_items = [
-            items_by_id[item_id]
-            for item_id in source_ids
-            if item_id in items_by_id
+            items_by_id[item_id] for item_id in source_ids if item_id in items_by_id
         ]
     else:
         shortlisted_items = (
@@ -273,24 +267,28 @@ def regenerate_report(report_id: str, db: Session = Depends(get_db)):
     db.add(new_run)
     db.flush()
 
-    # Create OpenCode client if enabled
-    opencode_client: OpenCodeClient | None = None
-    if settings.OPENCODE_ENABLED:
-        opencode_client = OpenCodeClient(
-            base_url=settings.OPENCODE_BASE_URL,
-            timeout=settings.OPENCODE_TIMEOUT_SECONDS,
-            default_model=settings.OPENCODE_DEFAULT_MODEL,
-            default_agent=settings.OPENCODE_DEFAULT_AGENT,
-            workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
-            enabled=True,
-        )
-
-    # Generate fresh markdown without creating a hidden replacement thread.
-    markdown = render_report_markdown(
-        workspace,
-        shortlisted_items,
-        opencode_client=opencode_client,
+    # Create OpenCode client
+    opencode_client = OpenCodeClient(
+        base_url=settings.OPENCODE_BASE_URL,
+        timeout=settings.OPENCODE_TIMEOUT_SECONDS,
+        default_model=settings.OPENCODE_DEFAULT_MODEL,
+        default_agent=settings.OPENCODE_DEFAULT_AGENT,
+        workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
     )
+
+    # Generate fresh markdown — fail explicitly if OpenCode is unavailable.
+    try:
+        markdown = render_report_markdown(
+            workspace,
+            shortlisted_items,
+            opencode_client=opencode_client,
+        )
+    except OpenCodeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OpenCodeTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except OpenCodeResponseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     source_ids = [item.id for item in shortlisted_items]
     metadata = {

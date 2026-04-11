@@ -39,6 +39,35 @@ def startup():
     if os.environ.get("TESTING") == "1":
         return
 
+    # ── Validate required OpenCode configuration ────────────────────
+    required_fields = [
+        ("OPENCODE_BASE_URL", settings.OPENCODE_BASE_URL),
+        ("OPENCODE_DEFAULT_MODEL", settings.OPENCODE_DEFAULT_MODEL),
+        ("OPENCODE_DEFAULT_AGENT", settings.OPENCODE_DEFAULT_AGENT),
+        ("OPENCODE_WORKSPACE_DIR", settings.OPENCODE_WORKSPACE_DIR),
+    ]
+    missing_or_empty = [
+        name for name, value in required_fields if not value or not value.strip()
+    ]
+    if settings.OPENCODE_TIMEOUT_SECONDS <= 0:
+        missing_or_empty.append("OPENCODE_TIMEOUT_SECONDS (must be > 0)")
+    if missing_or_empty:
+        msg = (
+            "FATAL: Required OpenCode configuration is missing or invalid: "
+            + ", ".join(missing_or_empty)
+            + ". Set these environment variables and restart."
+        )
+        logger.critical(msg)
+        raise SystemExit(msg)
+
+    logger.info(
+        "OpenCode configuration validated: base_url=%s model=%s agent=%s timeout=%ds",
+        settings.OPENCODE_BASE_URL,
+        settings.OPENCODE_DEFAULT_MODEL,
+        settings.OPENCODE_DEFAULT_AGENT,
+        settings.OPENCODE_TIMEOUT_SECONDS,
+    )
+
     import subprocess
 
     logger.info("Running database migrations...")

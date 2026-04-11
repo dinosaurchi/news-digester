@@ -9,9 +9,11 @@ Covers:
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
+from app.services.opencode_client import OpenCodeClient, ReportResult
 from app.services.scoring import (
     _compute_feedback_adjustment,
     _load_feedback_signals,
@@ -121,6 +123,22 @@ def _add_feedback_event(db, ws_id, **overrides):
     db.add(event)
     db.flush()
     return event
+
+
+def _make_mock_opencode_client() -> OpenCodeClient:
+    """Create a mock OpenCodeClient for report generation tests."""
+    client = OpenCodeClient(
+        base_url="http://localhost:9001",
+        timeout=30,
+        default_model="test-model",
+    )
+    client.generate_report_markdown = MagicMock(  # type: ignore[assignment]
+        return_value=ReportResult(
+            markdown="# Test Report\n\nMock LLM content.",
+            model="test-model",
+        ),
+    )
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +470,9 @@ class TestFeedbackReportMetadata:
         db_session.flush()
         item = _make_item(db_session, ws.id, title="AI article")
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(
+            db_session, ws, [item], run, opencode_client=_make_mock_opencode_client()
+        )
 
         assert report.metadata_json is not None
         assert "feedback_context" not in report.metadata_json
@@ -473,7 +493,9 @@ class TestFeedbackReportMetadata:
         db_session.flush()
         item = _make_item(db_session, ws.id, title="AI article")
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(
+            db_session, ws, [item], run, opencode_client=_make_mock_opencode_client()
+        )
 
         assert report.metadata_json is not None
         fc = report.metadata_json["feedback_context"]
@@ -508,7 +530,9 @@ class TestFeedbackReportMetadata:
         db_session.flush()
         item = _make_item(db_session, ws.id, title="AI article")
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(
+            db_session, ws, [item], run, opencode_client=_make_mock_opencode_client()
+        )
 
         fc = report.metadata_json["feedback_context"]
         sources = fc["sources_influenced"]
@@ -533,7 +557,9 @@ class TestFeedbackReportMetadata:
         db_session.flush()
         item = _make_item(db_session, ws.id, title="AI article")
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(
+            db_session, ws, [item], run, opencode_client=_make_mock_opencode_client()
+        )
 
         fc = report.metadata_json["feedback_context"]
         assert fc["feedback_event_count"] == 2
@@ -553,7 +579,9 @@ class TestFeedbackReportMetadata:
         db_session.flush()
         item = _make_item(db_session, ws.id, title="AI article")
 
-        report = generate_report(db_session, ws, [item], run)
+        report = generate_report(
+            db_session, ws, [item], run, opencode_client=_make_mock_opencode_client()
+        )
 
         # Original "sources" key still present
         assert "sources" in report.metadata_json

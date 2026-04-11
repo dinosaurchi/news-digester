@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem
 from app.models.report import Report, ReportMessage
+from app.models.workspace import Workspace
 from app.services.opencode_client import OpenCodeClient, ReportChatResult
 
 MAX_CHAT_SOURCE_ITEMS = 12
@@ -21,6 +22,7 @@ def generate_report_chat_reply(
     client: OpenCodeClient,
     question: str,
     report: Report,
+    workspace: Workspace | None = None,
     source_items: list[ContentItem],
     recent_messages: list[ReportMessage],
 ) -> ReportChatResult:
@@ -28,6 +30,7 @@ def generate_report_chat_reply(
     return client.answer_report_question(
         question=question,
         report_context=_report_context(report),
+        workspace_context=_workspace_context(workspace) if workspace else None,
         source_items=[_content_item_context(item) for item in source_items],
         recent_messages=[_message_context(msg) for msg in recent_messages],
     )
@@ -89,6 +92,21 @@ def _metadata_source_ids(metadata: dict | None) -> list[str]:
     if not isinstance(raw_sources, list):
         return []
     return [source_id for source_id in raw_sources if isinstance(source_id, str)]
+
+
+def _workspace_context(workspace: Workspace) -> dict[str, Any]:
+    ctx: dict[str, Any] = {
+        "name": workspace.name,
+        "customer": workspace.customer,
+    }
+    if workspace.profile:
+        p = workspace.profile
+        ctx["business_name"] = p.business_name
+        ctx["description"] = p.description
+        ctx["products"] = p.products or []
+        ctx["competitors"] = p.competitors or []
+        ctx["priority_themes"] = p.priority_themes or []
+    return ctx
 
 
 def _report_context(report: Report) -> dict[str, Any]:

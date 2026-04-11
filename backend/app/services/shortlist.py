@@ -1,7 +1,10 @@
 """Shortlist selection module.
 
 Chooses the final candidate set for report generation by filtering,
-deduplicating clusters, scoring, capping, and optionally refining via LLM.
+deduplicating clusters, scoring, capping, and refining via LLM.
+
+OpenCode is a mandatory dependency: every call to ``select_shortlist``
+must provide a working ``OpenCodeClient``.
 """
 
 from __future__ import annotations
@@ -23,13 +26,22 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_ARTICLES = 15
 
 
+def _require_opencode_client(opencode_client: OpenCodeClient | None) -> OpenCodeClient:
+    """Return a validated OpenCode client or fail with a clear error."""
+    if opencode_client is None:
+        raise ValueError(
+            "OpenCodeClient is required for shortlist refinement; received None"
+        )
+    return opencode_client
+
+
 def select_shortlist(
     db: Session,
     items: list[ContentItem],
     workspace: Workspace,
     run: ProcessingRun,
     *,
-    opencode_client: OpenCodeClient | None = None,
+    opencode_client: OpenCodeClient | None,
 ) -> list[ContentItem]:
     """Select the final shortlist of content items for report generation.
 
@@ -38,7 +50,7 @@ def select_shortlist(
     2. Deduplicate by cluster (keep lead or highest-scored per cluster).
     3. Sort by final_score descending.
     4. Cap at workspace maxArticlesPerReport (default 15).
-    5. Optionally refine via LLM if *opencode_client* is provided.
+    5. Refine via LLM through the required *opencode_client*.
 
     Parameters
     ----------
@@ -51,8 +63,8 @@ def select_shortlist(
     run:
         The current processing run (available for future metadata storage).
     opencode_client:
-        Optional LLM client for shortlist refinement.  When ``None`` the
-        score-based shortlist is returned as-is without contacting the LLM.
+        **Required** LLM client for shortlist refinement.  A missing
+        client is a programmer/configuration error.
 
     Returns
     -------
@@ -61,9 +73,11 @@ def select_shortlist(
     Raises
     ------
     OpenCodeUnavailableError, OpenCodeTimeoutError, OpenCodeResponseError:
-        If *opencode_client* is provided and the LLM call fails.  These
-        propagate to the caller; there is **no** silent fallback.
+        If the LLM call fails.  These propagate to the caller; there is
+        **no** silent fallback.
     """
+    opencode_client = _require_opencode_client(opencode_client)
+
     # ------------------------------------------------------------------
     # 1. Filter to included items only
     # ------------------------------------------------------------------
@@ -86,10 +100,9 @@ def select_shortlist(
     capped = deduped[:max_articles]
 
     # ------------------------------------------------------------------
-    # 5. Optional LLM refinement
+    # 5. Mandatory LLM refinement
     # ------------------------------------------------------------------
-    if opencode_client is not None:
-        capped = _refine_via_llm(opencode_client, capped, workspace)
+    capped = _refine_via_llm(opencode_client, capped, workspace)
 
     return capped
 
@@ -194,11 +207,13 @@ def _refine_via_llm(
             refined.append(item_by_id[item_id])
 
     # If the LLM returned no matching items, fall back to the score-based
-    # shortlist.  This is not a failure — it is a data-matching precaution.
+    # shortlist.  This is a response-validation safeguard for cases where
+    # the LLM returns IDs that cannot be resolved to known items — it is
+    # NOT a disabled-mode fallback.  The LLM call itself always runs.
     if not refined:
         logger.warning(
             "LLM shortlist refinement returned no matching items; "
-            "using score-based shortlist"
+            "using score-based shortlist as response-validation safeguard"
         )
         refined = items
 

@@ -271,17 +271,14 @@ def execute_workspace_run(
         # ------------------------------------------------------------------
         # Shortlist step: select the final candidate set for report
         # ------------------------------------------------------------------
-        # Create OpenCode client once if enabled (shared by shortlist + report steps)
-        opencode_client: OpenCodeClient | None = None
-        if settings.OPENCODE_ENABLED:
-            opencode_client = OpenCodeClient(
-                base_url=settings.OPENCODE_BASE_URL,
-                timeout=settings.OPENCODE_TIMEOUT_SECONDS,
-                default_model=settings.OPENCODE_DEFAULT_MODEL,
-                default_agent=settings.OPENCODE_DEFAULT_AGENT,
-                workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
-                enabled=True,
-            )
+        # Create OpenCode client (shared by shortlist + report steps)
+        opencode_client = OpenCodeClient(
+            base_url=settings.OPENCODE_BASE_URL,
+            timeout=settings.OPENCODE_TIMEOUT_SECONDS,
+            default_model=settings.OPENCODE_DEFAULT_MODEL,
+            default_agent=settings.OPENCODE_DEFAULT_AGENT,
+            workspace_dir=settings.OPENCODE_WORKSPACE_DIR,
+        )
 
         shortlist_event = _start_event(
             db,

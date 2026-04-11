@@ -1,5 +1,128 @@
 """Tests for /api/workspaces/{id}/settings endpoints."""
 
+import pytest
+
+from app.config import Settings
+
+
+# ---------------------------------------------------------------------------
+# OpenCode configuration validation (Settings class)
+# ---------------------------------------------------------------------------
+
+
+class TestOpenCodeConfigValidation:
+    """Settings validation rejects missing or invalid OpenCode configuration."""
+
+    def test_valid_config_passes(self):
+        """All required OpenCode fields present and valid → no error."""
+        s = Settings(
+            OPENCODE_BASE_URL="http://localhost:9001",
+            OPENCODE_TIMEOUT_SECONDS=60,
+            OPENCODE_DEFAULT_MODEL="gpt-5",
+            OPENCODE_DEFAULT_AGENT="general",
+            OPENCODE_WORKSPACE_DIR="/workspace",
+        )
+        assert s.OPENCODE_BASE_URL == "http://localhost:9001"
+
+    def test_missing_base_url_raises(self):
+        """Empty OPENCODE_BASE_URL → ValueError."""
+        with pytest.raises(ValueError, match="OPENCODE_BASE_URL"):
+            Settings(
+                OPENCODE_BASE_URL="",
+                OPENCODE_TIMEOUT_SECONDS=60,
+                OPENCODE_DEFAULT_MODEL="gpt-5",
+                OPENCODE_DEFAULT_AGENT="general",
+                OPENCODE_WORKSPACE_DIR="/workspace",
+            )
+
+    def test_whitespace_base_url_raises(self):
+        """Whitespace-only OPENCODE_BASE_URL → ValueError."""
+        with pytest.raises(ValueError, match="OPENCODE_BASE_URL"):
+            Settings(
+                OPENCODE_BASE_URL="   ",
+                OPENCODE_TIMEOUT_SECONDS=60,
+                OPENCODE_DEFAULT_MODEL="gpt-5",
+                OPENCODE_DEFAULT_AGENT="general",
+                OPENCODE_WORKSPACE_DIR="/workspace",
+            )
+
+    def test_missing_default_model_raises(self):
+        """Empty OPENCODE_DEFAULT_MODEL → ValueError."""
+        with pytest.raises(ValueError, match="OPENCODE_DEFAULT_MODEL"):
+            Settings(
+                OPENCODE_BASE_URL="http://localhost:9001",
+                OPENCODE_TIMEOUT_SECONDS=60,
+                OPENCODE_DEFAULT_MODEL="",
+                OPENCODE_DEFAULT_AGENT="general",
+                OPENCODE_WORKSPACE_DIR="/workspace",
+            )
+
+    def test_missing_default_agent_raises(self):
+        """Empty OPENCODE_DEFAULT_AGENT → ValueError."""
+        with pytest.raises(ValueError, match="OPENCODE_DEFAULT_AGENT"):
+            Settings(
+                OPENCODE_BASE_URL="http://localhost:9001",
+                OPENCODE_TIMEOUT_SECONDS=60,
+                OPENCODE_DEFAULT_MODEL="gpt-5",
+                OPENCODE_DEFAULT_AGENT="",
+                OPENCODE_WORKSPACE_DIR="/workspace",
+            )
+
+    def test_missing_workspace_dir_raises(self):
+        """Empty OPENCODE_WORKSPACE_DIR → ValueError."""
+        with pytest.raises(ValueError, match="OPENCODE_WORKSPACE_DIR"):
+            Settings(
+                OPENCODE_BASE_URL="http://localhost:9001",
+                OPENCODE_TIMEOUT_SECONDS=60,
+                OPENCODE_DEFAULT_MODEL="gpt-5",
+                OPENCODE_DEFAULT_AGENT="general",
+                OPENCODE_WORKSPACE_DIR="",
+            )
+
+    def test_timeout_zero_raises(self):
+        """OPENCODE_TIMEOUT_SECONDS=0 → ValueError."""
+        with pytest.raises(ValueError, match="OPENCODE_TIMEOUT_SECONDS"):
+            Settings(
+                OPENCODE_BASE_URL="http://localhost:9001",
+                OPENCODE_TIMEOUT_SECONDS=0,
+                OPENCODE_DEFAULT_MODEL="gpt-5",
+                OPENCODE_DEFAULT_AGENT="general",
+                OPENCODE_WORKSPACE_DIR="/workspace",
+            )
+
+    def test_timeout_negative_raises(self):
+        """OPENCODE_TIMEOUT_SECONDS=-1 → ValueError."""
+        with pytest.raises(ValueError, match="OPENCODE_TIMEOUT_SECONDS"):
+            Settings(
+                OPENCODE_BASE_URL="http://localhost:9001",
+                OPENCODE_TIMEOUT_SECONDS=-1,
+                OPENCODE_DEFAULT_MODEL="gpt-5",
+                OPENCODE_DEFAULT_AGENT="general",
+                OPENCODE_WORKSPACE_DIR="/workspace",
+            )
+
+    def test_multiple_missing_fields_all_reported(self):
+        """Multiple missing fields are all listed in the error message."""
+        with pytest.raises(
+            ValueError, match="OPENCODE_BASE_URL.*OPENCODE_DEFAULT_MODEL"
+        ):
+            Settings(
+                OPENCODE_BASE_URL="",
+                OPENCODE_TIMEOUT_SECONDS=60,
+                OPENCODE_DEFAULT_MODEL="",
+                OPENCODE_DEFAULT_AGENT="general",
+                OPENCODE_WORKSPACE_DIR="/workspace",
+            )
+
+    def test_no_enabled_flag_exists(self):
+        """Settings class does not have an OPENCODE_ENABLED attribute."""
+        assert not hasattr(Settings(), "OPENCODE_ENABLED")
+
+
+# ---------------------------------------------------------------------------
+# Workspace settings API
+# ---------------------------------------------------------------------------
+
 
 def _create_workspace(client):
     """Helper: create a workspace and return its ID."""

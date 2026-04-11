@@ -1,8 +1,7 @@
 """Report generation module.
 
-Replaces the deterministic stub report generation with a real report
-generation path that supports both LLM-powered and template-based
-markdown output.
+Generates reports using the OpenCode LLM service.  All report markdown
+is produced by the LLM; there is no deterministic template fallback.
 """
 
 from __future__ import annotations
@@ -27,19 +26,28 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _require_opencode_client(opencode_client: OpenCodeClient | None) -> OpenCodeClient:
+    """Return a validated OpenCode client or fail with a clear error."""
+    if opencode_client is None:
+        raise ValueError(
+            "OpenCodeClient is required for report generation; received None"
+        )
+    return opencode_client
+
+
 def generate_report(
     db: Session,
     workspace: Workspace,
     shortlist_items: list[ContentItem],
     run: ProcessingRun,
     *,
-    opencode_client: OpenCodeClient | None = None,
+    opencode_client: OpenCodeClient | None,
 ) -> Report:
     """Generate a report from shortlisted content items.
 
     Steps:
     1. Assemble structured report input (title, period, item data).
-    2. Generate report markdown via LLM or deterministic template.
+    2. Generate report markdown via the OpenCode LLM.
     3. Create and persist a ``Report`` record linked to workspace and run.
     4. Create and persist a ``ReportMessage`` linked to the report via thread_id.
     5. Return the ``Report`` object.
@@ -55,8 +63,7 @@ def generate_report(
     run:
         The current processing run.
     opencode_client:
-        Optional LLM client.  When provided, the report markdown is generated
-        by the LLM.  When ``None``, a deterministic template is used.
+        Required LLM client used to generate the report markdown.
 
     Returns
     -------
@@ -65,9 +72,10 @@ def generate_report(
     Raises
     ------
     OpenCodeUnavailableError, OpenCodeTimeoutError, OpenCodeResponseError:
-        If *opencode_client* is provided and the LLM call fails.  These
-        propagate to the caller; there is **no** silent fallback.
+        If the LLM call fails.  These propagate to the caller; there is
+        **no** silent fallback.
     """
+    opencode_client = _require_opencode_client(opencode_client)
     now = datetime.now(timezone.utc)
 
     # ------------------------------------------------------------------
@@ -138,9 +146,10 @@ def render_report_markdown(
     workspace: Workspace,
     shortlist_items: list[ContentItem],
     *,
-    opencode_client: OpenCodeClient | None = None,
+    opencode_client: OpenCodeClient | None,
 ) -> str:
     """Render report markdown without persisting a new Report thread."""
+    opencode_client = _require_opencode_client(opencode_client)
     now = datetime.now(timezone.utc)
     title, period_start, period_end, items_data = _assemble_input(
         workspace, shortlist_items, now
@@ -169,12 +178,11 @@ def _render_markdown_from_input(
     *,
     opencode_client: OpenCodeClient | None,
 ) -> str:
-    """Render markdown via the explicitly configured generation path."""
-    if opencode_client is not None:
-        return _generate_via_llm(
-            opencode_client, workspace, items_data, period_start, period_end
-        )
-    return _generate_deterministic(title, period_start, period_end, items_data)
+    """Render markdown via the OpenCode LLM."""
+    opencode_client = _require_opencode_client(opencode_client)
+    return _generate_via_llm(
+        opencode_client, workspace, items_data, period_start, period_end
+    )
 
 
 def _load_feedback_context(db: Session, workspace_id: str) -> dict[str, Any] | None:
@@ -326,59 +334,3 @@ def _generate_via_llm(
 
     result = client.generate_report_markdown(items_data, workspace_context, period)
     return result.markdown
-
-
-def _generate_deterministic(
-    title: str,
-    period_start: datetime,
-    period_end: datetime,
-    items_data: list[dict[str, Any]],
-) -> str:
-    """Generate report markdown from a deterministic template."""
-    period_str = (
-        f"{period_start.strftime('%Y-%m-%d')} to {period_end.strftime('%Y-%m-%d')}"
-    )
-
-    lines: list[str] = []
-    lines.append(f"# {title}")
-    lines.append("")
-    lines.append(f"**Period**: {period_str}")
-    lines.append("")
-
-    if not items_data:
-        lines.append("## Summary")
-        lines.append("")
-        lines.append("No items found for this reporting period.")
-        return "\n".join(lines)
-
-    # Top Highlights
-    lines.append("## Top Highlights")
-    lines.append("")
-    for i, item in enumerate(items_data, 1):
-        summary = item.get("summary", "")
-        url = item.get("url", "")
-        item_title = item.get("title", "Untitled")
-        link = f"[source]({url})" if url else ""
-        lines.append(f"{i}. {item_title} — {summary} {link}")
-    lines.append("")
-
-    # Source Details
-    lines.append("## Source Details")
-    lines.append("")
-    for item in items_data:
-        item_title = item.get("title", "Untitled")
-        date = item.get("published_at", "Unknown")
-        score = item.get("score")
-        summary = item.get("summary", "")
-        url = item.get("url", "")
-
-        lines.append(f"### {item_title}")
-        lines.append(f"Published: {date} | Score: {score}")
-        lines.append("")
-        lines.append(summary)
-        lines.append("")
-        if url:
-            lines.append(f"[Read more]({url})")
-            lines.append("")
-
-    return "\n".join(lines)

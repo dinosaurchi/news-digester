@@ -1,10 +1,17 @@
 """Tests for report and thread endpoints."""
 
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 from app.config import settings
-from app.services.opencode_client import OpenCodeClient, OpenCodeResponseError
-from app.services.opencode_client import ReportChatResult
+from app.services.opencode_client import (
+    OpenCodeClient,
+    OpenCodeResponseError,
+    OpenCodeTimeoutError,
+    OpenCodeUnavailableError,
+    ReportChatResult,
+    ReportResult,
+)
 from app.tests.conftest import TestingSessionLocal
 
 
@@ -213,29 +220,7 @@ class TestGetThreadMessages:
 class TestSendMessage:
     """POST /api/report-threads/{thread_id}/messages"""
 
-    def test_send_message_persists_user_and_returns_503_when_assistant_disabled(
-        self, client, monkeypatch
-    ):
-        monkeypatch.setattr(settings, "OPENCODE_ENABLED", False)
-        ws_id = _create_workspace(client)
-        rid = _create_report(client, ws_id, title="Send Test")
-
-        resp = client.post(
-            f"/api/report-threads/{rid}/messages",
-            json={"content": "This is my feedback"},
-        )
-        assert resp.status_code == 503
-        assert resp.json()["detail"] == "Report chat assistant is not configured"
-
-        messages_resp = client.get(f"/api/report-threads/{rid}/messages")
-        messages = messages_resp.json()
-        assert [msg["role"] for msg in messages] == ["user"]
-        assert messages[0]["content"] == "This is my feedback"
-
-    def test_send_message_creates_real_agent_message(
-        self, client, monkeypatch
-    ):
-        monkeypatch.setattr(settings, "OPENCODE_ENABLED", True)
+    def test_send_message_creates_real_agent_message(self, client, monkeypatch):
         captured = {}
 
         def fake_answer(self, **kwargs):
@@ -251,8 +236,12 @@ class TestSendMessage:
 
         ws_id = _create_workspace(client)
         source_ids = [
-            _create_content_item_by_id(client, ws_id, "chat-source-a", title="Source A"),
-            _create_content_item_by_id(client, ws_id, "chat-source-b", title="Source B"),
+            _create_content_item_by_id(
+                client, ws_id, "chat-source-a", title="Source A"
+            ),
+            _create_content_item_by_id(
+                client, ws_id, "chat-source-b", title="Source B"
+            ),
         ]
         rid = _create_report(client, ws_id, title="Send Test")
         _create_message_with_metadata(
@@ -287,8 +276,6 @@ class TestSendMessage:
     def test_send_message_provider_failure_persists_user_only(
         self, client, monkeypatch
     ):
-        monkeypatch.setattr(settings, "OPENCODE_ENABLED", True)
-
         def fail_answer(self, **kwargs):
             raise OpenCodeResponseError("provider rejected request")
 
@@ -307,6 +294,52 @@ class TestSendMessage:
         messages = messages_resp.json()
         assert [msg["role"] for msg in messages] == ["user"]
         assert messages[0]["content"] == "Will this fail?"
+
+    def test_send_message_unavailable_returns_503(self, client, monkeypatch):
+        """Chat returns 503 when OpenCode adapter is unreachable."""
+
+        def fail_unavailable(self, **kwargs):
+            raise OpenCodeUnavailableError("adapter unreachable")
+
+        monkeypatch.setattr(OpenCodeClient, "answer_report_question", fail_unavailable)
+
+        ws_id = _create_workspace(client)
+        rid = _create_report(client, ws_id, title="Chat 503 Test")
+
+        resp = client.post(
+            f"/api/report-threads/{rid}/messages",
+            json={"content": "Will this be 503?"},
+        )
+        assert resp.status_code == 503
+        assert "unreachable" in resp.json()["detail"]
+
+        # User message should be persisted, no agent message
+        messages_resp = client.get(f"/api/report-threads/{rid}/messages")
+        messages = messages_resp.json()
+        assert [msg["role"] for msg in messages] == ["user"]
+
+    def test_send_message_timeout_returns_504(self, client, monkeypatch):
+        """Chat returns 504 when OpenCode adapter times out."""
+
+        def fail_timeout(self, **kwargs):
+            raise OpenCodeTimeoutError("timed out after 60s")
+
+        monkeypatch.setattr(OpenCodeClient, "answer_report_question", fail_timeout)
+
+        ws_id = _create_workspace(client)
+        rid = _create_report(client, ws_id, title="Chat 504 Test")
+
+        resp = client.post(
+            f"/api/report-threads/{rid}/messages",
+            json={"content": "Will this be 504?"},
+        )
+        assert resp.status_code == 504
+        assert "timed out" in resp.json()["detail"]
+
+        # User message should be persisted, no agent message
+        messages_resp = client.get(f"/api/report-threads/{rid}/messages")
+        messages = messages_resp.json()
+        assert [msg["role"] for msg in messages] == ["user"]
 
     def test_send_message_thread_not_found(self, client):
         resp = client.post(
@@ -379,7 +412,16 @@ class TestThumbMessage:
 class TestRegenerateReport:
     """POST /api/reports/{report_id}/regenerate"""
 
-    def test_regenerate_report(self, client):
+    def test_regenerate_report(self, client, monkeypatch):
+        mock_client = MagicMock()
+        mock_client.generate_report_markdown.return_value = ReportResult(
+            markdown="# Regenerated Report\n\nFresh content.",
+        )
+        monkeypatch.setattr(
+            "app.api.reports.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
         ws_id = _create_workspace(client)
         rid = _create_report(client, ws_id, title="Regen Test")
         original_mid = _create_message(
@@ -410,7 +452,16 @@ class TestRegenerateReport:
         resp = client.post("/api/reports/nonexistent-id/regenerate")
         assert resp.status_code == 404
 
-    def test_regenerate_with_valid_report_id_succeeds(self, client):
+    def test_regenerate_with_valid_report_id_succeeds(self, client, monkeypatch):
+        mock_client = MagicMock()
+        mock_client.generate_report_markdown.return_value = ReportResult(
+            markdown="# Regenerated Report\n\nValid content.",
+        )
+        monkeypatch.setattr(
+            "app.api.reports.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
         ws_id = _create_workspace(client)
         rid = _create_report(client, ws_id, title="Regen Valid Test")
         _create_message(client, rid, role="system", content="Original report content")
@@ -425,6 +476,63 @@ class TestRegenerateReport:
     def test_regenerate_with_nonexistent_report_id_returns_404(self, client):
         resp = client.post("/api/reports/nonexistent/regenerate")
         assert resp.status_code == 404
+
+    def test_regenerate_opencode_unavailable_returns_503(self, client, monkeypatch):
+        """Regenerate returns 503 when OpenCode adapter is unreachable."""
+        mock_client = MagicMock()
+        mock_client.generate_report_markdown.side_effect = OpenCodeUnavailableError(
+            "OpenCode adapter is unreachable"
+        )
+        monkeypatch.setattr(
+            "app.api.reports.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
+        ws_id = _create_workspace(client)
+        rid = _create_report(client, ws_id, title="Regen 503 Test")
+        _create_message(client, rid, role="system", content="Original content")
+
+        resp = client.post(f"/api/reports/{rid}/regenerate")
+        assert resp.status_code == 503
+        assert "unreachable" in resp.json()["detail"]
+
+    def test_regenerate_opencode_timeout_returns_504(self, client, monkeypatch):
+        """Regenerate returns 504 when OpenCode adapter times out."""
+        mock_client = MagicMock()
+        mock_client.generate_report_markdown.side_effect = OpenCodeTimeoutError(
+            "OpenCode adapter timed out after 60s"
+        )
+        monkeypatch.setattr(
+            "app.api.reports.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
+        ws_id = _create_workspace(client)
+        rid = _create_report(client, ws_id, title="Regen 504 Test")
+        _create_message(client, rid, role="system", content="Original content")
+
+        resp = client.post(f"/api/reports/{rid}/regenerate")
+        assert resp.status_code == 504
+        assert "timed out" in resp.json()["detail"]
+
+    def test_regenerate_opencode_response_error_returns_502(self, client, monkeypatch):
+        """Regenerate returns 502 when OpenCode adapter returns bad response."""
+        mock_client = MagicMock()
+        mock_client.generate_report_markdown.side_effect = OpenCodeResponseError(
+            "OpenCode run ended with status=failed"
+        )
+        monkeypatch.setattr(
+            "app.api.reports.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
+        ws_id = _create_workspace(client)
+        rid = _create_report(client, ws_id, title="Regen 502 Test")
+        _create_message(client, rid, role="system", content="Original content")
+
+        resp = client.post(f"/api/reports/{rid}/regenerate")
+        assert resp.status_code == 502
+        assert "failed" in resp.json()["detail"]
 
 
 class TestSourceMetadata:
