@@ -109,6 +109,8 @@ def send_message(thread_id: str, body: MessageSendIn, db: Session = Depends(get_
     db.commit()
     db.refresh(user_msg)
 
+    workspace = ws_service.get_workspace(db, report.workspace_id)
+
     messages = report_service.get_thread_messages(db, thread_id)
     source_ids = report_chat_service.get_report_chat_source_ids(report, messages)
     source_items = report_chat_service.load_report_chat_source_items(
@@ -130,6 +132,7 @@ def send_message(thread_id: str, body: MessageSendIn, db: Session = Depends(get_
             client=opencode_client,
             question=body.content,
             report=report,
+            workspace=workspace,
             source_items=source_items,
             recent_messages=recent_messages,
         )

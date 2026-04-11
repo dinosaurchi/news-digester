@@ -203,7 +203,7 @@ class TestReportChat:
 
         payload = mock_post.call_args[1]["json"]
         assert payload["title"] == "sme-news-report-chat"
-        assert "Use ONLY the report and source_items" in payload["prompt"]
+        assert "report, source_items, and workspace_context" in payload["prompt"]
         assert "What matters?" in payload["prompt"]
         assert "Source A" in payload["prompt"]
 

@@ -196,6 +196,7 @@ class OpenCodeClient:
         *,
         question: str,
         report_context: dict[str, Any],
+        workspace_context: dict[str, Any] | None = None,
         source_items: list[dict[str, Any]],
         recent_messages: list[dict[str, Any]],
     ) -> ReportChatResult:
@@ -206,6 +207,8 @@ class OpenCodeClient:
             "source_items": source_items,
             "recent_messages": recent_messages,
         }
+        if workspace_context:
+            input_data["workspace_context"] = workspace_context
         prompt = self._build_report_chat_prompt(input_data=input_data)
         raw = self._call_adapter_run(
             title="sme-news-report-chat",
@@ -411,8 +414,9 @@ class OpenCodeClient:
     def _build_report_chat_prompt(*, input_data: dict[str, Any]) -> str:
         return (
             "You answer questions about one SME news intelligence report.\n"
-            "Use ONLY the report and source_items in INPUT_JSON. Do not use unrelated "
-            "workspace history. If the answer is not supported, say what is missing.\n"
+            "Use the report, source_items, and workspace_context in INPUT_JSON. "
+            "The workspace_context describes the business this report was generated for. "
+            "If the answer is not supported by the provided context, say what is missing.\n"
             "Return plain markdown text. Be concise, specific, and cite source titles "
             "or URLs that are already present in source_items.\n\n"
             f"INPUT_JSON:\n{json.dumps(input_data, ensure_ascii=False, indent=2)}"
