@@ -7,6 +7,7 @@ is produced by the LLM; there is no deterministic template fallback.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,6 +17,7 @@ from app.models.content import ContentItem
 from app.models.report import Report, ReportMessage
 from app.models.run import ProcessingRun
 from app.models.workspace import Workspace
+from app.services.dedup import normalize_url
 from app.services.opencode_client import OpenCodeClient
 
 logger = logging.getLogger(__name__)
@@ -103,12 +105,18 @@ def generate_report(
     )
 
     # ------------------------------------------------------------------
+    # 2b. Validate citations (advisory — does not block publication)
+    # ------------------------------------------------------------------
+    citation_validation = _validate_citations(markdown, shortlist_items)
+
+    # ------------------------------------------------------------------
     # 3. Create Report record
     # ------------------------------------------------------------------
     source_ids = [item.id for item in shortlist_items]
     metadata: dict[str, Any] = {"sources": source_ids}
     if feedback_context:
         metadata["feedback_context"] = feedback_context
+    metadata["citation_validation"] = citation_validation
 
     report = Report(
         workspace_id=workspace.id,
@@ -334,3 +342,46 @@ def _generate_via_llm(
 
     result = client.generate_report_markdown(items_data, workspace_context, period)
     return result.markdown
+
+
+def _validate_citations(
+    markdown: str, source_items: list[ContentItem]
+) -> dict[str, Any]:
+    """Validate that markdown links are grounded in source item URLs.
+
+    Extracts all markdown links from the generated report, normalises both
+    the extracted URLs and the source item URLs, and classifies each link as
+    *grounded* (present in the source set) or *ungrounded* (hallucinated).
+
+    This is advisory only — ungrounded links are logged as warnings but the
+    report is still created and published.
+
+    Returns a summary dict with keys ``total_links``, ``grounded``,
+    ``ungrounded``, and ``ungrounded_urls``.
+    """
+    # Build the set of normalised source URLs for fast lookup
+    source_urls: set[str] = {
+        normalize_url(item.url) for item in source_items if item.url
+    }
+
+    # Extract all markdown links: [text](url)
+    links = re.findall(r"\[([^\]]*)\]\(([^)]+)\)", markdown)
+    extracted_urls = [url for _text, url in links]
+
+    grounded: int = 0
+    ungrounded_urls: list[str] = []
+
+    for raw_url in extracted_urls:
+        norm_url = normalize_url(raw_url)
+        if norm_url in source_urls:
+            grounded += 1
+        else:
+            ungrounded_urls.append(raw_url)
+            logger.warning("Ungrounded citation detected: %s", raw_url)
+
+    return {
+        "total_links": len(extracted_urls),
+        "grounded": grounded,
+        "ungrounded": len(ungrounded_urls),
+        "ungrounded_urls": ungrounded_urls,
+    }
