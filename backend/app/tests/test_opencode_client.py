@@ -133,6 +133,50 @@ class TestGenerateReportMarkdown:
 
         assert result.markdown == "# Report\n\nPlain markdown."
 
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_strips_code_fences_around_json(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        _mock_completed_run(
+            mock_post,
+            mock_get,
+            '```json\n{"markdown":"# Fenced Report\\n\\nBody."}\n```',
+        )
+
+        result = _make_client().generate_report_markdown([], {}, {})
+
+        assert result.markdown == "# Fenced Report\n\nBody."
+
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_extracts_markdown_from_json_with_trailing_garbage(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        _mock_completed_run(
+            mock_post,
+            mock_get,
+            '{\n  "markdown": "# Report\\n\\nBody."\n} trailing garbage text',
+        )
+
+        result = _make_client().generate_report_markdown([], {}, {})
+
+        assert result.markdown == "# Report\n\nBody."
+
+    @patch("app.services.opencode_client.httpx.get")
+    @patch("app.services.opencode_client.httpx.post")
+    def test_rejects_json_without_markdown_field(
+        self, mock_post: MagicMock, mock_get: MagicMock
+    ) -> None:
+        _mock_completed_run(
+            mock_post,
+            mock_get,
+            '{"content": "no markdown key here"}',
+        )
+
+        with pytest.raises(OpenCodeResponseError, match="markdown"):
+            _make_client().generate_report_markdown([], {}, {})
+
 
 class TestReportChat:
     """OpenCodeClient.answer_report_question via adapter runs."""

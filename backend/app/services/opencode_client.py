@@ -422,8 +422,19 @@ class OpenCodeClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_json_object(text: str) -> dict[str, Any]:
+    def _strip_code_fences(text: str) -> str:
+        """Remove markdown code fences (```json ... ```) wrapping the text."""
         stripped = text.strip()
+        match = re.match(
+            r"^```(?:json|JSON)?\s*\n(.*?)```\s*$", stripped, flags=re.DOTALL
+        )
+        if match:
+            return match.group(1).strip()
+        return stripped
+
+    @classmethod
+    def _extract_json_object(cls, text: str) -> dict[str, Any]:
+        stripped = cls._strip_code_fences(text.strip())
         try:
             parsed = json.loads(stripped)
         except json.JSONDecodeError:
@@ -451,9 +462,19 @@ class OpenCodeClient:
         try:
             parsed = cls._extract_json_object(stripped)
         except (OpenCodeResponseError, json.JSONDecodeError):
+            # If extraction failed but the raw text looks like JSON, something
+            # went wrong — don't silently store raw JSON as report content.
+            if stripped.startswith("{") and stripped.endswith("}"):
+                raise OpenCodeResponseError(
+                    "OpenCode returned JSON but failed to extract the markdown field"
+                )
             return stripped
 
         markdown = parsed.get("markdown")
         if isinstance(markdown, str) and markdown.strip():
             return markdown.strip()
-        return stripped
+
+        # The LLM returned valid JSON but no usable markdown field.
+        raise OpenCodeResponseError(
+            "OpenCode JSON response did not contain a 'markdown' field"
+        )

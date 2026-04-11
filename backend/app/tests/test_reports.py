@@ -10,6 +10,7 @@ from app.services.opencode_client import (
     OpenCodeTimeoutError,
     OpenCodeUnavailableError,
     ReportChatResult,
+    ReportResult,
 )
 from app.tests.conftest import TestingSessionLocal
 
@@ -411,7 +412,16 @@ class TestThumbMessage:
 class TestRegenerateReport:
     """POST /api/reports/{report_id}/regenerate"""
 
-    def test_regenerate_report(self, client):
+    def test_regenerate_report(self, client, monkeypatch):
+        mock_client = MagicMock()
+        mock_client.generate_report_markdown.return_value = ReportResult(
+            markdown="# Regenerated Report\n\nFresh content.",
+        )
+        monkeypatch.setattr(
+            "app.api.reports.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
         ws_id = _create_workspace(client)
         rid = _create_report(client, ws_id, title="Regen Test")
         original_mid = _create_message(
@@ -442,7 +452,16 @@ class TestRegenerateReport:
         resp = client.post("/api/reports/nonexistent-id/regenerate")
         assert resp.status_code == 404
 
-    def test_regenerate_with_valid_report_id_succeeds(self, client):
+    def test_regenerate_with_valid_report_id_succeeds(self, client, monkeypatch):
+        mock_client = MagicMock()
+        mock_client.generate_report_markdown.return_value = ReportResult(
+            markdown="# Regenerated Report\n\nValid content.",
+        )
+        monkeypatch.setattr(
+            "app.api.reports.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
         ws_id = _create_workspace(client)
         rid = _create_report(client, ws_id, title="Regen Valid Test")
         _create_message(client, rid, role="system", content="Original report content")
