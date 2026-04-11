@@ -130,6 +130,7 @@ export default function ReportThreadPage() {
   const regenerateMutation = useMutation({
     mutationFn: () => api.reports.regenerate(threadId),
     onSuccess: () => {
+      setAssistantError(null);
       queryClient.invalidateQueries({ queryKey: ['thread-messages', threadId] });
     },
     onError: (err) => {

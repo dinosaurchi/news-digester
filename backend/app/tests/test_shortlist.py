@@ -660,18 +660,12 @@ class TestMandatoryOpenCodeClient:
             )
 
     def test_none_opencode_client_raises_error(self, db_session):
-        """Passing opencode_client=None fails — not a valid client.
-
-        The function does not have runtime type-checking for None, so it
-        raises AttributeError when trying to call methods on None.  Either
-        TypeError (from missing keyword) or AttributeError (from None) is
-        acceptable — the point is it fails explicitly.
-        """
+        """Passing opencode_client=None fails with an explicit configuration error."""
         ws = _make_workspace(db_session, max_articles=10)
         run = _make_run(db_session, ws.id)
         item = _make_item(db_session, ws.id, title="A", final_score=0.9)
 
-        with pytest.raises((TypeError, AttributeError)):
+        with pytest.raises(ValueError, match="OpenCodeClient is required"):
             select_shortlist(
                 db_session,
                 [item],

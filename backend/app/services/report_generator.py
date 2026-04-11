@@ -26,13 +26,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _require_opencode_client(opencode_client: OpenCodeClient | None) -> OpenCodeClient:
+    """Return a validated OpenCode client or fail with a clear error."""
+    if opencode_client is None:
+        raise ValueError(
+            "OpenCodeClient is required for report generation; received None"
+        )
+    return opencode_client
+
+
 def generate_report(
     db: Session,
     workspace: Workspace,
     shortlist_items: list[ContentItem],
     run: ProcessingRun,
     *,
-    opencode_client: OpenCodeClient,
+    opencode_client: OpenCodeClient | None,
 ) -> Report:
     """Generate a report from shortlisted content items.
 
@@ -66,6 +75,7 @@ def generate_report(
         If the LLM call fails.  These propagate to the caller; there is
         **no** silent fallback.
     """
+    opencode_client = _require_opencode_client(opencode_client)
     now = datetime.now(timezone.utc)
 
     # ------------------------------------------------------------------
@@ -136,9 +146,10 @@ def render_report_markdown(
     workspace: Workspace,
     shortlist_items: list[ContentItem],
     *,
-    opencode_client: OpenCodeClient,
+    opencode_client: OpenCodeClient | None,
 ) -> str:
     """Render report markdown without persisting a new Report thread."""
+    opencode_client = _require_opencode_client(opencode_client)
     now = datetime.now(timezone.utc)
     title, period_start, period_end, items_data = _assemble_input(
         workspace, shortlist_items, now
@@ -165,9 +176,10 @@ def _render_markdown_from_input(
     period_end: datetime,
     items_data: list[dict[str, Any]],
     *,
-    opencode_client: OpenCodeClient,
+    opencode_client: OpenCodeClient | None,
 ) -> str:
     """Render markdown via the OpenCode LLM."""
+    opencode_client = _require_opencode_client(opencode_client)
     return _generate_via_llm(
         opencode_client, workspace, items_data, period_start, period_end
     )

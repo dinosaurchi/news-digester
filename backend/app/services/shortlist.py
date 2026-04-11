@@ -26,13 +26,22 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_ARTICLES = 15
 
 
+def _require_opencode_client(opencode_client: OpenCodeClient | None) -> OpenCodeClient:
+    """Return a validated OpenCode client or fail with a clear error."""
+    if opencode_client is None:
+        raise ValueError(
+            "OpenCodeClient is required for shortlist refinement; received None"
+        )
+    return opencode_client
+
+
 def select_shortlist(
     db: Session,
     items: list[ContentItem],
     workspace: Workspace,
     run: ProcessingRun,
     *,
-    opencode_client: OpenCodeClient,
+    opencode_client: OpenCodeClient | None,
 ) -> list[ContentItem]:
     """Select the final shortlist of content items for report generation.
 
@@ -67,6 +76,8 @@ def select_shortlist(
         If the LLM call fails.  These propagate to the caller; there is
         **no** silent fallback.
     """
+    opencode_client = _require_opencode_client(opencode_client)
+
     # ------------------------------------------------------------------
     # 1. Filter to included items only
     # ------------------------------------------------------------------
