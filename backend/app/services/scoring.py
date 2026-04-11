@@ -212,7 +212,50 @@ _WEIGHTS: dict[str, float] = {
 }
 
 
-def compute_combined_score(scores: dict) -> tuple[float, dict]:
+def _validate_weight_overrides(
+    overrides: dict[str, float] | None,
+) -> dict[str, float]:
+    """Validate and filter weight overrides against ``_WEIGHTS`` keys.
+
+    Only keys present in ``_WEIGHTS`` are kept.  Values must be non-negative
+    floats; invalid values are silently skipped (with a warning log) and the
+    corresponding default is used instead.
+
+    The caller is responsible for choosing weights that sum to 1.0 — no
+    normalisation is performed.
+
+    Returns a dict of validated overrides (may be empty).
+    """
+    if not overrides:
+        return {}
+
+    validated: dict[str, float] = {}
+    for key, value in overrides.items():
+        if key not in _WEIGHTS:
+            continue
+        try:
+            float_value = float(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring invalid scoring weight for '%s': %r (not a number)",
+                key,
+                value,
+            )
+            continue
+        if float_value < 0:
+            logger.warning(
+                "Ignoring negative scoring weight for '%s': %s", key, float_value
+            )
+            continue
+        validated[key] = float_value
+
+    return validated
+
+
+def compute_combined_score(
+    scores: dict,
+    weight_overrides: dict[str, float] | None = None,
+) -> tuple[float, dict]:
     """Compute a weighted combined relevance score from individual scores.
 
     Parameters
@@ -221,21 +264,35 @@ def compute_combined_score(scores: dict) -> tuple[float, dict]:
         A dict that may contain any of the keys ``keyword``,
         ``competitor_mention``, ``freshness``, ``source_authority``, ``bm25``.
         Missing keys default to 0.0.
+    weight_overrides:
+        Optional dict mapping weight names to non-negative floats.  Only keys
+        that exist in the default ``_WEIGHTS`` are recognised; unknown keys are
+        silently ignored.  Missing keys fall back to defaults.
+
+        The caller is responsible for choosing weights that sum to 1.0 — no
+        normalisation is performed.
 
     Returns
     -------
     (combined_score, breakdown) where:
     - ``combined_score`` is the weighted sum.
     - ``breakdown`` is a JSON-serialisable dict containing the individual
-      scores, the weights used, and the final combined score.
+      scores, the weights actually used (defaults merged with any valid
+      overrides), and the final combined score.
     """
+    # Merge validated overrides on top of defaults
+    active_weights = dict(_WEIGHTS)
+    valid_overrides = _validate_weight_overrides(weight_overrides)
+    if valid_overrides:
+        active_weights.update(valid_overrides)
+
     combined = 0.0
     breakdown: dict = {
-        "weights": dict(_WEIGHTS),
+        "weights": active_weights,
         "scores": {},
     }
 
-    for key, weight in _WEIGHTS.items():
+    for key, weight in active_weights.items():
         value = float(scores.get(key, 0.0))
         breakdown["scores"][key] = value
         combined += weight * value
@@ -434,6 +491,26 @@ def score_content_items(
     if settings and settings.thresholds:
         min_relevance_score = float(settings.thresholds.get("min_relevance_score", 0.1))
 
+    # Scoring weight overrides (default: None → use built-in defaults)
+    scoring_weights: dict[str, float] | None = None
+    if settings and settings.thresholds:
+        raw_weights = settings.thresholds.get("scoring_weights")
+        if raw_weights is not None and isinstance(raw_weights, dict):
+            validated = _validate_weight_overrides(raw_weights)
+            if validated:
+                scoring_weights = validated
+                logger.info(
+                    "Applying scoring weight overrides for workspace %s: %s",
+                    workspace.id,
+                    validated,
+                )
+            else:
+                logger.warning(
+                    "scoring_weights configured for workspace %s but all values "
+                    "were invalid — falling back to defaults",
+                    workspace.id,
+                )
+
     # ------------------------------------------------------------------
     # 1b. Load feedback signals for the workspace
     # ------------------------------------------------------------------
@@ -479,7 +556,10 @@ def score_content_items(
         }
 
         # Combined weighted score
-        combined_score, breakdown = compute_combined_score(individual_scores)
+        combined_score, breakdown = compute_combined_score(
+            individual_scores,
+            weight_overrides=scoring_weights,
+        )
 
         # Check excluded topics
         excluded_score = compute_excluded_topic_score(item_text, excluded_topics)
