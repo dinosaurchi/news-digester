@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -673,3 +674,128 @@ class TestMandatoryOpenCodeClient:
                 run,
                 opencode_client=None,
             )
+
+
+# ---------------------------------------------------------------------------
+# 9. LLM ID validation (Pass 4)
+# ---------------------------------------------------------------------------
+
+
+class TestLLMIDValidation:
+    """LLM shortlist refinement validates returned IDs."""
+
+    def test_all_valid_ids_no_warnings(self, db_session, caplog):
+        """When LLM returns all valid IDs, only info-level log is emitted."""
+        ws = _make_workspace(db_session, max_articles=10)
+        run = _make_run(db_session, ws.id)
+
+        item_a = _make_item(db_session, ws.id, title="A", final_score=0.9)
+        item_b = _make_item(db_session, ws.id, title="B", final_score=0.8)
+
+        client = _make_enabled_client()
+        client.refine_shortlist = MagicMock(  # type: ignore[assignment]
+            return_value=ShortlistResult(
+                selected_items=[
+                    {"id": item_a.id, "title": "A"},
+                    {"id": item_b.id, "title": "B"},
+                ],
+                rationale="Both relevant",
+            )
+        )
+
+        with caplog.at_level(logging.WARNING, logger="app.services.shortlist"):
+            result = select_shortlist(
+                db_session,
+                [item_a, item_b],
+                ws,
+                run,
+                opencode_client=client,
+            )
+
+        assert len(result) == 2
+        # No warning-level messages about unresolved IDs
+        warning_messages = [
+            r.message for r in caplog.records if r.levelno >= logging.WARNING
+        ]
+        unresolved_warnings = [m for m in warning_messages if "unresolved" in m.lower()]
+        assert len(unresolved_warnings) == 0
+
+    def test_some_invalid_ids_logged_as_warnings(self, db_session, caplog):
+        """When LLM returns some invalid IDs, warnings are logged for each."""
+        ws = _make_workspace(db_session, max_articles=10)
+        run = _make_run(db_session, ws.id)
+
+        item_a = _make_item(db_session, ws.id, title="A", final_score=0.9)
+
+        client = _make_enabled_client()
+        client.refine_shortlist = MagicMock(  # type: ignore[assignment]
+            return_value=ShortlistResult(
+                selected_items=[
+                    {"id": item_a.id, "title": "A"},
+                    {"id": "nonexistent-id-1", "title": "Ghost 1"},
+                    {"id": "nonexistent-id-2", "title": "Ghost 2"},
+                ],
+                rationale="Mixed results",
+            )
+        )
+
+        with caplog.at_level(logging.WARNING, logger="app.services.shortlist"):
+            result = select_shortlist(
+                db_session,
+                [item_a],
+                ws,
+                run,
+                opencode_client=client,
+            )
+
+        # Only the valid item should be in the result
+        assert len(result) == 1
+        assert result[0].id == item_a.id
+
+        # Warnings should be logged for each unresolved ID
+        warning_records = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        unresolved_warnings = [
+            r for r in warning_records if "unresolved" in r.message.lower()
+        ]
+        assert len(unresolved_warnings) == 2
+
+    def test_no_valid_ids_fallback_still_works(self, db_session, caplog):
+        """When LLM returns no valid IDs, fallback to score-based shortlist."""
+        ws = _make_workspace(db_session, max_articles=10)
+        run = _make_run(db_session, ws.id)
+
+        item_a = _make_item(db_session, ws.id, title="A", final_score=0.9)
+        item_b = _make_item(db_session, ws.id, title="B", final_score=0.8)
+
+        client = _make_enabled_client()
+        client.refine_shortlist = MagicMock(  # type: ignore[assignment]
+            return_value=ShortlistResult(
+                selected_items=[
+                    {"id": "fake-1", "title": "Fake 1"},
+                    {"id": "fake-2", "title": "Fake 2"},
+                ],
+                rationale="All invalid",
+            )
+        )
+
+        with caplog.at_level(logging.WARNING, logger="app.services.shortlist"):
+            result = select_shortlist(
+                db_session,
+                [item_a, item_b],
+                ws,
+                run,
+                opencode_client=client,
+            )
+
+        # Should fall back to score-based shortlist (both items)
+        assert len(result) == 2
+        # Should be sorted by score descending
+        assert result[0].id == item_a.id
+        assert result[1].id == item_b.id
+
+        # Should have a warning about the fallback
+        warning_records = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        fallback_warnings = [
+            r for r in warning_records if "no matching" in r.message.lower()
+        ]
+        assert len(fallback_warnings) >= 1
