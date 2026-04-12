@@ -6,9 +6,11 @@ import hmac
 import secrets
 import uuid
 
+from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.db.session import get_db
 from app.models.user import User
 
 _PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256"
@@ -135,3 +137,21 @@ def user_to_session_dict(user: User) -> dict:
         "displayName": user.display_name,
         "role": user.role,
     }
+
+
+def get_current_user(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """FastAPI dependency that returns the authenticated user dict or raises 401."""
+    from fastapi import HTTPException
+
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user = get_session_user(db, session_id=session_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="Session expired")
+
+    return user

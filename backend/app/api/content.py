@@ -2,13 +2,15 @@
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.content import _content_item_to_out
 from app.services import content as content_service
 from app.services import workspace as ws_service
+from app.services.content import NotFoundError
+from app.services.session import get_current_user
 
 router = APIRouter(prefix="/api", tags=["content"])
 
@@ -82,3 +84,17 @@ def get_content_detail(content_item_id: str, db: Session = Depends(get_db)):
         ]
 
     return out
+
+
+@router.delete("/content/{content_item_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_content_item(
+    content_item_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    """Delete a content item by ID. Requires authentication."""
+    try:
+        content_service.delete_content_item(db, content_item_id)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="Content item not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

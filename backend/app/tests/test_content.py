@@ -237,3 +237,38 @@ class TestGetContentDetail:
         assert "inclusionReason" in data
         assert "exclusionReason" in data
         assert "linkedReportIds" in data
+
+
+class TestDeleteContentItem:
+    """DELETE /api/content/{content_item_id}"""
+
+    def test_delete_content_item_success(self, auth_client):
+        """Authenticated delete of existing item returns 204."""
+        ws_id = _create_workspace(auth_client)
+        item_id = _create_content_item(auth_client, ws_id, title="To Delete")
+
+        resp = auth_client.delete(f"/api/content/{item_id}")
+        assert resp.status_code == 204
+
+    def test_delete_content_item_gone_from_db(self, auth_client):
+        """After delete, the item no longer exists in the database."""
+        ws_id = _create_workspace(auth_client)
+        item_id = _create_content_item(auth_client, ws_id, title="Gone")
+
+        auth_client.delete(f"/api/content/{item_id}")
+
+        resp = auth_client.get(f"/api/content/{item_id}")
+        assert resp.status_code == 404
+
+    def test_delete_content_item_not_found(self, auth_client):
+        """Deleting a non-existent item returns 404."""
+        resp = auth_client.delete("/api/content/nonexistent-id")
+        assert resp.status_code == 404
+
+    def test_delete_content_item_unauthenticated(self, client):
+        """Delete without authentication returns 401."""
+        ws_id = _create_workspace(client)
+        item_id = _create_content_item(client, ws_id, title="Protected")
+
+        resp = client.delete(f"/api/content/{item_id}")
+        assert resp.status_code == 401
