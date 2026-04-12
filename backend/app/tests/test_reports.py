@@ -535,6 +535,49 @@ class TestRegenerateReport:
         assert "failed" in resp.json()["detail"]
 
 
+class TestDeleteReport:
+    """DELETE /api/reports/{report_id}"""
+
+    def test_delete_report_success(self, auth_client):
+        """Authenticated delete of existing report returns 204."""
+        ws_id = _create_workspace(auth_client)
+        rid = _create_report(auth_client, ws_id, title="To Delete")
+
+        resp = auth_client.delete(f"/api/reports/{rid}")
+        assert resp.status_code == 204
+
+    def test_delete_report_cascade_deletes_messages(self, auth_client):
+        """After delete, the report and all its messages are gone."""
+        ws_id = _create_workspace(auth_client)
+        rid = _create_report(auth_client, ws_id, title="Cascade Test")
+        _create_message(auth_client, rid, role="system", content="System message")
+        _create_message(auth_client, rid, role="user", content="User message")
+        _create_message(auth_client, rid, role="agent", content="Agent message")
+
+        auth_client.delete(f"/api/reports/{rid}")
+
+        # Report should be gone
+        resp = auth_client.get(f"/api/reports/{rid}")
+        assert resp.status_code == 404
+
+        # Messages should also be gone (cascade delete)
+        resp = auth_client.get(f"/api/report-threads/{rid}/messages")
+        assert resp.status_code == 404
+
+    def test_delete_report_not_found(self, auth_client):
+        """Deleting a non-existent report returns 404."""
+        resp = auth_client.delete("/api/reports/nonexistent-id")
+        assert resp.status_code == 404
+
+    def test_delete_report_unauthenticated(self, client):
+        """Delete without authentication returns 401."""
+        ws_id = _create_workspace(client)
+        rid = _create_report(client, ws_id, title="Protected")
+
+        resp = client.delete(f"/api/reports/{rid}")
+        assert resp.status_code == 401
+
+
 class TestSourceMetadata:
     """Tests that message metadata.sources are valid content item IDs."""
 

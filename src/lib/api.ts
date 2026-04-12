@@ -35,7 +35,7 @@ const workspaces = {
   list: () => apiClient.get<Workspace[]>('/workspaces'),
   get: (id: string) => apiClient.get<Workspace>(`/workspaces/${id}`),
   create: (data: Partial<Workspace>) => apiClient.post<Workspace>('/workspaces', data),
-  archive: (id: string) => apiClient.delete<Workspace>(`/workspaces/${id}`),
+  archive: (id: string) => apiClient.delete<void>(`/workspaces/${id}`),
 };
 
 // Profile
@@ -78,6 +78,7 @@ const content = {
     Promise.all(
       ids.map((id) => apiClient.get<ContentItem>(`/content/${id}`).catch(() => null)),
     ).then((results) => results.filter((r): r is ContentItem => r !== null)),
+  delete: (itemId: string) => apiClient.delete<void>(`/content/${itemId}`).then(() => true),
 };
 
 // Reports
@@ -104,6 +105,7 @@ const reports = {
     }),
   regenerate: (reportId: string) =>
     apiClient.post<ReportMessage>(`/reports/${reportId}/regenerate`),
+  delete: (reportId: string) => apiClient.delete<void>(`/reports/${reportId}`).then(() => true),
 };
 
 // Runs

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { Plus, Search, Briefcase, Rss, Clock, X, Loader2 } from 'lucide-react';
+import { Plus, Search, Briefcase, Rss, Clock, X, Loader2, Trash2, AlertCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { formatDate, cn } from '@/lib/utils';
 import { PageHeader } from '@/components/ui/page-header';
@@ -14,6 +14,7 @@ export default function WorkspacesPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [newCustomer, setNewCustomer] = useState('');
 
@@ -30,6 +31,15 @@ export default function WorkspacesPage() {
       setNewName('');
       setNewCustomer('');
     },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.workspaces.archive(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+      setDeleteConfirmId(null);
+    },
+    onError: (error) => console.error('Failed to archive workspace:', error),
   });
 
   // Filter workspaces
@@ -122,7 +132,20 @@ export default function WorkspacesPage() {
                 <div className="w-11 h-11 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-colors">
                   <Briefcase className="w-5 h-5" />
                 </div>
-                <StatusBadge status={ws.status} />
+                <div className="flex items-center gap-1">
+                  <StatusBadge status={ws.status} />
+                  <button
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDeleteConfirmId(ws.id);
+                    }}
+                    className="p-1 text-muted-foreground hover:text-red-600 rounded-lg transition-colors"
+                    title="Archive workspace"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
               <h3 className="text-base font-semibold text-slate-900 group-hover:text-indigo-600 transition-colors mb-0.5">
@@ -220,6 +243,37 @@ export default function WorkspacesPage() {
               >
                 {createMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
                 Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Delete Confirmation Dialog */}
+      {deleteConfirmId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setDeleteConfirmId(null)} />
+          <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl p-6 space-y-4">
+            <div className="flex items-center gap-3 text-red-600">
+              <AlertCircle className="w-6 h-6" />
+              <h3 className="text-lg font-bold text-slate-900">Archive Workspace</h3>
+            </div>
+            <p className="text-sm text-slate-600">
+              This will permanently archive the workspace and all its data. This action cannot be undone.
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setDeleteConfirmId(null)}
+                className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(deleteConfirmId)}
+                disabled={deleteMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-lg text-sm font-bold transition-colors"
+              >
+                {deleteMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                Delete
               </button>
             </div>
           </div>

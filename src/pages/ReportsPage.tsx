@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useParams } from 'react-router-dom';
 import { Link } from 'react-router-dom';
@@ -12,6 +12,9 @@ import {
   Hash,
   ArrowRight,
   X,
+  Trash2,
+  AlertCircle,
+  Loader2,
 } from 'lucide-react';
 import { formatDateRange, timeAgo, cn } from '@/lib/utils';
 import { PageHeader } from '@/components/ui/page-header';
@@ -40,16 +43,27 @@ const DATE_OPTIONS: { value: DateFilter; label: string }[] = [
 export default function ReportsPage() {
   const params = useParams();
   const workspaceId = params.workspaceId as string;
+  const queryClient = useQueryClient();
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [dateFilter, setDateFilter] = useState<DateFilter>('all');
   const [showStatusDropdown, setShowStatusDropdown] = useState(false);
   const [showDateDropdown, setShowDateDropdown] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const { data: reports, isLoading } = useQuery({
     queryKey: ['reports', workspaceId],
     queryFn: () => api.reports.list(workspaceId),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (reportId: string) => api.reports.delete(reportId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['reports', workspaceId] });
+      setDeleteConfirmId(null);
+    },
+    onError: (error) => console.error('Failed to delete report:', error),
   });
 
   const now = Date.now();
@@ -279,7 +293,18 @@ export default function ReportsPage() {
               </div>
 
               {/* CTA */}
-              <div className="flex items-center shrink-0 pt-1">
+              <div className="flex items-center gap-2 shrink-0 pt-1">
+                <button
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDeleteConfirmId(thread.id);
+                  }}
+                  className="p-1 text-muted-foreground hover:text-red-600 rounded-lg transition-colors"
+                  title="Delete report"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
                 <span className="flex items-center gap-1 text-sm font-medium text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity">
                   Open Thread
                   <ArrowRight className="w-4 h-4" />
@@ -315,6 +340,38 @@ export default function ReportsPage() {
           />
         )}
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      {deleteConfirmId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setDeleteConfirmId(null)} />
+          <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl p-6 space-y-4">
+            <div className="flex items-center gap-3 text-red-600">
+              <AlertCircle className="w-6 h-6" />
+              <h3 className="text-lg font-bold text-slate-900">Delete Report</h3>
+            </div>
+            <p className="text-sm text-slate-600">
+              This will permanently delete this report and all its messages. This action cannot be undone.
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setDeleteConfirmId(null)}
+                className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(deleteConfirmId)}
+                disabled={deleteMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-lg text-sm font-bold transition-colors"
+              >
+                {deleteMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

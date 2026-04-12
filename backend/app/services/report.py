@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.models.report import Report, ReportMessage
+from app.services.content import NotFoundError
 
 
 def list_reports(db: Session, workspace_id: str) -> list[Report]:
@@ -113,3 +114,16 @@ def get_last_generated_message(db: Session, thread_id: str) -> ReportMessage | N
         .order_by(ReportMessage.created_at.desc())
         .first()
     )
+
+
+def delete_report(db: Session, report_id: str) -> None:
+    """Delete a report by ID.
+
+    Raises ``NotFoundError`` if the report does not exist.  Child
+    ``ReportMessage`` rows are cascade-deleted automatically.
+    """
+    report = db.get(Report, report_id)
+    if report is None:
+        raise NotFoundError(f"Report {report_id} not found")
+    db.delete(report)
+    db.commit()

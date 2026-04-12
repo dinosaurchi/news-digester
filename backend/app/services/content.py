@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 from app.models.content import ContentItem
 
 
+class NotFoundError(Exception):
+    """Raised when a requested content item does not exist."""
+
+
 def list_content(
     db: Session,
     workspace_id: str,
@@ -78,3 +82,15 @@ def build_score_breakdown(item: ContentItem) -> dict:
         "freshness": 0,
         "sourceAuthority": 0,
     }
+
+
+def delete_content_item(db: Session, item_id: str) -> None:
+    """Delete a content item by ID.
+
+    Raises ``NotFoundError`` if the item does not exist.
+    """
+    item = db.get(ContentItem, item_id)
+    if item is None:
+        raise NotFoundError(f"Content item {item_id} not found")
+    db.delete(item)
+    db.commit()

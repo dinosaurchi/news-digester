@@ -22,6 +22,8 @@ import {
   Clock,
   Hash,
   AlertCircle,
+  Trash2,
+  Loader2,
 } from 'lucide-react';
 import { formatDateRange, formatMessageTime, cn } from '@/lib/utils';
 import { StatusBadge } from '@/components/ui/status-badge';
@@ -42,6 +44,7 @@ export default function ReportThreadPage() {
   const [selectedSourceMsgId, setSelectedSourceMsgId] = useState<string | null>(null);
   const [sourcePanelOpen, setSourcePanelOpen] = useState(false);
   const [assistantError, setAssistantError] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -140,6 +143,17 @@ export default function ReportThreadPage() {
           : 'Report regeneration failed. The assistant could not generate a new response.',
       );
     },
+  });
+
+  // Delete mutation
+  const deleteMutation = useMutation({
+    mutationFn: (reportId: string) => api.reports.delete(reportId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
+      setDeleteConfirmId(null);
+      navigate(`/workspaces/${params.workspaceId}/reports`);
+    },
+    onError: (error) => console.error('Failed to delete report:', error),
   });
 
   // Auto-scroll to bottom
@@ -271,22 +285,31 @@ export default function ReportThreadPage() {
                 </div>
               </div>
             </div>
-            <button
-              onClick={() => setSourcePanelOpen(!sourcePanelOpen)}
-              className={cn(
-                'p-2 rounded-lg transition-colors shrink-0',
-                sourcePanelOpen
-                  ? 'bg-indigo-100 text-indigo-600'
-                  : 'hover:bg-slate-200 text-slate-500'
-              )}
-              title={sourcePanelOpen ? 'Close sources panel' : 'Open sources panel'}
-            >
-              {sourcePanelOpen ? (
-                <PanelRightClose className="w-5 h-5" />
-              ) : (
-                <PanelRightOpen className="w-5 h-5" />
-              )}
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => setDeleteConfirmId(threadId)}
+                className="p-2 hover:bg-red-50 text-slate-500 hover:text-red-600 rounded-lg transition-colors"
+                title="Delete report"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => setSourcePanelOpen(!sourcePanelOpen)}
+                className={cn(
+                  'p-2 rounded-lg transition-colors shrink-0',
+                  sourcePanelOpen
+                    ? 'bg-indigo-100 text-indigo-600'
+                    : 'hover:bg-slate-200 text-slate-500'
+                )}
+                title={sourcePanelOpen ? 'Close sources panel' : 'Open sources panel'}
+              >
+                {sourcePanelOpen ? (
+                  <PanelRightClose className="w-5 h-5" />
+                ) : (
+                  <PanelRightOpen className="w-5 h-5" />
+                )}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -459,6 +482,38 @@ export default function ReportThreadPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Delete Confirmation Dialog */}
+      {deleteConfirmId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setDeleteConfirmId(null)} />
+          <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl p-6 space-y-4">
+            <div className="flex items-center gap-3 text-red-600">
+              <AlertCircle className="w-6 h-6" />
+              <h3 className="text-lg font-bold text-slate-900">Delete Report</h3>
+            </div>
+            <p className="text-sm text-slate-600">
+              This will permanently delete this report and all its messages. This action cannot be undone.
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setDeleteConfirmId(null)}
+                className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(deleteConfirmId)}
+                disabled={deleteMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-lg text-sm font-bold transition-colors"
+              >
+                {deleteMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

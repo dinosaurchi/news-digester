@@ -9,8 +9,13 @@ from app.models.workspace import Workspace, WorkspaceProfile, WorkspaceSettings
 
 
 def list_workspaces(db: Session) -> list[Workspace]:
-    """Return all workspaces ordered by name."""
-    return db.query(Workspace).order_by(Workspace.name).all()
+    """Return non-archived workspaces ordered by name."""
+    return (
+        db.query(Workspace)
+        .filter(Workspace.status != "archived")
+        .order_by(Workspace.name)
+        .all()
+    )
 
 
 def get_workspace(db: Session, workspace_id: str) -> Workspace | None:
