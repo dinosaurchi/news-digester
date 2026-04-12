@@ -793,6 +793,7 @@ def score_content_items(
         # 4. Persist results on the item
         # ------------------------------------------------------------------
         item.score_breakdown_json = breakdown
+        item.local_relevance_score = combined_score
         item.final_score = combined_score
 
         scores_list.append(combined_score)
