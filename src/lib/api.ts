@@ -105,6 +105,7 @@ const reports = {
     }),
   regenerate: (reportId: string) =>
     apiClient.post<ReportMessage>(`/reports/${reportId}/regenerate`),
+  delete: (reportId: string) => apiClient.delete<void>(`/reports/${reportId}`).then(() => true),
 };
 
 // Runs
