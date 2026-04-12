@@ -78,6 +78,7 @@ const content = {
     Promise.all(
       ids.map((id) => apiClient.get<ContentItem>(`/content/${id}`).catch(() => null)),
     ).then((results) => results.filter((r): r is ContentItem => r !== null)),
+  delete: (itemId: string) => apiClient.delete<void>(`/content/${itemId}`).then(() => true),
 };
 
 // Reports

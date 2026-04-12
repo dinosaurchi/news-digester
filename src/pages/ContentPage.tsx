@@ -1,12 +1,13 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useParams } from 'react-router-dom';
 import {
   Search, ExternalLink, ChevronUp, ChevronDown, Info, FileText, FilterX,
-  Calendar, Link2, Tag, Hash, ArrowUpDown,
+  Calendar, Link2, Tag, Hash, ArrowUpDown, Trash2, AlertCircle, Loader2,
 } from 'lucide-react';
 import { formatDateOnly, cn } from '@/lib/utils';
 import { useState, useMemo } from 'react';
+import { toast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/ui/page-header';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -179,6 +180,7 @@ function ContentTableSkeleton() {
 export default function ContentPage() {
   const params = useParams();
   const workspaceId = params.workspaceId as string;
+  const queryClient = useQueryClient();
 
   /* ---- filter state ---- */
   const [source, setSource] = useState('');
@@ -196,6 +198,9 @@ export default function ContentPage() {
 
   /* ---- detail drawer ---- */
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  /* ---- delete confirmation ---- */
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   /* ---- computed filters ---- */
   const filters: ContentFilters = useMemo(() => {
@@ -231,6 +236,20 @@ export default function ContentPage() {
     queryKey: ['content-detail', selectedId],
     queryFn: () => api.content.getDetail(workspaceId, selectedId!),
     enabled: !!selectedId,
+  });
+
+  /* ---- delete mutation ---- */
+  const deleteMutation = useMutation({
+    mutationFn: (itemId: string) => api.content.delete(itemId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['content', workspaceId] });
+      if (deleteConfirmId === selectedId) {
+        setSelectedId(null);
+      }
+      setDeleteConfirmId(null);
+      toast.success('Content item deleted.');
+    },
+    onError: () => toast.error('Failed to delete content item.'),
   });
 
   /* ---- sort ---- */
@@ -472,6 +491,13 @@ export default function ContentPage() {
                         >
                           <Info className="w-3.5 h-3.5" />
                         </button>
+                        <button
+                          onClick={e => { e.stopPropagation(); setDeleteConfirmId(item.id); }}
+                          className="p-1 hover:bg-red-50 text-slate-400 hover:text-red-500 rounded transition-colors"
+                          title="Delete content item"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -514,6 +540,38 @@ export default function ContentPage() {
         detail={detail}
         loading={detailLoading}
       />
+
+      {/* ---- Delete Confirmation Dialog ---- */}
+      {deleteConfirmId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setDeleteConfirmId(null)} />
+          <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl p-6 space-y-4">
+            <div className="flex items-center gap-3 text-red-600">
+              <AlertCircle className="w-6 h-6" />
+              <h3 className="text-lg font-bold text-slate-900">Delete Content Item</h3>
+            </div>
+            <p className="text-sm text-slate-600">
+              This will permanently delete this content item. This action cannot be undone.
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setDeleteConfirmId(null)}
+                className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(deleteConfirmId)}
+                disabled={deleteMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-lg text-sm font-bold transition-colors"
+              >
+                {deleteMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
