@@ -27,6 +27,30 @@ class TestListWorkspaces:
         assert "lastReportAt" in ws
         assert "nextRunAt" in ws
 
+    def test_list_workspaces_excludes_archived(self, client):
+        """Archived (soft-deleted) workspaces must not appear in the list."""
+        # Create two workspaces
+        client.post(
+            "/api/workspaces",
+            json={"name": "Keep Me", "customer": "Co"},
+        )
+        delete_resp = client.post(
+            "/api/workspaces",
+            json={"name": "Archive Me", "customer": "Co"},
+        )
+        ws_id = delete_resp.json()["id"]
+
+        # Archive one of them
+        client.delete(f"/api/workspaces/{ws_id}")
+
+        # List should only contain the non-archived workspace
+        resp = client.get("/api/workspaces")
+        assert resp.status_code == 200
+        ws_list = resp.json()
+        assert len(ws_list) == 1
+        assert ws_list[0]["name"] == "Keep Me"
+        assert ws_list[0]["status"] == "active"
+
 
 class TestCreateWorkspace:
     """POST /api/workspaces"""

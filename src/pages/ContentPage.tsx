@@ -242,7 +242,7 @@ export default function ContentPage() {
   const deleteMutation = useMutation({
     mutationFn: (itemId: string) => api.content.delete(itemId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['content', workspaceId] });
+      queryClient.invalidateQueries({ queryKey: ['content'] });
       if (deleteConfirmId === selectedId) {
         setSelectedId(null);
       }
