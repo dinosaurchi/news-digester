@@ -66,10 +66,10 @@ export default function SettingsPage() {
 
   const archiveMutation = useMutation({
     mutationFn: () => api.workspaces.archive(workspaceId),
-    onSuccess: (workspace) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['workspaces'] });
       queryClient.invalidateQueries({ queryKey: ['workspace', workspaceId] });
-      toast.success(`${workspace.name} archived.`);
+      toast.success('Workspace archived.');
       navigate('/workspaces');
     },
     onError: () => {
