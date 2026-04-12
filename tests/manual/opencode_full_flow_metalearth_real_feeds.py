@@ -37,43 +37,66 @@ BASE_URL = os.environ.get("SME_BASE_URL", "http://127.0.0.1:8000/api").rstrip("/
 USERNAME = os.environ.get("SME_USERNAME", "admin")
 PASSWORD = os.environ.get("SME_PASSWORD", "admin")
 
-# Google News RSS feeds relevant to Metal Earth's market segments:
-# licensed collectibles, model kits, toy industry, aviation, architecture,
-# and entertainment franchises.
+# Google News RSS feeds tightly aligned with Metal Earth / Fascinations' business:
+# 1. Direct brand & product mentions
+# 2. Licensed franchise collectibles (Star Wars, Marvel, etc.)
+# 3. Toy & hobby industry trends (retail, licensing deals)
+# 4. Competitor landscape (Piececool, UGEARS, Tenyo)
+# 5. DIY / model-kit hobby community signals
+# 6. Key franchise IP news that could drive new product lines
 REAL_FEEDS: list[dict[str, str]] = [
     {
-        "name": "Google News - licensed products collectibles",
-        "url": "https://news.google.com/rss/search?q=licensed+products+collectibles+hobby",
+        "name": "Metal Earth & Fascinations brand mentions",
+        "url": (
+            "https://news.google.com/rss/search?"
+            "q=%22metal+earth%22+OR+%22Fascinations+Inc%22+OR+%223D+metal+model+kit%22"
+        ),
         "type": "rss",
         "cadence": "daily",
     },
     {
-        "name": "Google News - model kits hobby retail",
-        "url": "https://news.google.com/rss/search?q=model+kits+hobby+retail",
+        "name": "Star Wars & Marvel toys and collectibles licensing",
+        "url": (
+            "https://news.google.com/rss/search?"
+            "q=Star+Wars+OR+Marvel+toys+collectibles+licensing"
+        ),
         "type": "rss",
         "cadence": "daily",
     },
     {
-        "name": "Google News - toy industry collectibles",
-        "url": "https://news.google.com/rss/search?q=toy+industry+collectibles",
+        "name": "Toy industry & hobby retail trends",
+        "url": (
+            "https://news.google.com/rss/search?"
+            "q=%22toy+industry%22+OR+%22hobby+retail%22+OR+%22toy+fair%22+collectibles"
+        ),
         "type": "rss",
         "cadence": "daily",
     },
     {
-        "name": "Google News - aviation aerospace",
-        "url": "https://news.google.com/rss/search?q=aviation+aerospace",
+        "name": "Competitor watch — Piececool, UGEARS, Tenyo metal models",
+        "url": (
+            "https://news.google.com/rss/search?"
+            "q=Piececool+OR+UGEARS+OR+Tenyo+OR+%22metal+puzzle%22+OR+%22model+kit+brand%22"
+        ),
         "type": "rss",
         "cadence": "daily",
     },
     {
-        "name": "Google News - architecture landmarks",
-        "url": "https://news.google.com/rss/search?q=architecture+landmarks",
+        "name": "DIY model kits & scale modelling hobby",
+        "url": (
+            "https://news.google.com/rss/search?"
+            "q=%22model+kit%22+OR+%22scale+model%22+OR+%22DIY+kit%22+hobby+new+release"
+        ),
         "type": "rss",
         "cadence": "daily",
     },
     {
-        "name": "Google News - entertainment franchise releases",
-        "url": "https://news.google.com/rss/search?q=entertainment+franchise+release",
+        "name": "Entertainment franchise IP — new movies, series & licensing deals",
+        "url": (
+            "https://news.google.com/rss/search?"
+            "q=%22licensing+deal%22+OR+%22franchise+merchandise%22"
+            "+OR+%22Disney+consumer+products%22+OR+%22Hasbro+licensing%22"
+        ),
         "type": "rss",
         "cadence": "daily",
     },
@@ -167,46 +190,53 @@ def main() -> int:
     profile = {
         "businessName": "Metal Earth",
         "description": (
-            "Metal Earth is a 3D metal model kit brand focused on licensed pop culture models, "
-            "aviation, architecture, vehicles, space, and collectible hobby products."
+            "Metal Earth, by Fascinations Inc. (Seattle, WA), produces laser-cut 3D metal "
+            "model kits assembled from steel sheets — no glue or solder required. Product "
+            "lines span Classic, Premium Series, and Licensed collections featuring "
+            "Star Wars, Marvel, Harry Potter, Transformers, Lord of the Rings, Batman, "
+            "Star Trek, and more. Categories include aviation, architecture, vehicles, "
+            "space, tanks, ships, dinosaurs, and wildlife."
         ),
         "products": [
-            "3D metal model kits",
-            "licensed collectible hobby kits",
-            "aviation model kits",
-            "architecture model kits",
-            "pop culture franchise model kits",
+            "3D laser-cut steel model kits",
+            "Licensed franchise model kits (Star Wars, Marvel, Harry Potter, etc.)",
+            "Premium Series large-scale metal models",
+            "Aviation & military model kits (Boeing, Lockheed Martin, Cessna)",
+            "Architecture landmark model kits",
+            "Gift Box Sets and accessories",
         ],
         "competitors": [
-            "Piececool",
-            "UGEARS",
-            "Fascinations competitors",
-            "collectible model kit brands",
+            "Piececool (Chinese 3D metal puzzles)",
+            "UGEARS (wooden mechanical model kits)",
+            "Tenyo Metallic Nano (Japanese licensee, same factory)",
+            "HK Nanyuan / MU Model (AliExpress metal model brands)",
+            "Professor Puzzle (UK distributor & competitor)",
         ],
         "priorityThemes": [
-            "licensed products",
-            "franchise entertainment",
-            "collectibles",
-            "hobby retail",
-            "model kits",
-            "aviation",
-            "architecture",
-            "space",
-            "toy industry",
-            "gift products",
-            "fandom",
+            "licensed merchandise and IP deals",
+            "Star Wars, Marvel, Disney franchise developments",
+            "toy industry trends and Toy Fair announcements",
+            "hobby retail channel and specialty store trends",
+            "3D model kit and metal puzzle market",
+            "new entertainment franchises with licensing potential",
+            "Hasbro, Mattel, and major toy company strategies",
+            "collectibles and gift product trends",
+            "aerospace and aviation milestones",
+            "iconic architecture and landmark news",
         ],
         "excludedTopics": [
-            "cryptocurrency",
-            "enterprise SaaS",
+            "cryptocurrency and blockchain",
+            "enterprise SaaS and cloud infrastructure",
             "general software engineering",
-            "pure B2B cloud infrastructure",
+            "pharmaceutical and biotech",
+            "real estate investment",
         ],
         "notes": (
-            "The report should prioritize new licensed IP/franchise developments, "
-            "hobby/collectibles retail signals, product inspiration themes relevant to "
-            "Metal Earth's categories, and major entertainment or aerospace/architecture "
-            "news that could inform future product opportunities."
+            "Prioritize: (1) new licensed IP/franchise deals that Metal Earth could pursue, "
+            "(2) competitor product launches or market moves, (3) toy/hobby retail channel "
+            "signals (Toy Fair, retail partnerships, e-commerce trends), (4) entertainment "
+            "releases (movies, series) that could drive collectible demand, and "
+            "(5) aerospace/architecture news inspiring future product lines."
         ),
     }
 
@@ -353,15 +383,19 @@ def main() -> int:
     # ── Step 9: Keyword relevance check (soft) ──────────────────────────
     report_content = report_message.get("content", "").lower()
     report_keywords = [
+        "metal earth",
+        "fascinations",
         "licensed",
         "collectible",
+        "star wars",
+        "marvel",
+        "toy",
         "hobby",
-        "model",
-        "aviation",
-        "architecture",
+        "model kit",
         "franchise",
         "retail",
-        "entertainment",
+        "hasbro",
+        "disney",
     ]
     report_keyword_matches = [kw for kw in report_keywords if kw in report_content]
     if report_keyword_matches:
@@ -421,6 +455,9 @@ def main() -> int:
         "collectible",
         "market",
         "franchise",
+        "model",
+        "toy",
+        "retail",
     ]
     agent_keyword_matches = [kw for kw in agent_keywords if kw in agent_content]
     if agent_keyword_matches:

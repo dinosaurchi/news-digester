@@ -206,6 +206,19 @@ def _refine_via_llm(
         if item_id and item_id in item_by_id:
             refined.append(item_by_id[item_id])
 
+    # Validate: identify any IDs the LLM returned that don't match known items
+    requested_ids = {s.get("id") for s in llm_result.selected_items if s.get("id")}
+    resolved_ids = {item.id for item in refined}
+    unresolved_ids = requested_ids - resolved_ids
+    for uid in unresolved_ids:
+        logger.warning("LLM shortlist: unresolved ID %s", uid)
+    logger.info(
+        "LLM shortlist: %d requested, %d resolved, %d unresolved",
+        len(requested_ids),
+        len(resolved_ids),
+        len(unresolved_ids),
+    )
+
     # If the LLM returned no matching items, fall back to the score-based
     # shortlist.  This is a response-validation safeguard for cases where
     # the LLM returns IDs that cannot be resolved to known items — it is

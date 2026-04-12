@@ -174,7 +174,8 @@ class TestFeedbackScoringTopicBoost:
         assert "feedback" in breakdown
         assert "feedback_adjustment" in breakdown
         assert breakdown["feedback_adjustment"] > 0
-        assert "sustainability" in breakdown["feedback"]["topics_matched"]
+        topic_keys = [t["key"] for t in breakdown["feedback"]["topics_matched"]]
+        assert "sustainability" in topic_keys
         assert (
             breakdown["feedback"]["event_count"] == 0
         )  # no feedback events, just prefs
@@ -195,7 +196,8 @@ class TestFeedbackScoringTopicBoost:
 
         assert "feedback_adjustment" in breakdown
         assert breakdown["feedback_adjustment"] < 0
-        assert "gossip" in breakdown["feedback"]["topics_matched"]
+        topic_keys = [t["key"] for t in breakdown["feedback"]["topics_matched"]]
+        assert "gossip" in topic_keys
 
     def test_topic_no_match_no_adjustment(self, db_session):
         ws = _make_workspace(db_session, priority_themes=["ai"])
@@ -235,7 +237,8 @@ class TestFeedbackScoringSourceBoost:
 
         assert "feedback_adjustment" in breakdown
         assert breakdown["feedback_adjustment"] > 0
-        assert "techcrunch" in breakdown["feedback"]["sources_matched"]
+        source_keys = [s["key"] for s in breakdown["feedback"]["sources_matched"]]
+        assert "techcrunch" in source_keys
 
     def test_negative_source_suppresses_score(self, db_session):
         ws = _make_workspace(db_session, priority_themes=["ai"])
@@ -254,7 +257,8 @@ class TestFeedbackScoringSourceBoost:
 
         assert "feedback_adjustment" in breakdown
         assert breakdown["feedback_adjustment"] < 0
-        assert "clickbait daily" in breakdown["feedback"]["sources_matched"]
+        source_keys = [s["key"] for s in breakdown["feedback"]["sources_matched"]]
+        assert "clickbait daily" in source_keys
 
     def test_source_partial_match(self, db_session):
         """Source preference should match if the key is a substring of the source_name."""
@@ -352,49 +356,71 @@ class TestComputeFeedbackAdjustment:
 
     def test_no_weights_no_match(self):
         adj, topics, sources = _compute_feedback_adjustment(
-            "AI news today", "TechCrunch", {}, {}
+            "AI news today", "TechCrunch", [], []
         )
         assert adj == 0.0
         assert topics == []
         assert sources == []
 
     def test_positive_topic_match(self):
+        now = datetime.now(timezone.utc)
         adj, topics, sources = _compute_feedback_adjustment(
-            "sustainability is key", "Source", {"sustainability": 2.0}, {}
+            "sustainability is key",
+            "Source",
+            [{"key": "sustainability", "weight": 2.0, "updated_at": now}],
+            [],
         )
         assert adj > 0
-        assert "sustainability" in topics
+        assert len(topics) == 1
+        assert topics[0]["key"] == "sustainability"
         assert sources == []
 
     def test_negative_topic_match(self):
+        now = datetime.now(timezone.utc)
         adj, topics, sources = _compute_feedback_adjustment(
-            "celebrity gossip today", "Source", {"gossip": -1.5}, {}
+            "celebrity gossip today",
+            "Source",
+            [{"key": "gossip", "weight": -1.5, "updated_at": now}],
+            [],
         )
         assert adj < 0
-        assert "gossip" in topics
+        assert len(topics) == 1
+        assert topics[0]["key"] == "gossip"
 
     def test_source_match(self):
+        now = datetime.now(timezone.utc)
         adj, topics, sources = _compute_feedback_adjustment(
-            "some article", "TechCrunch", {}, {"techcrunch": 2.0}
+            "some article",
+            "TechCrunch",
+            [],
+            [{"key": "techcrunch", "weight": 2.0, "updated_at": now}],
         )
         assert adj > 0
-        assert "techcrunch" in sources
+        assert len(sources) == 1
+        assert sources[0]["key"] == "techcrunch"
 
     def test_combined_topic_and_source(self):
+        now = datetime.now(timezone.utc)
         adj, topics, sources = _compute_feedback_adjustment(
             "sustainability report",
             "TechCrunch",
-            {"sustainability": 1.0},
-            {"techcrunch": 1.0},
+            [{"key": "sustainability", "weight": 1.0, "updated_at": now}],
+            [{"key": "techcrunch", "weight": 1.0, "updated_at": now}],
         )
         assert adj > 0
-        assert "sustainability" in topics
-        assert "techcrunch" in sources
+        assert len(topics) == 1
+        assert topics[0]["key"] == "sustainability"
+        assert len(sources) == 1
+        assert sources[0]["key"] == "techcrunch"
 
     def test_adjustment_is_capped(self):
         """Even extreme weights produce capped adjustments."""
+        now = datetime.now(timezone.utc)
         adj, _, _ = _compute_feedback_adjustment(
-            "ai ai ai ai ai", "Source", {"ai": 1000.0}, {}
+            "ai ai ai ai ai",
+            "Source",
+            [{"key": "ai", "weight": 1000.0, "updated_at": now}],
+            [],
         )
         assert abs(adj) <= 0.15
 
@@ -412,8 +438,8 @@ class TestLoadFeedbackSignals:
 
         topics, sources, count = _load_feedback_signals(db_session, ws.id)
 
-        assert topics == {}
-        assert sources == {}
+        assert topics == []
+        assert sources == []
         assert count == 0
 
     def test_loads_topic_preferences(self, db_session):
@@ -423,11 +449,15 @@ class TestLoadFeedbackSignals:
 
         topics, sources, count = _load_feedback_signals(db_session, ws.id)
 
-        assert "ai" in topics
-        assert topics["ai"] == 2.0
-        assert "cloud" in topics
-        assert topics["cloud"] == 1.5
-        assert sources == {}
+        assert len(topics) == 2
+        topic_keys = {t["key"] for t in topics}
+        assert "ai" in topic_keys
+        assert "cloud" in topic_keys
+        ai_pref = next(t for t in topics if t["key"] == "ai")
+        assert ai_pref["weight"] == 2.0
+        cloud_pref = next(t for t in topics if t["key"] == "cloud")
+        assert cloud_pref["weight"] == 1.5
+        assert sources == []
 
     def test_loads_source_preferences(self, db_session):
         ws = _make_workspace(db_session)
@@ -435,9 +465,10 @@ class TestLoadFeedbackSignals:
 
         topics, sources, count = _load_feedback_signals(db_session, ws.id)
 
-        assert topics == {}
-        assert "techcrunch" in sources
-        assert sources["techcrunch"] == 2.0
+        assert topics == []
+        assert len(sources) == 1
+        assert sources[0]["key"] == "techcrunch"
+        assert sources[0]["weight"] == 2.0
 
     def test_counts_feedback_events(self, db_session):
         ws = _make_workspace(db_session)

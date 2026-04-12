@@ -5,8 +5,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.services.scoring import (
+    _compute_decay_factor,
     compute_bm25_score,
     compute_combined_score,
+    compute_document_frequencies,
     compute_competitor_mention_score,
     compute_excluded_topic_score,
     compute_freshness_score,
@@ -667,3 +669,207 @@ class TestScoreContentItems:
         assert item.status == "excluded"
         assert item.exclusion_reason == "matched_excluded_topic"
         assert item.score_breakdown_json["filter_reason"] == "matched_excluded_topic"
+
+
+# ---------------------------------------------------------------------------
+# Configurable scoring weight overrides (Pass 1)
+# ---------------------------------------------------------------------------
+
+
+class TestWeightOverrides:
+    """compute_combined_score supports optional weight overrides."""
+
+    def test_valid_overrides_merge_with_defaults(self):
+        scores = {
+            "keyword": 1.0,
+            "competitor_mention": 0.0,
+            "freshness": 0.0,
+            "source_authority": 0.0,
+            "bm25": 0.0,
+        }
+        overrides = {"keyword": 0.50, "bm25": 0.25}
+        combined, breakdown = compute_combined_score(scores, weight_overrides=overrides)
+
+        assert breakdown["weights"]["keyword"] == pytest.approx(0.50)
+        assert breakdown["weights"]["bm25"] == pytest.approx(0.25)
+        # Unchanged keys keep their defaults
+        assert breakdown["weights"]["competitor_mention"] == pytest.approx(0.20)
+        assert breakdown["weights"]["freshness"] == pytest.approx(0.20)
+        assert breakdown["weights"]["source_authority"] == pytest.approx(0.15)
+
+    def test_unknown_weight_keys_are_ignored(self):
+        scores = {"keyword": 1.0, "freshness": 0.0, "bm25": 0.0}
+        overrides = {"keyword": 0.30, "bogus_key": 0.99, "another_unknown": 0.5}
+        _, breakdown = compute_combined_score(scores, weight_overrides=overrides)
+
+        assert "bogus_key" not in breakdown["weights"]
+        assert "another_unknown" not in breakdown["weights"]
+        # keyword was still updated
+        assert breakdown["weights"]["keyword"] == pytest.approx(0.30)
+
+    def test_no_overrides_uses_defaults(self):
+        scores = {"keyword": 1.0}
+        _, breakdown = compute_combined_score(scores, weight_overrides=None)
+
+        assert breakdown["weights"]["keyword"] == pytest.approx(0.25)
+        assert breakdown["weights"]["competitor_mention"] == pytest.approx(0.20)
+        assert breakdown["weights"]["freshness"] == pytest.approx(0.20)
+        assert breakdown["weights"]["source_authority"] == pytest.approx(0.15)
+        assert breakdown["weights"]["bm25"] == pytest.approx(0.20)
+
+    def test_score_breakdown_shows_which_weights_were_used(self):
+        """The breakdown JSON contains the active weights dict."""
+        overrides = {"freshness": 0.40, "source_authority": 0.10}
+        _, breakdown = compute_combined_score({}, weight_overrides=overrides)
+
+        # The weights in the breakdown should reflect the overrides
+        assert breakdown["weights"]["freshness"] == pytest.approx(0.40)
+        assert breakdown["weights"]["source_authority"] == pytest.approx(0.10)
+        # Should be JSON-serialisable
+        import json
+
+        serialized = json.dumps(breakdown)
+        assert "freshness" in serialized
+
+
+# ---------------------------------------------------------------------------
+# Feedback decay factor (Pass 2)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeDecayFactor:
+    """_compute_decay_factor returns exponential time decay."""
+
+    def test_today_returns_approx_one(self):
+        now = datetime.now(timezone.utc)
+        factor = _compute_decay_factor(now)
+        assert factor == pytest.approx(1.0)
+
+    def test_30_days_ago_returns_approx_half(self):
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+        factor = _compute_decay_factor(thirty_days_ago, half_life_days=30.0)
+        assert factor == pytest.approx(0.5, abs=0.05)
+
+    def test_90_plus_days_returns_negligible(self):
+        ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
+        factor = _compute_decay_factor(ninety_days_ago, half_life_days=30.0)
+        # 2^(-90/30) = 2^(-3) = 0.125
+        assert factor == pytest.approx(0.125, abs=0.05)
+        assert factor < 0.2
+
+    def test_none_returns_zero(self):
+        factor = _compute_decay_factor(None)
+        assert factor == pytest.approx(0.0)
+
+    def test_future_date_returns_one(self):
+        future = datetime.now(timezone.utc) + timedelta(days=10)
+        factor = _compute_decay_factor(future)
+        assert factor == pytest.approx(1.0)
+
+    def test_naive_datetime_treated_as_utc(self):
+        now = datetime.now(timezone.utc)
+        naive = now.replace(tzinfo=None)
+        factor = _compute_decay_factor(naive)
+        assert factor == pytest.approx(1.0)
+
+    def test_custom_half_life(self):
+        ten_days_ago = datetime.now(timezone.utc) - timedelta(days=10)
+        factor = _compute_decay_factor(ten_days_ago, half_life_days=10.0)
+        assert factor == pytest.approx(0.5, abs=0.05)
+
+
+# ---------------------------------------------------------------------------
+# BM25 with IDF (Pass 6)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeDocumentFrequencies:
+    """compute_document_frequencies computes IDF values for query terms."""
+
+    def test_basic_idf_computation(self):
+        items_texts = ["ai machine learning", "ai finance", "blockchain technology"]
+        idf = compute_document_frequencies(items_texts, ["ai", "blockchain"])
+
+        # "ai" appears in 2 of 3 documents → lower IDF
+        assert "ai" in idf
+        # "blockchain" appears in 1 of 3 documents → higher IDF
+        assert "blockchain" in idf
+        assert idf["blockchain"] > idf["ai"]
+
+    def test_common_terms_have_lower_idf(self):
+        items_texts = [
+            "the market is up",
+            "the market trends",
+            "the market analysis",
+            "ai breakthrough today",
+        ]
+        idf = compute_document_frequencies(items_texts, ["the", "ai"])
+
+        # "the" appears in 3 docs, "ai" in 1 → "ai" should have higher IDF
+        assert idf["ai"] > idf["the"]
+
+    def test_empty_inputs_return_empty(self):
+        assert compute_document_frequencies([], ["ai"]) == {}
+        assert compute_document_frequencies(["text"], []) == {}
+        assert compute_document_frequencies([], []) == {}
+
+    def test_all_terms_absent_have_positive_idf(self):
+        items_texts = ["banana apple cherry", "date fig grape"]
+        idf = compute_document_frequencies(items_texts, ["zebra"])
+
+        # "zebra" in 0 docs → idf = log(2 / (1+0)) = log(2) > 0
+        assert idf["zebra"] > 0
+
+
+class TestBM25WithIDF:
+    """compute_bm25_score supports optional IDF weighting."""
+
+    def test_with_idf_gives_different_result_than_without(self):
+        text = "ai ai ai ai ai machine"
+        query = ["ai", "machine"]
+
+        score_without = compute_bm25_score(text, query, idf=None)
+        # Very low IDF for the frequent term "ai", normal for "machine"
+        idf = {"ai": 0.01, "machine": 1.0}
+        score_with = compute_bm25_score(text, query, idf=idf)
+
+        # With IDF, "ai" (frequent) is almost eliminated, reducing the score
+        assert score_with != score_without
+        assert score_with < score_without
+
+    def test_without_idf_behaves_like_before(self):
+        """When idf=None, the function behaves identically to the original TF-only mode."""
+        text = "ai machine learning"
+        query = ["ai", "machine"]
+        score = compute_bm25_score(text, query, idf=None)
+        assert score > 0.0
+
+        # Manually verify: tf(ai)=1, tf(machine)=1
+        # raw = (log(2) + log(2)) / 2 = log(2) ≈ 0.693 / 2 * ...
+        # Just verify it matches calling with idf=None explicitly vs implicitly
+        score_implicit = compute_bm25_score(text, query)
+        assert score == score_implicit
+
+    def test_idf_only_for_matching_terms(self):
+        """IDF for terms not in text should have no effect."""
+        text = "ai news"
+        query = ["ai", "blockchain"]
+        idf = {"ai": 1.0, "blockchain": 100.0}
+
+        score = compute_bm25_score(text, query, idf=idf)
+        # "blockchain" doesn't appear in text, so its IDF shouldn't inflate the score
+        # Only "ai" contributes
+        assert score > 0.0
+        # The score should not be dominated by the "blockchain" IDF since it doesn't match
+        assert score < 1.0
+
+    def test_zero_idf_dampens_term(self):
+        """A term with IDF=0 should not contribute to the score."""
+        text = "ai machine"
+        query = ["ai", "machine"]
+        idf = {"ai": 0.0, "machine": 1.0}
+
+        score = compute_bm25_score(text, query, idf=idf)
+        # Only "machine" contributes since "ai" IDF is 0
+        # Expected: log(2)*1.0 / 2 = 0.347
+        assert score == pytest.approx(0.347, abs=0.05)

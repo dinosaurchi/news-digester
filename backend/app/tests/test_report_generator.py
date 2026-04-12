@@ -18,7 +18,7 @@ from app.services.opencode_client import (
     OpenCodeUnavailableError,
     ReportResult,
 )
-from app.services.report_generator import generate_report
+from app.services.report_generator import _validate_citations, generate_report
 
 
 # ---------------------------------------------------------------------------
@@ -529,3 +529,93 @@ class TestMandatoryOpenCodeClient:
 
         with pytest.raises(ValueError, match="OpenCodeClient is required"):
             generate_report(db_session, ws, [item], run, opencode_client=None)
+
+
+# ---------------------------------------------------------------------------
+# 9. Citation validation (Pass 3)
+# ---------------------------------------------------------------------------
+
+
+class TestCitationValidation:
+    """_validate_citations checks that markdown links are grounded in source URLs."""
+
+    @staticmethod
+    def _make_source_item(url: str) -> ContentItem:
+        """Create a lightweight ContentItem-like object for citation testing."""
+        return type(
+            "Item",
+            (),
+            {"url": url},
+        )()
+
+    def test_all_grounded_links(self):
+        markdown = (
+            "## News\n"
+            "- [Story A](https://example.com/story-a)\n"
+            "- [Story B](https://example.com/story-b)\n"
+        )
+        source_items = [
+            self._make_source_item("https://example.com/story-a"),
+            self._make_source_item("https://example.com/story-b"),
+        ]
+
+        result = _validate_citations(markdown, source_items)
+
+        assert result["total_links"] == 2
+        assert result["grounded"] == 2
+        assert result["ungrounded"] == 0
+        assert result["ungrounded_urls"] == []
+
+    def test_some_ungrounded_links(self):
+        markdown = (
+            "## News\n"
+            "- [Real](https://example.com/real)\n"
+            "- [Hallucinated](https://fake-news.example.com/hoax)\n"
+        )
+        source_items = [
+            self._make_source_item("https://example.com/real"),
+        ]
+
+        result = _validate_citations(markdown, source_items)
+
+        assert result["total_links"] == 2
+        assert result["grounded"] == 1
+        assert result["ungrounded"] == 1
+        assert "https://fake-news.example.com/hoax" in result["ungrounded_urls"]
+
+    def test_no_links_in_markdown(self):
+        markdown = "## News\n\nSome plain text with no links at all."
+        source_items = [
+            self._make_source_item("https://example.com/story"),
+        ]
+
+        result = _validate_citations(markdown, source_items)
+
+        assert result["total_links"] == 0
+        assert result["grounded"] == 0
+        assert result["ungrounded"] == 0
+        assert result["ungrounded_urls"] == []
+
+    def test_empty_markdown(self):
+        markdown = ""
+        source_items = [
+            self._make_source_item("https://example.com/story"),
+        ]
+
+        result = _validate_citations(markdown, source_items)
+
+        assert result["total_links"] == 0
+        assert result["grounded"] == 0
+        assert result["ungrounded"] == 0
+
+    def test_tracking_params_normalized(self):
+        """URLs with tracking params should match the canonical source URL."""
+        markdown = "## News\n- [Story](https://example.com/story?utm_source=twitter)\n"
+        source_items = [
+            self._make_source_item("https://example.com/story"),
+        ]
+
+        result = _validate_citations(markdown, source_items)
+
+        assert result["grounded"] == 1
+        assert result["ungrounded"] == 0

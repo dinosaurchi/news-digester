@@ -27,6 +27,52 @@ _FEEDBACK_ADJUSTMENT_FACTOR: float = 0.05
 # more than this amount.
 _FEEDBACK_ADJUSTMENT_CAP: float = 0.15
 
+# Default half-life (in days) for preference time decay.
+_FEEDBACK_DECAY_HALF_LIFE_DAYS: float = 30.0
+
+
+# ---------------------------------------------------------------------------
+# Feedback preference time decay
+# ---------------------------------------------------------------------------
+
+
+def _compute_decay_factor(
+    updated_at: datetime | None,
+    half_life_days: float = _FEEDBACK_DECAY_HALF_LIFE_DAYS,
+) -> float:
+    """Return an exponential decay multiplier between 0.0 and 1.0.
+
+    Parameters
+    ----------
+    updated_at:
+        The reference timestamp for the preference.  Falls back to
+        ``created_at`` by the caller.  If ``None``, returns 0.0 so that
+        preferences with no timestamp contribute negligibly.
+    half_life_days:
+        Number of days after which the weight is halved.  Defaults to 30.
+
+    Returns
+    -------
+    A float in [0.0, 1.0]:
+    - Updated today → ≈1.0
+    - Updated ``half_life_days`` ago → ≈0.5
+    - Updated 90 days ago (with 30-day half-life) → ≈0.125
+    """
+    if updated_at is None:
+        return 0.0
+
+    now = datetime.now(timezone.utc)
+
+    # Ensure the timestamp is timezone-aware.
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+    age_days = (now - updated_at).days
+    if age_days <= 0:
+        return 1.0
+
+    return 2.0 ** (-(age_days / half_life_days))
+
 
 # ---------------------------------------------------------------------------
 # Keyword matching
@@ -164,13 +210,70 @@ def compute_source_authority_score(
 # ---------------------------------------------------------------------------
 
 
-def compute_bm25_score(text: str, query_terms: list[str]) -> float:
+def compute_document_frequencies(
+    items_texts: list[str],
+    query_terms: list[str],
+) -> dict[str, float]:
+    """Compute IDF values for query terms across a batch of item texts.
+
+    For each query term, counts how many item texts contain that term
+    (case-insensitive).  Returns ``{term: idf}`` where
+    ``idf = log(N / (1 + df))`` and *N* is the total number of items.
+
+    Parameters
+    ----------
+    items_texts:
+        List of text strings (one per item in the batch).
+    query_terms:
+        List of query terms to compute IDF for.
+
+    Returns
+    -------
+    Dict mapping each query term (lowercased) to its IDF value.
+    Returns an empty dict when *items_texts* or *query_terms* is empty.
+    """
+    if not items_texts or not query_terms:
+        return {}
+
+    N = len(items_texts)
+
+    # Count document frequency for each query term
+    df: dict[str, int] = {}
+    for term in query_terms:
+        term_lower = term.lower()
+        count = 0
+        for text in items_texts:
+            if term_lower in text.lower():
+                count += 1
+        df[term_lower] = count
+
+    # Compute IDF: log(N / (1 + df)), clamped at 0 so that common terms
+    # (appearing in most documents) contribute less than rare terms, but
+    # never produce a negative multiplier.
+    idf: dict[str, float] = {}
+    for term_lower, doc_freq in df.items():
+        idf[term_lower] = max(0.0, math.log(N / (1 + doc_freq)))
+
+    return idf
+
+
+def compute_bm25_score(
+    text: str,
+    query_terms: list[str],
+    idf: dict[str, float] | None = None,
+) -> float:
     """Return a simplified BM25-style score based on term frequency.
 
     The text is tokenised by whitespace and lowercased.  For each *query_term*
     the raw term frequency (TF) in the text is computed.  The final score is
     the average of ``log(1 + tf)`` across all query terms (missing terms
     contribute 0), capped at 1.0.
+
+    When *idf* is provided, each term's ``log(1 + tf)`` is multiplied by its
+    IDF value before averaging, so that common terms (appearing in many
+    documents) contribute less than rare terms.  When *idf* is ``None``
+    (default), the function behaves in TF-only mode, identical to the
+    previous implementation.
 
     Returns 0.0 when *text* or *query_terms* is empty.
     """
@@ -186,12 +289,15 @@ def compute_bm25_score(text: str, query_terms: list[str]) -> float:
     for token in tokens:
         tf[token] = tf.get(token, 0) + 1
 
-    # Sum log(1 + tf) for each query term present
+    # Sum log(1 + tf) * idf (when provided) for each query term present
     raw_score = 0.0
     for term in query_terms:
         term_lower = term.lower()
         if term_lower in tf:
-            raw_score += math.log(1 + tf[term_lower])
+            tf_score = math.log(1 + tf[term_lower])
+            if idf is not None and term_lower in idf:
+                tf_score *= idf[term_lower]
+            raw_score += tf_score
 
     # Normalise by number of query terms so the score reflects match density
     normalised = raw_score / len(query_terms)
@@ -212,7 +318,50 @@ _WEIGHTS: dict[str, float] = {
 }
 
 
-def compute_combined_score(scores: dict) -> tuple[float, dict]:
+def _validate_weight_overrides(
+    overrides: dict[str, float] | None,
+) -> dict[str, float]:
+    """Validate and filter weight overrides against ``_WEIGHTS`` keys.
+
+    Only keys present in ``_WEIGHTS`` are kept.  Values must be non-negative
+    floats; invalid values are silently skipped (with a warning log) and the
+    corresponding default is used instead.
+
+    The caller is responsible for choosing weights that sum to 1.0 — no
+    normalisation is performed.
+
+    Returns a dict of validated overrides (may be empty).
+    """
+    if not overrides:
+        return {}
+
+    validated: dict[str, float] = {}
+    for key, value in overrides.items():
+        if key not in _WEIGHTS:
+            continue
+        try:
+            float_value = float(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring invalid scoring weight for '%s': %r (not a number)",
+                key,
+                value,
+            )
+            continue
+        if float_value < 0:
+            logger.warning(
+                "Ignoring negative scoring weight for '%s': %s", key, float_value
+            )
+            continue
+        validated[key] = float_value
+
+    return validated
+
+
+def compute_combined_score(
+    scores: dict,
+    weight_overrides: dict[str, float] | None = None,
+) -> tuple[float, dict]:
     """Compute a weighted combined relevance score from individual scores.
 
     Parameters
@@ -221,21 +370,35 @@ def compute_combined_score(scores: dict) -> tuple[float, dict]:
         A dict that may contain any of the keys ``keyword``,
         ``competitor_mention``, ``freshness``, ``source_authority``, ``bm25``.
         Missing keys default to 0.0.
+    weight_overrides:
+        Optional dict mapping weight names to non-negative floats.  Only keys
+        that exist in the default ``_WEIGHTS`` are recognised; unknown keys are
+        silently ignored.  Missing keys fall back to defaults.
+
+        The caller is responsible for choosing weights that sum to 1.0 — no
+        normalisation is performed.
 
     Returns
     -------
     (combined_score, breakdown) where:
     - ``combined_score`` is the weighted sum.
     - ``breakdown`` is a JSON-serialisable dict containing the individual
-      scores, the weights used, and the final combined score.
+      scores, the weights actually used (defaults merged with any valid
+      overrides), and the final combined score.
     """
+    # Merge validated overrides on top of defaults
+    active_weights = dict(_WEIGHTS)
+    valid_overrides = _validate_weight_overrides(weight_overrides)
+    if valid_overrides:
+        active_weights.update(valid_overrides)
+
     combined = 0.0
     breakdown: dict = {
-        "weights": dict(_WEIGHTS),
+        "weights": active_weights,
         "scores": {},
     }
 
-    for key, weight in _WEIGHTS.items():
+    for key, weight in active_weights.items():
         value = float(scores.get(key, 0.0))
         breakdown["scores"][key] = value
         combined += weight * value
@@ -265,42 +428,55 @@ def _extract_domain(url: str | None) -> str:
 
 def _load_feedback_signals(
     db: Session, workspace_id: str
-) -> tuple[dict[str, float], dict[str, float], int]:
+) -> tuple[list[dict], list[dict], int]:
     """Load feedback preferences and event count for a workspace.
 
     Returns
     -------
-    (topic_weights, source_weights, feedback_event_count) where:
-    - ``topic_weights`` maps lowercase topic → aggregated weight
-    - ``source_weights`` maps lowercase source_name → aggregated weight
-    - ``feedback_event_count`` is the total number of FeedbackEvent rows
+    (topic_prefs, source_prefs, feedback_event_count) where:
+    - ``topic_prefs`` is a list of dicts, each with keys
+      ``key`` (lowercase topic), ``weight``, and ``updated_at`` (datetime or
+      None — already falls back to ``created_at``).
+    - ``source_prefs`` is a list of dicts with the same shape for source
+      preferences.
+    - ``feedback_event_count`` is the total number of FeedbackEvent rows.
     """
-    topic_weights: dict[str, float] = {}
-    source_weights: dict[str, float] = {}
+    topic_prefs: list[dict] = []
+    source_prefs: list[dict] = []
     feedback_event_count: int = 0
 
     try:
         from app.models.preferences import TopicPreference, SourcePreference
 
-        # Load topic preferences
-        topic_prefs = (
+        # Load topic preferences (individual rows, not aggregated)
+        tp_rows = (
             db.query(TopicPreference)
             .filter(TopicPreference.workspace_id == workspace_id)
             .all()
         )
-        for tp in topic_prefs:
-            key = tp.topic.lower()
-            topic_weights[key] = topic_weights.get(key, 0.0) + tp.weight
+        for tp in tp_rows:
+            topic_prefs.append(
+                {
+                    "key": tp.topic.lower(),
+                    "weight": tp.weight,
+                    "updated_at": tp.updated_at or tp.created_at,
+                }
+            )
 
-        # Load source preferences
-        source_prefs = (
+        # Load source preferences (individual rows, not aggregated)
+        sp_rows = (
             db.query(SourcePreference)
             .filter(SourcePreference.workspace_id == workspace_id)
             .all()
         )
-        for sp in source_prefs:
-            key = sp.source_name.lower()
-            source_weights[key] = source_weights.get(key, 0.0) + sp.weight
+        for sp in sp_rows:
+            source_prefs.append(
+                {
+                    "key": sp.source_name.lower(),
+                    "weight": sp.weight,
+                    "updated_at": sp.updated_at or sp.created_at,
+                }
+            )
 
     except Exception:
         # Gracefully handle missing table / model — log and continue.
@@ -319,50 +495,100 @@ def _load_feedback_signals(
     except Exception:
         logger.debug("Could not load feedback event count", exc_info=True)
 
-    return topic_weights, source_weights, feedback_event_count
+    return topic_prefs, source_prefs, feedback_event_count
 
 
 def _compute_feedback_adjustment(
     item_text: str,
     source_name: str | None,
-    topic_weights: dict[str, float],
-    source_weights: dict[str, float],
-) -> tuple[float, list[str], list[str]]:
+    topic_prefs: list[dict],
+    source_prefs: list[dict],
+) -> tuple[float, list[dict], list[dict]]:
     """Compute a lightweight score adjustment from feedback preferences.
+
+    Each preference's weight is multiplied by a time-decay factor before
+    being applied (see :func:`_compute_decay_factor`).
 
     Returns
     -------
     (adjustment, topics_matched, sources_matched) where:
     - ``adjustment`` is the net score delta (clamped to ±_FEEDBACK_ADJUSTMENT_CAP)
-    - ``topics_matched`` lists the lowercase topic keys that matched
-    - ``sources_matched`` lists the lowercase source keys that matched
+    - ``topics_matched`` lists dicts with matched topic info including
+      ``key``, ``original_weight``, ``decayed_weight``, and ``decay_factor``
+    - ``sources_matched`` lists dicts with matched source info in the same shape
     """
     adjustment = 0.0
-    topics_matched: list[str] = []
-    sources_matched: list[str] = []
+    topics_matched: list[dict] = []
+    sources_matched: list[dict] = []
 
     lower_text = item_text.lower()
 
-    # Topic preference adjustments
-    for topic_key, weight in topic_weights.items():
+    # Topic preference adjustments (with time decay)
+    for pref in topic_prefs:
+        topic_key = pref["key"]
         if topic_key in lower_text:
-            delta = weight * _FEEDBACK_ADJUSTMENT_FACTOR
+            original_weight = pref["weight"]
+            decay_factor = _compute_decay_factor(pref["updated_at"])
+            decayed_weight = original_weight * decay_factor
+
+            delta = decayed_weight * _FEEDBACK_ADJUSTMENT_FACTOR
             # Clamp individual delta
             delta = max(-_FEEDBACK_ADJUSTMENT_CAP, min(_FEEDBACK_ADJUSTMENT_CAP, delta))
             adjustment += delta
-            topics_matched.append(topic_key)
 
-    # Source preference adjustments
+            topics_matched.append(
+                {
+                    "key": topic_key,
+                    "original_weight": original_weight,
+                    "decayed_weight": round(decayed_weight, 6),
+                    "decay_factor": round(decay_factor, 6),
+                }
+            )
+
+            logger.debug(
+                "Feedback topic '%s': weight=%.3f, decay_factor=%.4f, "
+                "decayed_weight=%.3f, delta=%.4f",
+                topic_key,
+                original_weight,
+                decay_factor,
+                decayed_weight,
+                delta,
+            )
+
+    # Source preference adjustments (with time decay)
     if source_name:
         lower_source = source_name.lower()
-        for src_key, weight in source_weights.items():
+        for pref in source_prefs:
+            src_key = pref["key"]
             if lower_source == src_key or src_key in lower_source:
-                delta = weight * _FEEDBACK_ADJUSTMENT_FACTOR
+                original_weight = pref["weight"]
+                decay_factor = _compute_decay_factor(pref["updated_at"])
+                decayed_weight = original_weight * decay_factor
+
+                delta = decayed_weight * _FEEDBACK_ADJUSTMENT_FACTOR
                 delta = max(
                     -_FEEDBACK_ADJUSTMENT_CAP, min(_FEEDBACK_ADJUSTMENT_CAP, delta)
                 )
                 adjustment += delta
-                sources_matched.append(src_key)
+
+                sources_matched.append(
+                    {
+                        "key": src_key,
+                        "original_weight": original_weight,
+                        "decayed_weight": round(decayed_weight, 6),
+                        "decay_factor": round(decay_factor, 6),
+                    }
+                )
+
+                logger.debug(
+                    "Feedback source '%s': weight=%.3f, decay_factor=%.4f, "
+                    "decayed_weight=%.3f, delta=%.4f",
+                    src_key,
+                    original_weight,
+                    decay_factor,
+                    decayed_weight,
+                    delta,
+                )
 
     # Clamp total adjustment
     adjustment = max(
@@ -434,11 +660,49 @@ def score_content_items(
     if settings and settings.thresholds:
         min_relevance_score = float(settings.thresholds.get("min_relevance_score", 0.1))
 
+    # Scoring weight overrides (default: None → use built-in defaults)
+    scoring_weights: dict[str, float] | None = None
+    if settings and settings.thresholds:
+        raw_weights = settings.thresholds.get("scoring_weights")
+        if raw_weights is not None and isinstance(raw_weights, dict):
+            validated = _validate_weight_overrides(raw_weights)
+            if validated:
+                scoring_weights = validated
+                logger.info(
+                    "Applying scoring weight overrides for workspace %s: %s",
+                    workspace.id,
+                    validated,
+                )
+            else:
+                logger.warning(
+                    "scoring_weights configured for workspace %s but all values "
+                    "were invalid — falling back to defaults",
+                    workspace.id,
+                )
+
     # ------------------------------------------------------------------
     # 1b. Load feedback signals for the workspace
     # ------------------------------------------------------------------
-    topic_weights, source_weights, feedback_event_count = _load_feedback_signals(
+    topic_prefs, source_prefs, feedback_event_count = _load_feedback_signals(
         db, workspace.id
+    )
+
+    # ------------------------------------------------------------------
+    # 1c. Pre-compute item texts and batch IDF for BM25 scoring
+    # ------------------------------------------------------------------
+    items_texts: list[str] = []
+    for item in items:
+        parts: list[str] = []
+        if item.title:
+            parts.append(item.title)
+        if item.summary_snippet:
+            parts.append(item.summary_snippet)
+        elif item.raw_text:
+            parts.append(item.raw_text[:1000])
+        items_texts.append(" ".join(parts))
+
+    batch_idf: dict[str, float] = compute_document_frequencies(
+        items_texts, priority_themes
     )
 
     # ------------------------------------------------------------------
@@ -448,17 +712,8 @@ def score_content_items(
     excluded_count = 0
     scores_list: list[float] = []
 
-    for item in items:
-        # Build the text blob to score: title + summary (with raw_text as fallback)
-        parts: list[str] = []
-        if item.title:
-            parts.append(item.title)
-        if item.summary_snippet:
-            parts.append(item.summary_snippet)
-        elif item.raw_text:
-            # Use first 1000 chars of raw_text as a fallback summary
-            parts.append(item.raw_text[:1000])
-        item_text = " ".join(parts)
+    for idx, item in enumerate(items):
+        item_text = items_texts[idx]
 
         # Compute individual scores
         individual_scores: dict[str, float] = {
@@ -475,21 +730,28 @@ def score_content_items(
                 _extract_domain(item.url),
                 trusted_domains,
             ),
-            "bm25": compute_bm25_score(item_text, priority_themes),
+            "bm25": compute_bm25_score(item_text, priority_themes, idf=batch_idf),
         }
 
         # Combined weighted score
-        combined_score, breakdown = compute_combined_score(individual_scores)
+        combined_score, breakdown = compute_combined_score(
+            individual_scores,
+            weight_overrides=scoring_weights,
+        )
 
         # Check excluded topics
         excluded_score = compute_excluded_topic_score(item_text, excluded_topics)
         breakdown["excluded_topic_score"] = excluded_score
 
+        # Include IDF values in the breakdown for transparency
+        if batch_idf:
+            breakdown["bm25_idf"] = batch_idf
+
         # ------------------------------------------------------------------
         # 2b. Apply feedback adjustment
         # ------------------------------------------------------------------
         feedback_adj, topics_matched, sources_matched = _compute_feedback_adjustment(
-            item_text, item.source_name, topic_weights, source_weights
+            item_text, item.source_name, topic_prefs, source_prefs
         )
         if feedback_adj != 0.0:
             combined_score = max(0.0, min(1.0, combined_score + feedback_adj))
@@ -531,6 +793,7 @@ def score_content_items(
         # 4. Persist results on the item
         # ------------------------------------------------------------------
         item.score_breakdown_json = breakdown
+        item.local_relevance_score = combined_score
         item.final_score = combined_score
 
         scores_list.append(combined_score)

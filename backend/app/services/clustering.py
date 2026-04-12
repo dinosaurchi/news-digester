@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentCluster, ContentItem
+from app.models.workspace import Workspace
 from app.services.dedup import (
     compute_similarity,
     normalize_url,
@@ -37,6 +38,48 @@ DEFAULT_DOMAIN_TITLE_THRESHOLD: float = 0.6
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _resolve_threshold(
+    explicit: float | None,
+    workspace: Workspace | None,
+    settings_key: str,
+    default: float,
+) -> float:
+    """Determine the effective threshold value.
+
+    Priority:
+    1. *explicit* kwarg provided by the caller (not ``None``).
+    2. Value from ``workspace.settings.thresholds[settings_key]``.
+    3. Module-level *default*.
+
+    Values are validated to be floats in ``[0, 1]``; invalid values are
+    silently ignored so the fallback chain continues.
+    """
+    # 1. Explicit caller value wins
+    if explicit is not None:
+        try:
+            v = float(explicit)
+            if 0.0 <= v <= 1.0:
+                return v
+        except (TypeError, ValueError):
+            pass
+        # Bad explicit value — fall through to workspace / default
+
+    # 2. Workspace settings
+    if workspace is not None and workspace.settings is not None:
+        thresholds = workspace.settings.thresholds or {}
+        raw = thresholds.get(settings_key)
+        if raw is not None:
+            try:
+                v = float(raw)
+                if 0.0 <= v <= 1.0:
+                    return v
+            except (TypeError, ValueError):
+                pass
+
+    # 3. Module default
+    return default
 
 
 def _item_to_dict(item: ContentItem) -> dict[str, Any]:
@@ -115,8 +158,9 @@ def cluster_content_items(
     items: list[ContentItem],
     workspace_id: str,
     *,
-    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
-    domain_title_threshold: float = DEFAULT_DOMAIN_TITLE_THRESHOLD,
+    workspace: Workspace | None = None,
+    similarity_threshold: float | None = None,
+    domain_title_threshold: float | None = None,
 ) -> dict[str, int]:
     """Group *items* into :class:`ContentCluster` records.
 
@@ -138,17 +182,44 @@ def cluster_content_items(
         (have an ``id``).
     workspace_id:
         Owning workspace — set on every created cluster.
+    workspace:
+        Optional :class:`Workspace` ORM object.  When provided,
+        ``workspace.settings.thresholds`` is consulted for
+        ``clustering_similarity_threshold`` and
+        ``clustering_domain_title_threshold`` overrides.
     similarity_threshold:
         Minimum ``combined_score`` for two items to be clustered in Phase 3.
+        Explicitly provided value takes precedence over workspace settings.
     domain_title_threshold:
         Minimum token-overlap title similarity when items share the same
-        domain (Phase 3 secondary rule).
+        domain (Phase 3 secondary rule).  Explicitly provided value takes
+        precedence over workspace settings.
 
     Returns
     -------
     dict
         ``clusters_created``, ``items_clustered``, ``singleton_clusters``.
     """
+    # Resolve effective thresholds: explicit > workspace settings > defaults
+    eff_similarity = _resolve_threshold(
+        similarity_threshold,
+        workspace,
+        "clustering_similarity_threshold",
+        DEFAULT_SIMILARITY_THRESHOLD,
+    )
+    eff_domain_title = _resolve_threshold(
+        domain_title_threshold,
+        workspace,
+        "clustering_domain_title_threshold",
+        DEFAULT_DOMAIN_TITLE_THRESHOLD,
+    )
+
+    logger.debug(
+        "Effective clustering thresholds: similarity=%.2f, domain_title=%.2f",
+        eff_similarity,
+        eff_domain_title,
+    )
+
     if not items:
         return {
             "clusters_created": 0,
@@ -225,7 +296,7 @@ def cluster_content_items(
             should_cluster = False
 
             # Primary: combined weighted score exceeds threshold
-            if sim["combined_score"] >= similarity_threshold:
+            if sim["combined_score"] >= eff_similarity:
                 should_cluster = True
 
             # Secondary: same domain + high title overlap
@@ -233,7 +304,7 @@ def cluster_content_items(
                 title_sim = token_overlap_similarity(
                     item_a.title or "", item_b.title or ""
                 )
-                if title_sim > domain_title_threshold:
+                if title_sim > eff_domain_title:
                     should_cluster = True
 
             if should_cluster:
