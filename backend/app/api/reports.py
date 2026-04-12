@@ -1,6 +1,6 @@
 """Reports API endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -19,6 +19,7 @@ from app.services import report as report_service
 from app.services import feedback as feedback_service
 from app.services import workspace as ws_service
 from app.services import report_chat as report_chat_service
+from app.services.content import NotFoundError
 from app.services.opencode_client import (
     OpenCodeClient,
     OpenCodeResponseError,
@@ -26,6 +27,7 @@ from app.services.opencode_client import (
     OpenCodeUnavailableError,
 )
 from app.services.report_generator import render_report_markdown
+from app.services.session import get_current_user
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
@@ -62,6 +64,20 @@ def get_report_summary(report_id: str, db: Session = Depends(get_db)):
 
     msg_count = report_service.get_message_count(db, report_id)
     return _report_to_summary_out(report, message_count=msg_count)
+
+
+@router.delete("/reports/{report_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_report(
+    report_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
+    """Delete a report by ID. Requires authentication."""
+    try:
+        report_service.delete_report(db, report_id)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ── Report thread endpoints ──────────────────────────────────────────
