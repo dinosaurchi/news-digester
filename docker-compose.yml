@@ -152,7 +152,7 @@ services:
       context: ./services/opencode-agent-adapter
     container_name: sme-news-admin-opencode-agent-adapter
     ports:
-      - "${OPENCODE_ADAPTER_PORT:-8080}:8080"
+      - "${OPENCODE_ADAPTER_PORT:-8081}:8080"
     restart: unless-stopped
     environment:
       OPENCODE_BASE_URL: http://opencode-server:4096
