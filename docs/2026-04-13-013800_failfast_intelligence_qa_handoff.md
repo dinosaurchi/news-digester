@@ -106,13 +106,14 @@ A strong practical pattern is:
 Do not rely only on one signal.
 Use a combination of:
 - lexical matching / BM25-like retrieval
-- embedding similarity
 - business-profile/topic/entity weighting
+- source preferences and recency signals
 
-### 5. Vector search should be indexed properly
-If pgvector is used materially for retrieval, configure appropriate ANN indexing for the chosen distance function instead of relying only on brute-force scans.
+> **Note:** The current codebase does not use pgvector or embedding-based retrieval.
+> Introducing embeddings/vector search is a future option but out of scope for this repair pass.
+> Hybrid scoring here means combining the existing text-based signals more effectively.
 
-### 6. Intelligence quality should be measured, not just “felt”
+### 5. Intelligence quality should be measured, not just “felt”
 Manual demo relevance is important, but you should also keep:
 - deterministic score traces
 - shortlist traces
@@ -132,6 +133,7 @@ Manual demo relevance is important, but you should also keep:
 - add a dedicated QA pass for Web UI + API
 - do not regress the existing manual full-flow tests
 - keep the report thread experience intact
+- `make ci` must pass after each pass is complete
 
 ---
 
@@ -155,10 +157,48 @@ This handoff does **not** include:
 
 ---
 
+## Estimated effort per pass
+
+| Pass | Scope | Relative Size |
+|------|-------|---------------|
+| 1 — Fail-fast startup & failure semantics | Focused fixes in startup + run-now | Small |
+| 2 — Readiness, observability, session | Health endpoints + Redis sessions | Small–Medium |
+| 3 — Async run-now | Wire existing Celery task + frontend polling | Small |
+| 4a — Scoring, dedup, clustering improvements | Incremental improvements on existing code | Medium |
+| 4b — Reranking stage | New capability, requires design decisions | Medium–Large |
+| 4c — Feed quality handling | Independent concern | Small–Medium |
+| 5 — Demo hardening | Scripts + fixtures + docs | Small |
+| 6 — QA | Manual + automated validation | Medium (manual effort) |
+| 7 — Cleanup & docs | Final polish | Small |
+
+> **Note:** Pass 4 is significantly larger than Passes 1–3 combined. It is split into
+> sub-passes (4a/4b/4c) so incremental quality gains can ship without blocking on the
+> full reranking design.
+
+---
+
 ## Implementation passes
 
 Follow these passes in order.
 Do not skip ahead if the earlier pass is unstable.
+`make ci` must pass at the end of every pass before proceeding to the next.
+
+# Pass 0 — Prerequisite: assess existing test infrastructure
+
+## Goal
+Understand what testing infrastructure exists so new tests build on it rather than creating a parallel structure.
+
+## Tasks
+- Identify test framework, runner, and configuration (pytest, conftest, fixtures)
+- Identify existing test coverage and test directories
+- Verify `make ci` runs and passes on the current codebase
+- Document findings so subsequent passes can write tests consistently
+
+## Acceptance criteria
+- `make ci` passes on the current codebase before any changes begin
+- Test infrastructure is understood — no guessing about where tests go or how to run them
+
+---
 
 # Pass 1 — Fail-fast startup and explicit failure semantics
 
@@ -244,6 +284,7 @@ Introduce a consistent error response shape where appropriate, for example:
 - run-now no longer returns success-like output on pipeline failure
 - critical unexpected failures surface clearly
 - no critical path still silently hides errors
+- `make ci` passes
 
 ---
 
@@ -283,13 +324,14 @@ Add or strengthen:
 - explicit logging around OpenCode request/response boundaries (without leaking sensitive data)
 
 ### 3. Harden session handling
-Replace process-local memory session handling with a persistent/shared store suitable for the current deployment shape.
+Replace the process-local in-memory session dict (`services/session.py`) with Redis-backed session storage.
+
+Redis is already in the stack as the Celery broker — this is the minimal-effort path that solves process-local fragility without a full auth overhaul.
 
 Minimum requirement:
-- session survives app restart if appropriate for the environment
-- multiple app processes do not diverge in session state
-
-If full auth overhaul is too large, keep it minimal but persistent.
+- session survives app restart
+- multiple app processes share session state via Redis
+- session TTL is explicit and configurable
 
 ### 4. Improve readiness reporting for demo use
 Add a small preflight/readiness summary that makes it easy to tell whether a demo environment is ready:
@@ -317,8 +359,9 @@ Add a small preflight/readiness summary that makes it easy to tell whether a dem
 - health semantics are separated and meaningful
 - readiness checks critical dependencies
 - operators can tell if the app is demo-ready
-- session behavior is no longer process-local fragile
+- session uses Redis, no longer process-local fragile
 - observability is improved enough for debugging real runs
+- `make ci` passes
 
 ---
 
@@ -332,6 +375,10 @@ Make `run-now` operationally correct and more robust by moving execution out of 
 - long requests are harder to manage
 - failures and retries are harder to reason about
 - API semantics are not ideal for long-running operations
+
+> **Existing infrastructure:** `tasks/pipeline.py` already defines `run_workspace_pipeline`
+> as a Celery task. The primary work is wiring the endpoint to dispatch this existing task
+> and updating the API contract — not building a task system from scratch.
 
 ## Implementation tasks
 
@@ -368,6 +415,13 @@ Background execution must still be fail-fast in the correct way:
 - no hidden success
 - no swallow-and-continue in the core pipeline
 
+### 6. Update frontend for async run lifecycle
+The frontend must handle the new async contract:
+- **RunsPage / WorkspaceOverviewPage:** poll or use SSE for run status updates (queued → running → succeeded/failed)
+- **Run-now button:** show "queued" / "running" intermediate states instead of blocking until completion
+- **API hooks/adapters:** update to handle 202 Accepted instead of 201 with final result
+- **Error display:** surface failed-run errors from the polling response, not the dispatch response
+
 ## Tests
 
 ### Automated
@@ -389,61 +443,44 @@ Background execution must still be fail-fast in the correct way:
 - run status lifecycle is explicit and inspectable
 - failed runs remain visible and truthful
 - task execution is compatible with fail-fast policy
+- frontend handles async run lifecycle correctly
+- `make ci` passes
 
 ---
 
-# Pass 4 — Intelligence quality upgrade: retrieval, reranking, dedup, clustering, and source quality
+# Pass 4a — Scoring, dedup, and clustering improvements
 
 ## Goal
-Improve relevance consistency and demo quality, especially for client-specific scenarios like Metal Earth.
+Improve relevance consistency and demo quality by strengthening existing scoring, dedup, and clustering — building on what already exists.
 
-## Guiding design
-Adopt a clearer multi-stage intelligence pipeline:
-
-1. ingest / normalize
-2. dedup / cluster
-3. first-stage retrieval/scoring using hybrid signals
-4. rerank shortlist with a stronger model/agent step
-5. generate report from the reranked shortlist
-6. preserve source traceability end to end
+> **Current state:** Scoring uses keyword matching (BM25-style), competitor detection,
+> freshness decay, source authority, and feedback adjustment. Clustering is text-based
+> (URL normalization, title fingerprint, token overlap). There are no embeddings or
+> pgvector. The existing shortlist step already calls OpenCode for LLM-based refinement.
 
 ## Implementation tasks
 
 ### 1. Make scoring pipeline explicitly hybrid
-Strengthen first-stage scoring with a weighted combination of:
-- lexical relevance (BM25 or equivalent)
-- embedding similarity to workspace profile/topics/entities
-- source preferences
-- topic/entity preference weights
-- recency signal if appropriate
-- optional content-type/source-type priors
+Strengthen first-stage scoring with a weighted combination of the existing signals:
+- lexical relevance (BM25 or equivalent) — already exists
+- source preferences — already exists
+- topic/entity preference weights — already exists
+- recency signal — already exists (freshness decay)
+- content-type/source-type priors — new
 
 Store score components separately so debugging is possible.
+Make weights configurable per workspace or globally.
 
-### 2. Add explicit reranking stage
-Before report generation:
-- retrieve a wider candidate pool
-- rerank the candidate pool with a higher-precision stage
-
-Recommended:
-- cross-encoder reranker if practical
-- otherwise a stronger OpenCode/LLM shortlist refinement stage with explicit prompt and traceability
-
-Persist:
-- candidate set
-- reranked shortlist
-- reasons/scores if practical
-
-### 3. Improve dedup behavior
+### 2. Improve dedup behavior
 Audit and tune dedup so near-duplicate content is handled consistently.
 
 Requirements:
 - deterministic duplicate key strategy where possible
-- semantic/near-duplicate handling where needed
+- improve token-overlap thresholds for near-duplicate detection
 - duplicate reasons visible for debugging
 - avoid report pollution from repeated syndicated stories
 
-### 4. Improve clustering behavior
+### 3. Improve clustering behavior
 Audit cluster creation and cluster assignment.
 Improve:
 - thresholding
@@ -451,25 +488,12 @@ Improve:
 - cluster metadata
 - explainability in Content detail
 
-### 5. Improve feed/source quality handling
-Add stronger heuristics/controls for source quality:
-- stale feed handling
-- feed reliability history
-- feed health weighting if useful
-- low-signal or noisy-source suppression where justified
-
-### 6. Strengthen report relevance for client-specific workspaces
+### 4. Strengthen report relevance for client-specific workspaces
 Add targeted regression checks for scenarios like Metal Earth:
 - licensed/franchise signals
 - collectibles/hobby relevance
 - themed category relevance (aviation, architecture, etc.)
 - avoid obvious irrelevant topic drift
-
-### 7. Improve pgvector usage if retrieval depends on it materially
-If vector retrieval is meaningfully used in production paths:
-- add appropriate vector index for the chosen distance function
-- ensure queries use the right operator/index combination
-- measure recall/performance trade-offs
 
 ## Tests
 
@@ -478,24 +502,100 @@ If vector retrieval is meaningfully used in production paths:
 - hybrid score composition tests
 - dedup regression tests
 - clustering regression tests
-- shortlist/rerank tests
 - content-to-report traceability tests
 - Metal Earth scenario regression tests if feasible with fixtures
-- vector query/index smoke tests if applicable
 
 ### Manual
 - run the generic real-feeds full-flow test
 - run the Metal Earth full-flow test
 - inspect report relevance manually
-- inspect shortlist and source traceability
 - verify clustered/deduped content in Content UI
 
 ## Acceptance criteria
 - scoring is more explainable and traceable
-- reranking stage exists and improves shortlist precision
+- score components are stored separately for debugging
 - dedup and clustering are less noisy
 - reports are more consistently relevant for client-themed workspaces
 - source-to-report traceability remains intact
+- `make ci` passes
+
+---
+
+# Pass 4b — Reranking stage
+
+## Goal
+Add a second-stage reranking step to improve shortlist precision beyond what single-pass scoring provides.
+
+> **Current state:** `services/shortlist.py` already calls OpenCode for LLM-based
+> shortlist refinement. This pass formalizes and strengthens that into an explicit
+> rerank stage with traceability.
+
+## Implementation tasks
+
+### 1. Add explicit reranking stage
+Before report generation:
+- retrieve a wider candidate pool from first-stage scoring
+- rerank the candidate pool with a higher-precision stage
+
+Recommended approach (in order of pragmatism):
+1. Strengthen the existing OpenCode/LLM shortlist refinement with explicit prompt engineering and traceability
+2. If higher precision is needed later, evaluate a cross-encoder reranker (this requires new ML dependencies — treat as a future option, not a requirement)
+
+### 2. Persist reranking artifacts
+Persist:
+- candidate set (pre-rerank)
+- reranked shortlist (post-rerank)
+- reasons/scores if practical
+
+### 3. Shortlist/rerank tests
+- shortlist/rerank regression tests
+- verify candidate set vs reranked shortlist is traceable
+
+## Tests
+
+### Automated
+- shortlist/rerank tests
+- candidate-to-report traceability tests
+
+### Manual
+- inspect shortlist and source traceability
+- compare pre-rerank vs post-rerank shortlists for quality
+
+## Acceptance criteria
+- reranking stage exists and improves shortlist precision
+- pre-rerank and post-rerank artifacts are persisted
+- `make ci` passes
+
+---
+
+# Pass 4c — Feed/source quality handling
+
+## Goal
+Improve handling of low-quality, stale, or noisy feed sources.
+
+## Implementation tasks
+
+### 1. Improve feed/source quality handling
+Add stronger heuristics/controls for source quality:
+- stale feed handling (detect feeds that haven't returned new content)
+- feed reliability history (track fetch success/failure rates)
+- feed health weighting in scoring if useful
+- low-signal or noisy-source suppression where justified
+
+## Tests
+
+### Automated
+- feed quality/staleness detection tests
+- source weighting tests
+
+### Manual
+- verify stale feeds are flagged/downweighted
+- verify noisy sources don't dominate reports
+
+## Acceptance criteria
+- feed quality signals exist and influence scoring
+- operators can identify problematic feeds
+- `make ci` passes
 
 ---
 
@@ -555,6 +655,7 @@ Add a short demo README/checklist covering:
 - demo operator can determine readiness quickly
 - demo environment can be pre-warmed predictably
 - known-good recovery path exists for flaky feeds
+- `make ci` passes
 
 ---
 
@@ -640,6 +741,7 @@ Produce:
 - both manual full-flow scripts pass
 - failure-path behavior is truthful and visible
 - no major regression remains
+- `make ci` passes
 
 ---
 
@@ -663,6 +765,7 @@ Leave the repo in a clean state with explicit operational guidance.
 - docs match actual behavior
 - no obsolete workaround logic remains
 - repo is understandable for the next implementer/operator
+- `make ci` passes
 
 ---
 
@@ -674,14 +777,18 @@ All of the following must be true before the work is considered complete:
 2. no critical path still hides unexpected failures
 3. run-now no longer returns success-like output when the pipeline failed
 4. readiness checks critical dependencies meaningfully
-5. session handling is no longer fragile process-local-only state
-6. run-now executes via explicit background task flow
-7. intelligence pipeline has a clearer hybrid retrieval + rerank design
-8. dedup/clustering/scoring quality is improved and traceable
-9. demo preflight path exists
-10. both manual full-flow scripts pass on the target stack
-11. Web UI + API QA pass is completed successfully
-12. docs are updated and consistent
+5. session handling uses Redis, no longer fragile process-local-only state
+6. run-now executes via the existing Celery background task flow
+7. frontend handles async run lifecycle (polling, intermediate states)
+8. scoring is more explainable with separately stored score components
+9. reranking stage exists and improves shortlist precision
+10. dedup/clustering quality is improved and traceable
+11. feed quality signals exist and influence scoring
+12. demo preflight path exists
+13. both manual full-flow scripts pass on the target stack
+14. Web UI + API QA pass is completed successfully
+15. `make ci` passes after every pass
+16. docs are updated and consistent
 
 ---
 
@@ -701,15 +808,16 @@ Backend:
 - `backend/app/tasks/pipeline.py`
 - `backend/app/tests/...`
 
-Potential data/index/migration files:
+Potential data/migration files:
 - migrations / alembic revisions
-- pgvector index definitions if needed
 
-Frontend:
-- pages/components that display run-now state, failed runs, readiness/error feedback
-- API adapters/hooks if endpoint behavior changes
-- Runs / Reports / Report Thread pages
-- any session-related code if auth/session storage changes
+Frontend (React/Vite TypeScript at `src/`):
+- `src/pages/RunsPage.tsx` — run status polling for async run-now
+- `src/pages/ReportsPage.tsx` — report availability after async completion
+- `src/pages/ReportThreadPage.tsx` — report thread behavior
+- `src/pages/WorkspaceOverviewPage.tsx` — run-now button + status display
+- API hooks/adapters — update for async run-now contract (202 + polling)
+- Session-related code if auth/session storage changes
 
 QA / scripts:
 - manual test scripts
