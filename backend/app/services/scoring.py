@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -606,6 +607,34 @@ def _load_feedback_signals(
     return topic_prefs, source_prefs, feedback_event_count
 
 
+def _topic_matches_text(topic_key: str, text: str) -> bool:
+    """Check whether a topic preference key matches item text.
+
+    Matching rules:
+    - Multi-word topics: all individual words must appear in the text (AND
+      logic), each matched as a case-insensitive substring.  The words do
+      not need to appear contiguously or in order.
+    - Single-word topics: the word is matched using word-boundary regex
+      (``\\bword\\b``) to avoid false positives such as "AI" matching
+      "MAIL" or "PAIR".
+    - Empty or whitespace-only topics never match.
+    - Matching is case-insensitive for both topic and text.
+    """
+    if not topic_key or not topic_key.strip():
+        return False
+
+    lower_text = text.lower()
+    words = topic_key.lower().split()
+
+    if len(words) == 1:
+        # Single-word topic: use word-boundary matching
+        pattern = r"\b" + re.escape(words[0]) + r"\b"
+        return re.search(pattern, lower_text) is not None
+
+    # Multi-word topic: ALL words must appear as substrings (AND logic)
+    return all(word in lower_text for word in words)
+
+
 def _compute_feedback_adjustment(
     item_text: str,
     source_name: str | None,
@@ -634,7 +663,7 @@ def _compute_feedback_adjustment(
     # Topic preference adjustments (with time decay)
     for pref in topic_prefs:
         topic_key = pref["key"]
-        if topic_key in lower_text:
+        if _topic_matches_text(topic_key, lower_text):
             original_weight = pref["weight"]
             decay_factor = _compute_decay_factor(pref["updated_at"])
             decayed_weight = original_weight * decay_factor
