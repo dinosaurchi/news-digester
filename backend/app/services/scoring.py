@@ -419,6 +419,9 @@ def _extract_domain(url: str | None) -> str:
     """Extract the hostname from a URL string, returning empty string on failure."""
     if not url:
         return ""
+    # OPTIONAL DEGRADATION: URL parsing failures are expected for malformed
+    # URLs.  Returning empty string means the item gets a neutral source-
+    # authority score (0.3), which is correct behaviour for an unknown domain.
     try:
         parsed = urlparse(url)
         return parsed.hostname or ""
@@ -478,10 +481,15 @@ def _load_feedback_signals(
                 }
             )
 
+    # OPTIONAL DEGRADATION: Feedback signals are nice-to-have adjustments that
+    # slightly tweak relevance scores.  If preferences cannot be loaded (e.g.
+    # the model/table is missing, or the DB query fails), scoring still
+    # produces correct results — just without the feedback delta.  Never
+    # silently swallow; always log at WARNING so operators can investigate.
     except Exception:
-        # Gracefully handle missing table / model — log and continue.
-        logger.debug(
-            "Could not load preference models for feedback scoring", exc_info=True
+        logger.warning(
+            "Could not load preference models for feedback scoring",
+            exc_info=True,
         )
 
     try:
@@ -492,8 +500,11 @@ def _load_feedback_signals(
             .filter(FeedbackEvent.workspace_id == workspace_id)
             .count()
         )
+    # OPTIONAL DEGRADATION: Feedback event count is a metadata-only field used
+    # for transparency in score breakdowns.  Its absence does not affect
+    # scoring correctness.
     except Exception:
-        logger.debug("Could not load feedback event count", exc_info=True)
+        logger.warning("Could not load feedback event count", exc_info=True)
 
     return topic_prefs, source_prefs, feedback_event_count
 

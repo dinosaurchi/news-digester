@@ -142,6 +142,10 @@ def enrich_article_body(url: str, timeout: int = 5) -> str | None:
         any failure.
     """
     max_length = settings.ARTICLE_BODY_MAX_LENGTH
+    # OPTIONAL DEGRADATION: Article body enrichment is a best-effort
+    # enhancement — the pipeline already has feed-provided text and
+    # will continue without the enriched body.  Never block ingestion
+    # because enrichment failed.
     try:
         response = httpx.get(
             url,
@@ -151,7 +155,7 @@ def enrich_article_body(url: str, timeout: int = 5) -> str | None:
         )
         response.raise_for_status()
     except Exception as exc:
-        logger.debug("Article enrichment fetch failed for %s: %s", url, exc)
+        logger.warning("Article enrichment fetch failed for %s: %s", url, exc)
         return None
 
     content_type = response.headers.get("content-type", "")
@@ -166,7 +170,9 @@ def enrich_article_body(url: str, timeout: int = 5) -> str | None:
     try:
         extracted = trafilatura.extract(response.text)
     except Exception as exc:
-        logger.debug("Article enrichment extraction failed for %s: %s", url, exc)
+        # OPTIONAL DEGRADATION: Extraction failure is non-critical; the
+        # feed-provided summary/text is still available.
+        logger.warning("Article enrichment extraction failed for %s: %s", url, exc)
         return None
 
     if not extracted:
@@ -203,6 +209,9 @@ def parse_rfc2822(date_str: str) -> datetime | None:
     try:
         return parsedate_to_datetime(date_str)
     except Exception:
+        # OPTIONAL DEGRADATION: Date parsing is best-effort — a missing or
+        # unparseable date simply means the item gets no freshness boost.
+        logger.debug("Failed to parse RFC 2822 date: %r", date_str)
         return None
 
 
@@ -216,7 +225,7 @@ def fetch_feed(feed: FeedSource) -> FeedFetchResult:
     # --- HTTP fetch ---
     try:
         response = httpx.get(feed.url, follow_redirects=True, timeout=10)
-    except Exception as exc:
+    except httpx.HTTPError as exc:
         logger.warning("Failed to fetch feed %s (%s): %s", feed.name, feed.url, exc)
         return FeedFetchResult(
             success=False,
@@ -368,6 +377,10 @@ def normalize_content(
 
         # Optional: enrich raw_text by fetching the original article.
         if settings.ARTICLE_ENRICHMENT_ENABLED and item.url:
+            # OPTIONAL DEGRADATION: Article enrichment is best-effort.  On
+            # failure the item keeps its feed-provided text and ingestion
+            # proceeds normally.  logged at WARNING (via logger.exception)
+            # so operators can see enrichment issues in production logs.
             try:
                 enriched = enrich_article_body(
                     item.url,
