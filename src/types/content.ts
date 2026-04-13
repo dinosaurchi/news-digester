@@ -28,6 +28,12 @@ export interface ContentItemDetail extends ContentItem {
     llm: number;
     freshness: number;
     sourceAuthority: number;
+    feedbackAdjustment?: number;
+    feedback?: {
+      topicsMatched: string[];
+      sourcesMatched: string[];
+      eventCount: number;
+    };
   };
   clusterItems?: ContentItem[];
 }
