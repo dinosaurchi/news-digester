@@ -78,6 +78,11 @@ class ReportChatResult:
 class OpenCodeClient:
     """Thin client that talks to the OpenCode Agent Adapter over HTTP."""
 
+    # Retry settings for transient OpenCode failures (e.g. LLM returns
+    # non-JSON text such as "I'm sorry, but I cannot assist…").
+    _MAX_RETRIES: int = 2
+    _RETRY_BACKOFF_SECONDS: float = 3.0
+
     def __init__(
         self,
         *,
@@ -127,12 +132,33 @@ class OpenCodeClient:
             input_data=input_data,
             metadata=metadata,
         )
-        raw = self._call_adapter_run(
-            title="sme-news-shortlist-refinement",
-            prompt=prompt,
-        )
 
-        output = self._extract_json_object(raw["output_text"])
+        # Retry on transient OpenCodeResponseError (e.g. LLM returns
+        # non-JSON text). Connection/timeout errors propagate immediately.
+        raw: dict[str, Any] = {}
+        output: dict[str, Any] = {}
+        for attempt in range(self._MAX_RETRIES + 1):
+            try:
+                raw = self._call_adapter_run(
+                    title="sme-news-shortlist-refinement",
+                    prompt=prompt,
+                )
+                output = self._extract_json_object(raw["output_text"])
+                break
+            except OpenCodeResponseError as exc:
+                if attempt < self._MAX_RETRIES:
+                    logger.warning(
+                        "OpenCode shortlist refinement returned invalid response "
+                        "(attempt %d/%d), retrying in %.0fs: %s",
+                        attempt + 1,
+                        self._MAX_RETRIES + 1,
+                        self._RETRY_BACKOFF_SECONDS,
+                        exc,
+                    )
+                    time.sleep(self._RETRY_BACKOFF_SECONDS)
+                else:
+                    raise
+
         selected_items = output.get("selected_items", [])
         rationale = output.get("rationale", "")
 
@@ -178,12 +204,32 @@ class OpenCodeClient:
             input_data=input_data,
             metadata=metadata,
         )
-        raw = self._call_adapter_run(
-            title="sme-news-report-generation",
-            prompt=prompt,
-        )
 
-        markdown = self._extract_report_markdown(raw["output_text"])
+        # Retry on transient OpenCodeResponseError (e.g. LLM returns
+        # non-JSON text). Connection/timeout errors propagate immediately.
+        raw: dict[str, Any] = {}
+        markdown: str = ""
+        for attempt in range(self._MAX_RETRIES + 1):
+            try:
+                raw = self._call_adapter_run(
+                    title="sme-news-report-generation",
+                    prompt=prompt,
+                )
+                markdown = self._extract_report_markdown(raw["output_text"])
+                break
+            except OpenCodeResponseError as exc:
+                if attempt < self._MAX_RETRIES:
+                    logger.warning(
+                        "OpenCode report generation returned invalid response "
+                        "(attempt %d/%d), retrying in %.0fs: %s",
+                        attempt + 1,
+                        self._MAX_RETRIES + 1,
+                        self._RETRY_BACKOFF_SECONDS,
+                        exc,
+                    )
+                    time.sleep(self._RETRY_BACKOFF_SECONDS)
+                else:
+                    raise
 
         return ReportResult(
             markdown=markdown,

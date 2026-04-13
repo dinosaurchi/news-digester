@@ -173,6 +173,18 @@ class TestGenerateReportMarkdown:
             mock_get,
             '{"content": "no markdown key here"}',
         )
+        # The retry logic will attempt up to 3 times (initial + 2 retries).
+        # Each attempt consumes a result GET + a usage GET, so provide
+        # enough responses for all retry attempts.
+        bad_output = _mock_response(
+            {
+                "session_id": "sess-1",
+                "status": "completed",
+                "output_text": '{"content": "no markdown key here"}',
+            }
+        )
+        usage_resp = _mock_response({"session_id": "sess-1", "total_tokens": 123})
+        mock_get.side_effect = [bad_output, usage_resp] * 3
 
         with pytest.raises(OpenCodeResponseError, match="markdown"):
             _make_client().generate_report_markdown([], {}, {})
