@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -13,6 +14,37 @@ from app.services import workspace as ws_service
 from app.services.pipeline import execute_workspace_run
 
 router = APIRouter(prefix="/api", tags=["runs"])
+
+
+def _build_pipeline_error(
+    run,
+    *,
+    stage: str | None = None,
+    details: str | None = None,
+) -> dict:
+    """Build a standardized pipeline error response body.
+
+    Shape::
+
+        {
+            "error": {
+                "code": "PIPELINE_FAILURE",
+                "message": "Pipeline execution failed",
+                "details": "...",
+                "runId": "...",
+                "stage": "..."
+            }
+        }
+    """
+    return {
+        "error": {
+            "code": "PIPELINE_FAILURE",
+            "message": "Pipeline execution failed",
+            "details": details or run.error_summary,
+            "runId": run.id,
+            "stage": stage,
+        }
+    }
 
 
 # ── Workspace-scoped run endpoints ────────────────────────────────────
@@ -107,11 +139,21 @@ def run_now(workspace_id: str, db: Session = Depends(get_db)):
     try:
         run, _, _ = execute_workspace_run(db, ws, run_type="manual")
     except Exception:
-        # The pipeline marks the run as failed before re-raising.
-        # Retrieve the failed run and return it.
-        run = run_service.list_runs(db, workspace_id, run_type="manual")[:1]
-        if run:
-            return _run_summary_to_out(run[0])
+        # The pipeline marks the run as failed and persists it before re-raising.
+        # Retrieve the persisted failed run and return a structured error response
+        # that clearly indicates failure (HTTP 500) rather than a success result.
+        failed_runs = run_service.list_runs(db, workspace_id, run_type="manual")
+        if failed_runs:
+            run = failed_runs[0]
+            # Determine which pipeline stage failed from the run events.
+            events = run_service.get_run_events(db, run.id)
+            failed_event = next((e for e in events if e.status == "error"), None)
+            stage = failed_event.step_name if failed_event else None
+            details = failed_event.message if failed_event else run.error_summary
+            return JSONResponse(
+                status_code=500,
+                content=_build_pipeline_error(run, stage=stage, details=details),
+            )
         raise
 
     return _run_summary_to_out(run)

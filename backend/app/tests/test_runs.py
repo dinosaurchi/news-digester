@@ -1223,13 +1223,16 @@ class TestRunNowShortlist:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        # Run should complete (201) but with failed status due to pipeline error
-        assert resp.status_code == 201
+        # Pipeline failure must return HTTP 500 with structured error, not 201
+        assert resp.status_code == 500
         data = resp.json()
-        assert data["status"] == "failed"
-        assert "adapter unreachable" in (data.get("error") or "")
+        assert data["error"]["code"] == "PIPELINE_FAILURE"
+        assert data["error"]["message"] == "Pipeline execution failed"
+        assert "adapter unreachable" in (data["error"].get("details") or "")
+        assert data["error"]["runId"] is not None
+        assert data["error"]["stage"] == "select_shortlist"
 
-        run_id = data["id"]
+        run_id = data["error"]["runId"]
 
         db = TestingSessionLocal()
         try:
@@ -1300,12 +1303,15 @@ class TestRunNowShortlist:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
+        assert resp.status_code == 500
         data = resp.json()
-        assert data["status"] == "failed"
-        assert "report adapter down" in (data.get("error") or "")
+        assert data["error"]["code"] == "PIPELINE_FAILURE"
+        assert data["error"]["message"] == "Pipeline execution failed"
+        assert "report adapter down" in (data["error"].get("details") or "")
+        assert data["error"]["runId"] is not None
+        assert data["error"]["stage"] == "generate_report"
 
-        run_id = data["id"]
+        run_id = data["error"]["runId"]
 
         db = TestingSessionLocal()
         try:

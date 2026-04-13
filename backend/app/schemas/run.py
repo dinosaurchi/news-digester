@@ -87,6 +87,39 @@ class RunDetailOut(RunSummaryOut):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
+class PipelineErrorDetail(BaseModel):
+    """Structured error detail for pipeline failures."""
+
+    code: str
+    message: str
+    details: Optional[str] = None
+    run_id: Optional[str] = Field(default=None, alias="runId")
+    stage: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class PipelineErrorResponse(BaseModel):
+    """Standard error response shape returned when a pipeline run fails.
+
+    Example::
+
+        {
+            "error": {
+                "code": "PIPELINE_FAILURE",
+                "message": "Pipeline execution failed",
+                "details": "Shortlist selection failed: adapter unreachable",
+                "runId": "abc-123",
+                "stage": "select_shortlist"
+            }
+        }
+    """
+
+    error: PipelineErrorDetail
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
 def _run_summary_to_out(run) -> dict:
     """Convert a ProcessingRun ORM object to camelCase dict."""
     affected = run.affected_counts_json or {}
