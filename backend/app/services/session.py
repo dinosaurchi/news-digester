@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 
@@ -12,13 +13,18 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.session import get_db
 from app.models.user import User
+from app.services.redis_session import (
+    SESSION_TTL_SECONDS,
+    clear_sessions as _redis_clear_sessions,
+    delete_session as _redis_delete_session,
+    get_session as _redis_get_session,
+    set_session as _redis_set_session,
+)
+
+logger = logging.getLogger(__name__)
 
 _PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256"
 _PASSWORD_HASH_ITERATIONS = 600_000
-
-# Process-local server-side sessions. The trusted identity lives in users;
-# this map only connects an opaque cookie value to a user id.
-_sessions: dict[str, str] = {}
 
 
 def hash_password(password: str) -> str:
@@ -104,7 +110,8 @@ def authenticate_user(db: Session, *, username: str, password: str) -> User | No
 def create_session(db: Session, *, user: User) -> dict:
     """Create a server-side session for an authenticated user."""
     session_id = uuid.uuid4().hex
-    _sessions[session_id] = user.id
+    session_data = {"user_id": user.id}
+    _redis_set_session(session_id, session_data, ttl=SESSION_TTL_SECONDS)
     payload = user_to_session_dict(user)
     payload["session_id"] = session_id
     return payload
@@ -112,13 +119,17 @@ def create_session(db: Session, *, user: User) -> dict:
 
 def get_session_user(db: Session, *, session_id: str) -> dict | None:
     """Return the current session user DTO payload, or None."""
-    user_id = _sessions.get(session_id)
+    session_data = _redis_get_session(session_id)
+    if not session_data:
+        return None
+
+    user_id = session_data.get("user_id")
     if not user_id:
         return None
 
     user = db.get(User, user_id)
     if user is None or user.status != "active":
-        _sessions.pop(session_id, None)
+        _redis_delete_session(session_id)
         return None
 
     return user_to_session_dict(user)
@@ -126,7 +137,12 @@ def get_session_user(db: Session, *, session_id: str) -> dict | None:
 
 def delete_session(db: Session, *, session_id: str) -> None:
     """Remove a server-side session."""
-    _sessions.pop(session_id, None)
+    _redis_delete_session(session_id)
+
+
+def clear_all_sessions() -> None:
+    """Remove all session keys from Redis. Used primarily in tests."""
+    _redis_clear_sessions()
 
 
 def user_to_session_dict(user: User) -> dict:

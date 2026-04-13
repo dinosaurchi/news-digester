@@ -165,3 +165,85 @@ class TestLogout:
         # After logout, /me must return 401
         resp = auth_client.get("/api/session/me")
         assert resp.status_code == 401
+
+
+class TestRedisSessionStore:
+    """Unit tests for the Redis-backed session store (redis_session module)."""
+
+    def test_session_persists_after_creation(self, fake_redis):
+        """A session stored via set_session should survive a get_session lookup."""
+        from app.services.redis_session import set_session, get_session
+
+        session_id = "test-persist-abc123"
+        data = {"user_id": 42, "role": "admin"}
+
+        assert set_session(session_id, data) is True
+        retrieved = get_session(session_id)
+        assert retrieved == data
+
+    def test_expired_session_returns_none(self, fake_redis):
+        """A session with a very short TTL should expire and return None."""
+        from app.services.redis_session import set_session, get_session
+
+        session_id = "test-expire-xyz789"
+        data = {"user_id": 99}
+
+        # Store with a 1-second TTL
+        assert set_session(session_id, data, ttl=1) is True
+        retrieved = get_session(session_id)
+        assert retrieved == data
+
+        # Advance time past the TTL (fakeredis supports time manipulation)
+        fake_redis.expire(f"sme:session:{session_id}", 0)
+        # After expiration, the key should be gone
+        expired = get_session(session_id)
+        assert expired is None
+
+    def test_delete_session_removes_key(self, fake_redis):
+        """delete_session should remove the session key from Redis."""
+        from app.services.redis_session import set_session, get_session, delete_session
+
+        session_id = "test-delete-123"
+        data = {"user_id": 7}
+
+        assert set_session(session_id, data) is True
+        assert get_session(session_id) == data
+
+        delete_session(session_id)
+        assert get_session(session_id) is None
+
+    def test_clear_sessions_removes_all(self, fake_redis):
+        """clear_sessions should remove all sme:session:* keys."""
+        from app.services.redis_session import set_session, get_session, clear_sessions
+
+        set_session("sess-a", {"user_id": 1})
+        set_session("sess-b", {"user_id": 2})
+        set_session("sess-c", {"user_id": 3})
+
+        assert get_session("sess-a") is not None
+        assert get_session("sess-b") is not None
+        assert get_session("sess-c") is not None
+
+        clear_sessions()
+
+        assert get_session("sess-a") is None
+        assert get_session("sess-b") is None
+        assert get_session("sess-c") is None
+
+    def test_nonexistent_session_returns_none(self, fake_redis):
+        """Getting a session that was never created should return None."""
+        from app.services.redis_session import get_session
+
+        assert get_session("does-not-exist") is None
+
+    def test_session_survives_across_multiple_lookups(self, fake_redis):
+        """Session data should remain consistent across multiple get calls."""
+        from app.services.redis_session import set_session, get_session
+
+        session_id = "test-multi-lookup"
+        data = {"user_id": 55, "username": "testuser", "role": "editor"}
+
+        set_session(session_id, data)
+
+        for _ in range(5):
+            assert get_session(session_id) == data
