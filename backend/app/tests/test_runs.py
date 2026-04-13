@@ -1329,6 +1329,201 @@ class TestRunNowShortlist:
 
 
 # ---------------------------------------------------------------------------
+# Unexpected exception propagation tests
+# ---------------------------------------------------------------------------
+
+
+class TestUnexpectedExceptionPropagation:
+    """Verify that unexpected exceptions in critical pipeline steps propagate
+    correctly (mark the run as failed, record error events, and do NOT
+    silently continue).
+    """
+
+    def _setup_workspace_with_content(self, client, monkeypatch):
+        """Create workspace with profile, settings, feed, and a fetched article."""
+        from app.services.pipeline_steps import FeedFetchResult
+
+        ws_id = _create_workspace(client)
+        _create_workspace_profile(client, ws_id)
+        _create_workspace_settings(client, ws_id)
+        _create_feed(client, ws_id, url="https://example.com/feed.xml")
+
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            "app.services.pipeline.fetch_feed",
+            lambda feed: FeedFetchResult(
+                success=True,
+                entries=[
+                    {
+                        "title": "AI article",
+                        "url": "https://example.com/article",
+                        "source_name": "Example Feed",
+                        "published_at": now - timedelta(hours=1),
+                        "author": "Author",
+                        "summary": "AI summary",
+                        "content": "Body about AI",
+                    }
+                ],
+                error=None,
+                source_title="Example Feed",
+            ),
+        )
+        return ws_id
+
+    def test_unexpected_exception_in_scoring_marks_run_failed(
+        self, client, monkeypatch
+    ):
+        """Unexpected RuntimeError in score_content_items marks run as failed."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRun, ProcessingRunEvent
+
+        ws_id = self._setup_workspace_with_content(client, monkeypatch)
+
+        # Mock the scoring service to raise an unexpected exception
+        monkeypatch.setattr(
+            "app.services.pipeline.score_content_items",
+            lambda db, items, workspace: (_ for _ in ()).throw(
+                RuntimeError("unexpected scoring error")
+            ),
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["error"]["code"] == "PIPELINE_FAILURE"
+        assert data["error"]["stage"] == "score_content"
+        assert "unexpected scoring error" in (data["error"].get("details") or "")
+
+        run_id = data["error"]["runId"]
+
+        db = TestingSessionLocal()
+        try:
+            run = db.query(ProcessingRun).filter(ProcessingRun.id == run_id).first()
+            assert run is not None
+            assert run.status == "failed"
+            assert "unexpected scoring error" in (run.error_summary or "")
+
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            score_events = [e for e in events if e.step_name == "score_content"]
+            assert len(score_events) == 1
+            assert score_events[0].status == "error"
+            assert "unexpected scoring error" in (score_events[0].message or "")
+        finally:
+            db.close()
+
+    def test_unexpected_exception_in_shortlist_marks_run_failed(
+        self, client, monkeypatch
+    ):
+        """Unexpected RuntimeError in select_shortlist marks run as failed."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRun, ProcessingRunEvent
+        from unittest.mock import MagicMock
+
+        ws_id = self._setup_workspace_with_content(client, monkeypatch)
+
+        # Mock the OpenCode client to raise an unexpected exception from shortlist
+        mock_client = MagicMock()
+        mock_client.refine_shortlist.side_effect = RuntimeError(
+            "unexpected shortlist error"
+        )
+        monkeypatch.setattr(
+            "app.services.pipeline.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["error"]["code"] == "PIPELINE_FAILURE"
+        assert data["error"]["stage"] == "select_shortlist"
+        assert "unexpected shortlist error" in (data["error"].get("details") or "")
+
+        run_id = data["error"]["runId"]
+
+        db = TestingSessionLocal()
+        try:
+            run = db.query(ProcessingRun).filter(ProcessingRun.id == run_id).first()
+            assert run is not None
+            assert run.status == "failed"
+            assert "unexpected shortlist error" in (run.error_summary or "")
+
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            shortlist_events = [e for e in events if e.step_name == "select_shortlist"]
+            assert len(shortlist_events) == 1
+            assert shortlist_events[0].status == "error"
+            assert "unexpected shortlist error" in (shortlist_events[0].message or "")
+        finally:
+            db.close()
+
+    def test_unexpected_exception_in_report_generation_marks_run_failed(
+        self, client, monkeypatch
+    ):
+        """Unexpected RuntimeError in generate_report marks run as failed."""
+        from app.tests.conftest import TestingSessionLocal
+        from app.models.run import ProcessingRun, ProcessingRunEvent
+        from unittest.mock import MagicMock
+
+        ws_id = self._setup_workspace_with_content(client, monkeypatch)
+
+        # Mock the OpenCode client: shortlist succeeds, report raises RuntimeError
+        mock_client = MagicMock()
+        mock_client.refine_shortlist.return_value = MagicMock(
+            selected_items=[
+                {
+                    "id": "item-1",
+                    "title": "AI article",
+                    "score": 0.9,
+                    "rationale": "Highly relevant",
+                }
+            ],
+            rationale="Selected 1 item",
+        )
+        mock_client.generate_report_markdown.side_effect = RuntimeError(
+            "unexpected report error"
+        )
+        monkeypatch.setattr(
+            "app.services.pipeline.OpenCodeClient",
+            lambda **kwargs: mock_client,
+        )
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["error"]["code"] == "PIPELINE_FAILURE"
+        assert data["error"]["stage"] == "generate_report"
+        assert "unexpected report error" in (data["error"].get("details") or "")
+
+        run_id = data["error"]["runId"]
+
+        db = TestingSessionLocal()
+        try:
+            run = db.query(ProcessingRun).filter(ProcessingRun.id == run_id).first()
+            assert run is not None
+            assert run.status == "failed"
+            assert "unexpected report error" in (run.error_summary or "")
+
+            events = (
+                db.query(ProcessingRunEvent)
+                .filter(ProcessingRunEvent.run_id == run_id)
+                .all()
+            )
+            report_events = [e for e in events if e.step_name == "generate_report"]
+            assert len(report_events) == 1
+            assert report_events[0].status == "error"
+            assert "unexpected report error" in (report_events[0].message or "")
+        finally:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
 # Report generation integration tests
 # ---------------------------------------------------------------------------
 
