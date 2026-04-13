@@ -26,3 +26,6 @@ celery_app.conf.update(
 
 celery_app.autodiscover_tasks(["app.tasks"])
 
+# Ensure task modules are imported so the worker can resolve them by name.
+# Must come after celery_app is defined to avoid circular imports.
+import app.tasks.pipeline  # noqa: F401, E402

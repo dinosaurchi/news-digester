@@ -21,7 +21,7 @@ class ProcessingRun(Base):
     )  # scheduled, manual
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="running"
-    )  # success, failed, running
+    )  # queued, running, success, failed
     started_at: Mapped[str] = mapped_column(DateTime, default=_now)
     finished_at: Mapped[str | None] = mapped_column(DateTime, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)

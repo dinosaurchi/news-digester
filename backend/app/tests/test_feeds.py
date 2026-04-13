@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class TestListFeeds:
     """GET /api/workspaces/{workspace_id}/feeds"""
@@ -640,3 +642,301 @@ class TestFeedCountInWorkspace:
         resp = client.get(f"/api/workspaces/{ws_id}")
         assert resp.status_code == 200
         assert resp.json()["feedCount"] == 3
+
+
+class TestFeedReliabilityTracking:
+    """Feed reliability tracking: fetch counts, success rates, stale detection."""
+
+    def test_new_feed_has_zero_fetch_counts(self, client):
+        """A newly created feed starts with zero fetch counters."""
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Reliability WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={"name": "New Feed", "url": "https://example.com/feed", "type": "rss"},
+        )
+        feed_id = create_resp.json()["id"]
+
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["totalFetchCount"] == 0
+        assert feed_data["consecutiveFetchFailures"] == 0
+        assert feed_data["fetchSuccessRate"] == 0.0
+        assert feed_data["isStale"] is False
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_successful_fetch_increments_total_and_resets_failures(
+        self, mock_get, client
+    ):
+        """A successful fetch test increments total_fetch_count and resets failures."""
+        response = MagicMock()
+        response.text = """<?xml version="1.0"?>
+        <rss version="2.0">
+          <channel>
+            <title>Test Feed</title>
+            <item>
+              <title>Article One</title>
+              <link>https://example.com/one</link>
+              <description>Summary one</description>
+            </item>
+          </channel>
+        </rss>"""
+        response.raise_for_status.return_value = None
+        mock_get.return_value = response
+
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Fetch Track WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Track Feed",
+                "url": "https://example.com/track",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        # First successful fetch
+        client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["totalFetchCount"] == 1
+        assert feed_data["consecutiveFetchFailures"] == 0
+        assert feed_data["fetchSuccessRate"] == pytest.approx(1.0)
+        assert feed_data["isStale"] is False
+
+        # Second successful fetch
+        client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["totalFetchCount"] == 2
+        assert feed_data["consecutiveFetchFailures"] == 0
+        assert feed_data["fetchSuccessRate"] == pytest.approx(1.0)
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_failed_fetch_increments_consecutive_failures(self, mock_get, client):
+        """A failed fetch test increments consecutive failures."""
+        fail_response = MagicMock()
+        fail_response.text = "<not-a-feed>"
+        fail_response.raise_for_status.return_value = None
+        mock_get.return_value = fail_response
+
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Fail Track WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Fail Feed",
+                "url": "https://example.com/fail",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        # First failure
+        client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["totalFetchCount"] == 1
+        assert feed_data["consecutiveFetchFailures"] == 1
+
+        # Second failure
+        client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["totalFetchCount"] == 2
+        assert feed_data["consecutiveFetchFailures"] == 2
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_success_resets_consecutive_failures(self, mock_get, client):
+        """After failures, a success resets consecutive_fetch_failures to 0."""
+        fail_response = MagicMock()
+        fail_response.text = "<not-a-feed>"
+        fail_response.raise_for_status.return_value = None
+        mock_get.return_value = fail_response
+
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Reset WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Reset Feed",
+                "url": "https://example.com/reset",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        # 3 failures
+        for _ in range(3):
+            client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["consecutiveFetchFailures"] == 3
+        assert feed_data["totalFetchCount"] == 3
+
+        # Now succeed
+        success_response = MagicMock()
+        success_response.text = """<?xml version="1.0"?>
+        <rss version="2.0">
+          <channel><title>OK</title>
+            <item><title>A</title><link>https://example.com/a</link></item>
+          </channel>
+        </rss>"""
+        success_response.raise_for_status.return_value = None
+        mock_get.return_value = success_response
+
+        client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["consecutiveFetchFailures"] == 0
+        assert feed_data["totalFetchCount"] == 4
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_feed_not_stale_below_threshold(self, mock_get, client):
+        """A feed is not stale until consecutive failures reach the threshold."""
+        fail_response = MagicMock()
+        fail_response.text = "<not-a-feed>"
+        fail_response.raise_for_status.return_value = None
+        mock_get.return_value = fail_response
+
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Stale WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Stale Feed",
+                "url": "https://example.com/stale",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        # 4 failures (below default threshold of 5)
+        for _ in range(4):
+            client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["isStale"] is False
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_feed_stale_at_threshold(self, mock_get, client):
+        """A feed becomes stale when consecutive failures >= threshold (default 5)."""
+        fail_response = MagicMock()
+        fail_response.text = "<not-a-feed>"
+        fail_response.raise_for_status.return_value = None
+        mock_get.return_value = fail_response
+
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Stale At WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Stale At Feed",
+                "url": "https://example.com/stale-at",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        # 5 consecutive failures → stale
+        for _ in range(5):
+            client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["isStale"] is True
+        assert feed_data["consecutiveFetchFailures"] == 5
+        assert feed_data["totalFetchCount"] == 5
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_stale_flag_cleared_on_success(self, mock_get, client):
+        """A successful fetch clears the stale flag."""
+        fail_response = MagicMock()
+        fail_response.text = "<not-a-feed>"
+        fail_response.raise_for_status.return_value = None
+        mock_get.return_value = fail_response
+
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Clear Stale WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Clear Stale Feed",
+                "url": "https://example.com/clear-stale",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        # 5 failures → stale
+        for _ in range(5):
+            client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["isStale"] is True
+
+        # Now succeed → stale cleared
+        success_response = MagicMock()
+        success_response.text = """<?xml version="1.0"?>
+        <rss version="2.0">
+          <channel><title>OK</title>
+            <item><title>A</title><link>https://example.com/a</link></item>
+          </channel>
+        </rss>"""
+        success_response.raise_for_status.return_value = None
+        mock_get.return_value = success_response
+
+        client.post(f"/api/feeds/{feed_id}/test")
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert feed_data["isStale"] is False
+        assert feed_data["consecutiveFetchFailures"] == 0
+
+    def test_feed_detail_includes_reliability_fields(self, client):
+        """Feed detail response includes all reliability fields."""
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "Detail WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        create_resp = client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "Detail Feed",
+                "url": "https://example.com/detail",
+                "type": "rss",
+            },
+        )
+        feed_id = create_resp.json()["id"]
+
+        feed_data = client.get(f"/api/feeds/{feed_id}").json()
+        assert "isStale" in feed_data
+        assert "fetchSuccessRate" in feed_data
+        assert "consecutiveFetchFailures" in feed_data
+        assert "totalFetchCount" in feed_data
+
+    def test_feed_list_includes_reliability_fields(self, client):
+        """Feed list response includes all reliability fields."""
+        ws_resp = client.post(
+            "/api/workspaces", json={"name": "List Rel WS", "customer": "Co"}
+        )
+        ws_id = ws_resp.json()["id"]
+        client.post(
+            f"/api/workspaces/{ws_id}/feeds",
+            json={
+                "name": "List Feed",
+                "url": "https://example.com/list",
+                "type": "rss",
+            },
+        )
+
+        feeds = client.get(f"/api/workspaces/{ws_id}/feeds").json()
+        assert len(feeds) == 1
+        feed = feeds[0]
+        assert "isStale" in feed
+        assert "fetchSuccessRate" in feed
+        assert "consecutiveFetchFailures" in feed
+        assert "totalFetchCount" in feed

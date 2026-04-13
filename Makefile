@@ -1,4 +1,4 @@
-.PHONY: lint typecheck test build ci dev up down logs clean install backend backend-test db-migrate db-seed worker beat
+.PHONY: lint typecheck test build ci dev up down logs clean install backend backend-test db-migrate db-seed worker beat preflight demo-seed
 
 # Default target
 all: lint build test
@@ -73,3 +73,11 @@ db-migrate:
 # Run seed script
 db-seed:
 	cd backend && python -m app.seed
+
+# Run preflight readiness checks
+preflight:
+	./scripts/preflight.sh
+
+# Create demo workspace (idempotent)
+demo-seed:
+	cd backend && python -m app.demo_seed

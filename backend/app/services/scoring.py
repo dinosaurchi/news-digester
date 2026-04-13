@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem
+from app.models.feed import FeedSource
 from app.models.workspace import Workspace
 
 logger = logging.getLogger(__name__)
@@ -315,7 +316,103 @@ _WEIGHTS: dict[str, float] = {
     "freshness": 0.20,
     "source_authority": 0.15,
     "bm25": 0.20,
+    "content_type_prior": 0.0,  # disabled by default; enable via workspace settings
 }
+
+# ---------------------------------------------------------------------------
+# Feed health / reliability scoring
+# ---------------------------------------------------------------------------
+
+# Feed success-rate thresholds (configurable).
+_FEED_HEALTH_HIGH_THRESHOLD: float = 0.80  # >80% → full weight (1.0)
+_FEED_HEALTH_MID_THRESHOLD: float = 0.50  # 50-80% → reduced weight (0.8)
+# <50% → low weight (0.5)
+
+# Staleness penalty: additional multiplier for content from stale feeds.
+_STALE_FEED_PENALTY: float = 0.5  # stale feeds get this extra multiplier
+
+
+def compute_feed_health_score(
+    feed_success_rate: float,
+    is_stale: bool = False,
+    *,
+    high_threshold: float = _FEED_HEALTH_HIGH_THRESHOLD,
+    mid_threshold: float = _FEED_HEALTH_MID_THRESHOLD,
+    stale_penalty: float = _STALE_FEED_PENALTY,
+) -> float:
+    """Return a feed health weight between 0.0 and 1.0.
+
+    Scoring tiers (based on feed success rate):
+    - ``>high_threshold`` (default >0.80) → 1.0 (full weight)
+    - ``mid_threshold`` to ``high_threshold`` (default 0.50–0.80) → 0.8
+    - ``<mid_threshold`` (default <0.50) → 0.5
+
+    An additional *stale_penalty* multiplier is applied when the feed is
+    flagged as stale, further downweighting its content.
+
+    When *feed_success_rate* is 0.0 (no fetches attempted yet), returns
+    1.0 (neutral — benefit of the doubt).
+    """
+    if feed_success_rate <= 0.0:
+        # No data yet — neutral, no penalty
+        return 1.0
+
+    if feed_success_rate > high_threshold:
+        weight = 1.0
+    elif feed_success_rate >= mid_threshold:
+        weight = 0.8
+    else:
+        weight = 0.5
+
+    # Apply staleness penalty multiplicatively
+    if is_stale:
+        weight *= stale_penalty
+
+    return max(0.0, min(1.0, weight))
+
+
+# ---------------------------------------------------------------------------
+# Content type prior
+# ---------------------------------------------------------------------------
+
+# Default prior weights per content type.  Higher values indicate content
+# types that are generally more relevant for a typical news-monitoring
+# workspace.  Override per workspace via ``settings.thresholds.content_type_weights``.
+_DEFAULT_CONTENT_TYPE_WEIGHTS: dict[str, float] = {
+    "news": 1.0,
+    "press_release": 0.9,
+    "blog": 0.7,
+    "competitor": 0.8,
+    "forum": 0.5,
+    "social": 0.4,
+}
+
+
+def compute_content_type_prior_score(
+    content_type: str | None,
+    weights: dict[str, float] | None = None,
+) -> float:
+    """Return a prior score based on the item's content type.
+
+    Parameters
+    ----------
+    content_type:
+        The content type string (e.g. ``"news"``, ``"blog"``).  When
+        ``None`` or empty, returns the neutral prior (0.5).
+    weights:
+        Optional dict mapping content-type strings to prior weights.
+        Falls back to :data:`_DEFAULT_CONTENT_TYPE_WEIGHTS` when ``None``.
+        Unknown content types receive a neutral prior of 0.5.
+
+    Returns
+    -------
+    A float between 0.0 and 1.0.
+    """
+    if not content_type:
+        return 0.5  # neutral for unknown / missing
+
+    active_weights = weights if weights is not None else _DEFAULT_CONTENT_TYPE_WEIGHTS
+    return float(active_weights.get(content_type.lower(), 0.5))
 
 
 def _validate_weight_overrides(
@@ -419,6 +516,9 @@ def _extract_domain(url: str | None) -> str:
     """Extract the hostname from a URL string, returning empty string on failure."""
     if not url:
         return ""
+    # OPTIONAL DEGRADATION: URL parsing failures are expected for malformed
+    # URLs.  Returning empty string means the item gets a neutral source-
+    # authority score (0.3), which is correct behaviour for an unknown domain.
     try:
         parsed = urlparse(url)
         return parsed.hostname or ""
@@ -478,10 +578,15 @@ def _load_feedback_signals(
                 }
             )
 
+    # OPTIONAL DEGRADATION: Feedback signals are nice-to-have adjustments that
+    # slightly tweak relevance scores.  If preferences cannot be loaded (e.g.
+    # the model/table is missing, or the DB query fails), scoring still
+    # produces correct results — just without the feedback delta.  Never
+    # silently swallow; always log at WARNING so operators can investigate.
     except Exception:
-        # Gracefully handle missing table / model — log and continue.
-        logger.debug(
-            "Could not load preference models for feedback scoring", exc_info=True
+        logger.warning(
+            "Could not load preference models for feedback scoring",
+            exc_info=True,
         )
 
     try:
@@ -492,8 +597,11 @@ def _load_feedback_signals(
             .filter(FeedbackEvent.workspace_id == workspace_id)
             .count()
         )
+    # OPTIONAL DEGRADATION: Feedback event count is a metadata-only field used
+    # for transparency in score breakdowns.  Its absence does not affect
+    # scoring correctness.
     except Exception:
-        logger.debug("Could not load feedback event count", exc_info=True)
+        logger.warning("Could not load feedback event count", exc_info=True)
 
     return topic_prefs, source_prefs, feedback_event_count
 
@@ -680,12 +788,45 @@ def score_content_items(
                     workspace.id,
                 )
 
+    # Content type prior weights (default: use built-in defaults)
+    content_type_weights: dict[str, float] | None = None
+    if settings and settings.thresholds:
+        raw_ct_weights = settings.thresholds.get("content_type_weights")
+        if raw_ct_weights is not None and isinstance(raw_ct_weights, dict):
+            content_type_weights = {
+                str(k): float(v)
+                for k, v in raw_ct_weights.items()
+                if isinstance(v, (int, float))
+            }
+            if content_type_weights:
+                logger.info(
+                    "Applying content type prior overrides for workspace %s: %s",
+                    workspace.id,
+                    content_type_weights,
+                )
+
     # ------------------------------------------------------------------
     # 1b. Load feedback signals for the workspace
     # ------------------------------------------------------------------
     topic_prefs, source_prefs, feedback_event_count = _load_feedback_signals(
         db, workspace.id
     )
+
+    # ------------------------------------------------------------------
+    # 1c. Load feed health data for scoring
+    # ------------------------------------------------------------------
+    feed_health_map: dict[str, dict] = {}  # feed_id → {success_rate, is_stale}
+    try:
+        feed_ids = {item.feed_source_id for item in items if item.feed_source_id}
+        if feed_ids:
+            feed_rows = db.query(FeedSource).filter(FeedSource.id.in_(feed_ids)).all()
+            for f in feed_rows:
+                feed_health_map[f.id] = {
+                    "success_rate": f.fetch_success_rate,
+                    "is_stale": f.is_stale,
+                }
+    except Exception:
+        logger.warning("Could not load feed health data", exc_info=True)
 
     # ------------------------------------------------------------------
     # 1c. Pre-compute item texts and batch IDF for BM25 scoring
@@ -731,7 +872,23 @@ def score_content_items(
                 trusted_domains,
             ),
             "bm25": compute_bm25_score(item_text, priority_themes, idf=batch_idf),
+            "content_type_prior": compute_content_type_prior_score(
+                item.content_type,
+                weights=content_type_weights,
+            ),
         }
+
+        # Compute feed health score and apply as a multiplicative weight
+        feed_health_score = 1.0
+        feed_info = (
+            feed_health_map.get(item.feed_source_id) if item.feed_source_id else None
+        )
+        if feed_info is not None:
+            feed_health_score = compute_feed_health_score(
+                feed_info["success_rate"],
+                feed_info["is_stale"],
+            )
+            individual_scores["feed_health"] = feed_health_score
 
         # Combined weighted score
         combined_score, breakdown = compute_combined_score(
@@ -747,6 +904,9 @@ def score_content_items(
         if batch_idf:
             breakdown["bm25_idf"] = batch_idf
 
+        # Include content type in breakdown for debugging
+        breakdown["content_type"] = item.content_type
+
         # ------------------------------------------------------------------
         # 2b. Apply feedback adjustment
         # ------------------------------------------------------------------
@@ -756,6 +916,16 @@ def score_content_items(
         if feedback_adj != 0.0:
             combined_score = max(0.0, min(1.0, combined_score + feedback_adj))
             breakdown["feedback_adjustment"] = feedback_adj
+
+        # ------------------------------------------------------------------
+        # 2c. Apply feed health weight (multiplicative)
+        # ------------------------------------------------------------------
+        if feed_info is not None and feed_health_score < 1.0:
+            combined_score = max(0.0, min(1.0, combined_score * feed_health_score))
+            breakdown["feed_health_weight"] = feed_health_score
+        # Always include feed_health in scores for transparency
+        if feed_info is not None:
+            breakdown.setdefault("scores", {})["feed_health"] = feed_health_score
 
         feedback_info: dict = {}
         if topics_matched:

@@ -57,18 +57,44 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 
 
 @pytest.fixture(autouse=True)
-def clear_sessions():
-    """Clear the in-memory session store before every test.
+def fake_redis(monkeypatch):
+    """Replace real Redis with fakeredis for all tests.
 
-    The session service (``app.services.session``) keeps sessions in a
-    module-level dict that persists across test functions.  Without this
+    Patches ``redis.from_url`` so that ``redis_session.get_redis_client()``
+    returns an in-memory fakeredis instance.  The module-level client
+    cache is reset before and after each test so keys never leak.
+    """
+    import fakeredis
+    import app.services.redis_session as rs_mod
+
+    # Reset cached client
+    rs_mod._redis_client = None
+
+    _fake_store = fakeredis.FakeRedis(decode_responses=True)
+
+    def _fake_from_url(url, **kwargs):
+        return _fake_store
+
+    monkeypatch.setattr("redis.from_url", _fake_from_url)
+    yield _fake_store
+
+    # Teardown: clear all keys and reset client cache
+    _fake_store.flushall()
+    rs_mod._redis_client = None
+
+
+@pytest.fixture(autouse=True)
+def clear_sessions(fake_redis):
+    """Clear the Redis-backed session store before every test.
+
+    Sessions are stored in Redis (via fakeredis in tests).  Without this
     fixture, a login performed in one test would leak into the next.
     """
-    from app.services.session import _sessions
+    from app.services.redis_session import clear_sessions as redis_clear
 
-    _sessions.clear()
+    redis_clear()
     yield
-    _sessions.clear()
+    redis_clear()
 
 
 @pytest.fixture(scope="function")
@@ -144,8 +170,7 @@ def mock_opencode_client(monkeypatch):
                 f"Reporting window: {period_str}\n\n"
                 "## Executive Brief\n\n"
                 "The shortlist below was generated through the mandatory OpenCode path.\n\n"
-                "## Ranked Source Notes\n\n"
-                + "\n".join(bullets)
+                "## Ranked Source Notes\n\n" + "\n".join(bullets)
             ),
         )
 
@@ -179,6 +204,28 @@ def client(db_session):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def sync_celery_tasks(monkeypatch):
+    """Make Celery pipeline tasks execute synchronously in tests.
+
+    Patches ``SessionLocal`` inside the tasks module so the task function
+    uses the in-memory test DB, and replaces ``.delay()`` with a wrapper
+    that calls the task function directly.  Exceptions from the task are
+    swallowed to simulate true async dispatch (the caller never sees them).
+    """
+    from app.tasks.pipeline import run_workspace_pipeline as _task
+
+    monkeypatch.setattr("app.tasks.pipeline.SessionLocal", TestingSessionLocal)
+
+    def _sync_delay(run_id: str, workspace_id: str):
+        try:
+            _task(run_id, workspace_id)
+        except Exception:
+            pass  # simulate async: task exceptions don't propagate to caller
+
+    monkeypatch.setattr(_task, "delay", _sync_delay)
 
 
 @pytest.fixture

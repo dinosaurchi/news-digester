@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.models.content import ContentItem
-from app.models.run import ProcessingRun
+from app.models.run import ProcessingRun, ProcessingRunEvent
 from app.models.workspace import Workspace, WorkspaceProfile, WorkspaceSettings
 from app.services.opencode_client import (
     OpenCodeClient,
@@ -114,8 +114,11 @@ def _make_passthrough_client() -> OpenCodeClient:
     client = _make_enabled_client()
 
     def _passthrough(item_dicts, workspace_context):
+        selected = [
+            {**d, "reason": f"Included: {d.get('title', '')}"} for d in item_dicts
+        ]
         return ShortlistResult(
-            selected_items=list(item_dicts),
+            selected_items=selected,
             rationale="passthrough",
         )
 
@@ -799,3 +802,225 @@ class TestLLMIDValidation:
             r for r in warning_records if "no matching" in r.message.lower()
         ]
         assert len(fallback_warnings) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 10. Rerank event traceability (Pass 4b)
+# ---------------------------------------------------------------------------
+
+
+class TestRerankEventTraceability:
+    """Pre-rerank and post-rerank artifacts are persisted as run events."""
+
+    def test_pre_rerank_event_is_created(self, db_session):
+        """A pre_rerank event is persisted with candidate item details."""
+        ws = _make_workspace(db_session, max_articles=10)
+        run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
+
+        items = [
+            _make_item(db_session, ws.id, title="Alpha", final_score=0.9),
+            _make_item(db_session, ws.id, title="Beta", final_score=0.7),
+        ]
+
+        select_shortlist(db_session, items, ws, run, opencode_client=client)
+
+        events = (
+            db_session.query(ProcessingRunEvent)
+            .filter(ProcessingRunEvent.run_id == run.id)
+            .all()
+        )
+        pre_rerank = [e for e in events if e.step_name == "pre_rerank"]
+        assert len(pre_rerank) == 1
+
+        metadata = pre_rerank[0].metadata_json
+        assert metadata["stage"] == "pre_rerank"
+        assert len(metadata["items"]) == 2
+
+        # Each item should have id, title, score, source_type
+        for item_data in metadata["items"]:
+            assert "id" in item_data
+            assert "title" in item_data
+            assert "score" in item_data
+            assert "source_type" in item_data
+            assert "source_name" in item_data
+
+    def test_post_rerank_event_is_created(self, db_session):
+        """A post_rerank event is persisted with selected item details."""
+        ws = _make_workspace(db_session, max_articles=10)
+        run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
+
+        items = [
+            _make_item(db_session, ws.id, title="Alpha", final_score=0.9),
+            _make_item(db_session, ws.id, title="Beta", final_score=0.7),
+        ]
+
+        select_shortlist(db_session, items, ws, run, opencode_client=client)
+
+        events = (
+            db_session.query(ProcessingRunEvent)
+            .filter(ProcessingRunEvent.run_id == run.id)
+            .all()
+        )
+        post_rerank = [e for e in events if e.step_name == "post_rerank"]
+        assert len(post_rerank) == 1
+
+        metadata = post_rerank[0].metadata_json
+        assert metadata["stage"] == "post_rerank"
+        assert len(metadata["items"]) == 2
+
+        # Post-rerank items should include a reason
+        for item_data in metadata["items"]:
+            assert "id" in item_data
+            assert "title" in item_data
+            assert "score" in item_data
+            assert "reason" in item_data
+
+    def test_rerank_events_with_llm_filtering(self, db_session):
+        """When LLM filters items, pre/post events reflect the difference."""
+        ws = _make_workspace(db_session, max_articles=10)
+        run = _make_run(db_session, ws.id)
+
+        item_a = _make_item(db_session, ws.id, title="Keep", final_score=0.9)
+        item_b = _make_item(db_session, ws.id, title="Drop", final_score=0.8)
+        item_c = _make_item(db_session, ws.id, title="AlsoKeep", final_score=0.7)
+
+        # LLM selects only A and C
+        client = _make_enabled_client()
+        client.refine_shortlist = MagicMock(  # type: ignore[assignment]
+            return_value=ShortlistResult(
+                selected_items=[
+                    {"id": item_a.id, "title": "Keep", "reason": "Highly relevant"},
+                    {"id": item_c.id, "title": "AlsoKeep", "reason": "Good insight"},
+                ],
+                rationale="Dropped B as off-topic",
+            )
+        )
+
+        result = select_shortlist(
+            db_session,
+            [item_a, item_b, item_c],
+            ws,
+            run,
+            opencode_client=client,
+        )
+
+        # Result should have only 2 items
+        assert len(result) == 2
+
+        events = (
+            db_session.query(ProcessingRunEvent)
+            .filter(ProcessingRunEvent.run_id == run.id)
+            .all()
+        )
+
+        # Pre-rerank should have all 3 candidates
+        pre_events = [e for e in events if e.step_name == "pre_rerank"]
+        assert len(pre_events) == 1
+        pre_items = pre_events[0].metadata_json["items"]
+        assert len(pre_items) == 3
+        pre_ids = {i["id"] for i in pre_items}
+        assert pre_ids == {item_a.id, item_b.id, item_c.id}
+
+        # Post-rerank should have only 2 selected items
+        post_events = [e for e in events if e.step_name == "post_rerank"]
+        assert len(post_events) == 1
+        post_items = post_events[0].metadata_json["items"]
+        assert len(post_items) == 2
+        post_ids = {i["id"] for i in post_items}
+        assert post_ids == {item_a.id, item_c.id}
+
+    def test_rerank_preserves_high_scoring_items(self, db_session):
+        """Reranking preserves high-scoring items while filtering low-relevance."""
+        ws = _make_workspace(db_session, max_articles=10)
+        run = _make_run(db_session, ws.id)
+
+        item_high = _make_item(db_session, ws.id, title="High Score", final_score=0.95)
+        item_low = _make_item(db_session, ws.id, title="Low Score", final_score=0.3)
+
+        # LLM keeps the high-score item, drops the low-score one
+        client = _make_enabled_client()
+        client.refine_shortlist = MagicMock(  # type: ignore[assignment]
+            return_value=ShortlistResult(
+                selected_items=[
+                    {
+                        "id": item_high.id,
+                        "title": "High Score",
+                        "reason": "Very relevant",
+                    },
+                ],
+                rationale="Low-score item is tangential",
+            )
+        )
+
+        result = select_shortlist(
+            db_session,
+            [item_high, item_low],
+            ws,
+            run,
+            opencode_client=client,
+        )
+
+        assert len(result) == 1
+        assert result[0].id == item_high.id
+
+    def test_post_rerank_includes_llm_reasons(self, db_session):
+        """Post-rerank event includes per-item reasons from the LLM."""
+        ws = _make_workspace(db_session, max_articles=10)
+        run = _make_run(db_session, ws.id)
+
+        item_a = _make_item(db_session, ws.id, title="A", final_score=0.9)
+        item_b = _make_item(db_session, ws.id, title="B", final_score=0.8)
+
+        client = _make_enabled_client()
+        client.refine_shortlist = MagicMock(  # type: ignore[assignment]
+            return_value=ShortlistResult(
+                selected_items=[
+                    {"id": item_a.id, "title": "A", "reason": "Breaks new ground"},
+                    {"id": item_b.id, "title": "B", "reason": "Actionable insight"},
+                ],
+                rationale="Both valuable",
+            )
+        )
+
+        select_shortlist(
+            db_session,
+            [item_a, item_b],
+            ws,
+            run,
+            opencode_client=client,
+        )
+
+        events = (
+            db_session.query(ProcessingRunEvent)
+            .filter(
+                ProcessingRunEvent.run_id == run.id,
+                ProcessingRunEvent.step_name == "post_rerank",
+            )
+            .all()
+        )
+        assert len(events) == 1
+
+        items_data = events[0].metadata_json["items"]
+        reasons_by_id = {i["id"]: i["reason"] for i in items_data}
+        assert reasons_by_id[item_a.id] == "Breaks new ground"
+        assert reasons_by_id[item_b.id] == "Actionable insight"
+
+    def test_empty_input_no_rerank_events(self, db_session):
+        """Empty input does not create rerank events (no LLM call)."""
+        ws = _make_workspace(db_session, max_articles=10)
+        run = _make_run(db_session, ws.id)
+        client = _make_passthrough_client()
+
+        result = select_shortlist(db_session, [], ws, run, opencode_client=client)
+
+        assert result == []
+
+        events = (
+            db_session.query(ProcessingRunEvent)
+            .filter(ProcessingRunEvent.run_id == run.id)
+            .filter(ProcessingRunEvent.step_name.in_(["pre_rerank", "post_rerank"]))
+            .all()
+        )
+        assert len(events) == 0

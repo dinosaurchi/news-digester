@@ -368,3 +368,109 @@ class TestComputeSimilarity:
         result = compute_similarity(item1, item2)
         # url_match=False(0) + title_sim(0) + domain_match=True(0.15) + time_prox(0.15)
         assert result["combined_score"] == pytest.approx(0.30)
+
+
+# ---------------------------------------------------------------------------
+# Near-duplicate detection — token overlap thresholds (Pass 4a)
+# ---------------------------------------------------------------------------
+
+
+class TestNearDuplicateTokenOverlap:
+    """Verify token-overlap thresholds correctly identify near-duplicates."""
+
+    def test_high_overlap_identified_as_near_duplicate(self):
+        """Titles sharing most tokens should have high token overlap."""
+        # 5 shared tokens out of 6 total unique → overlap ≈ 0.83
+        score = token_overlap_similarity(
+            "Company X Announces New CEO Today",
+            "Company X Announces New Chief Executive Today",
+        )
+        assert score > 0.6  # above typical domain_title_threshold
+
+    def test_low_overlap_not_near_duplicate(self):
+        """Titles sharing few tokens should have low token overlap."""
+        score = token_overlap_similarity(
+            "Federal Reserve Raises Interest Rates",
+            "Local Bakery Wins Pie Contest Award",
+        )
+        assert score == 0.0  # no shared tokens
+
+    def test_partial_overlap_below_threshold(self):
+        """Titles with some overlap but below clustering threshold."""
+        score = token_overlap_similarity(
+            "Market Update January 2024",
+            "Market Update February 2025",
+        )
+        # Shared: {market, update} = 2; Union: {market, update, january, 2024, february, 2025} = 6
+        # overlap = 2/6 ≈ 0.33
+        assert score == pytest.approx(2 / 6, abs=0.01)
+        assert score < 0.6  # below typical domain_title_threshold
+
+    def test_trigram_catches_near_misspellings(self):
+        """Trigram similarity catches titles that are slight variants."""
+        # "CEO" vs "C.E.O." — trigrams will partially overlap
+        score = trigram_similarity("Company CEO Resigns", "Company C.E.O. Resigns")
+        assert 0.0 < score < 1.0  # some overlap but not exact
+
+    def test_identical_titles_perfect_overlap(self):
+        score = token_overlap_similarity(
+            "Breaking News Story Today",
+            "Breaking News Story Today",
+        )
+        assert score == 1.0
+
+    def test_case_variation_preserves_overlap(self):
+        score = token_overlap_similarity(
+            "Breaking News Story",
+            "breaking news story",
+        )
+        assert score == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Syndication detection helpers (Pass 4a)
+# ---------------------------------------------------------------------------
+
+
+class TestSyndicationDetection:
+    """Verify dedup utilities correctly handle syndicated content patterns."""
+
+    def test_same_title_different_urls_fingerprint_match(self):
+        """Syndicated stories with same title but different URLs share fingerprint."""
+        fp1 = title_fingerprint("Tech Giant Reports Record Quarterly Earnings")
+        fp2 = title_fingerprint("Tech Giant Reports Record Quarterly Earnings")
+        assert fp1 == fp2
+
+    def test_syndicated_title_with_minor_variations(self):
+        """Syndicated titles often have minor outlet-specific additions."""
+        # Exact match (fingerprint phase)
+        fp1 = title_fingerprint("Oil Prices Surge to 6-Month High")
+        fp2 = title_fingerprint("OIL PRICES SURGE TO 6-MONTH HIGH")
+        assert fp1 == fp2
+
+        # Minor variation → different fingerprint but similar tokens
+        score = token_overlap_similarity(
+            "Oil Prices Surge to 6-Month High",
+            "Oil Prices Surge to Six Month High",
+        )
+        assert score > 0.6  # high token overlap (0.625)
+
+    def test_different_content_no_false_syndication(self):
+        """Truly different content should NOT match as syndicated."""
+        score = token_overlap_similarity(
+            "New Study Shows Coffee May Extend Lifespan",
+            "Central Bank Signals Potential Rate Cut",
+        )
+        assert score == 0.0
+
+    def test_syndication_across_tracking_params(self):
+        """Syndicated via different tracking params should normalize to same URL."""
+        url1 = "https://newswire.com/story?utm_source=twitter&utm_campaign=daily"
+        url2 = "https://newswire.com/story?fbclid=abc123"
+        url3 = "https://newswire.com/story"
+
+        norm1 = normalize_url(url1)
+        norm2 = normalize_url(url2)
+        norm3 = normalize_url(url3)
+
+        assert norm1 == norm2 == norm3 == "https://newswire.com/story"

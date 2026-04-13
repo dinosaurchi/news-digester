@@ -224,9 +224,14 @@ def _load_feedback_context(db: Session, workspace_id: str) -> dict[str, Any] | N
                 source_weights.get(sp.source_name, 0.0) + sp.weight
             )
 
+    # OPTIONAL DEGRADATION: Feedback context is metadata-only — it enriches the
+    # report's metadata_json for traceability but does not affect report content
+    # or scoring.  If preferences cannot be loaded the report is still generated
+    # correctly.  Log at WARNING so operators can investigate.
     except Exception:
-        logger.debug(
-            "Could not load preference models for feedback context", exc_info=True
+        logger.warning(
+            "Could not load preference models for feedback context",
+            exc_info=True,
         )
 
     try:
@@ -237,8 +242,10 @@ def _load_feedback_context(db: Session, workspace_id: str) -> dict[str, Any] | N
             .filter(FeedbackEvent.workspace_id == workspace_id)
             .count()
         )
+    # OPTIONAL DEGRADATION: Feedback event count is metadata-only.  Its absence
+    # does not affect report generation or content.
     except Exception:
-        logger.debug("Could not load feedback event count", exc_info=True)
+        logger.warning("Could not load feedback event count", exc_info=True)
 
     # Return None when there is absolutely no feedback data
     if not topic_weights and not source_weights and feedback_event_count == 0:

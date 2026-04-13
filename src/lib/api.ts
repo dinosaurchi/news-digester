@@ -123,7 +123,10 @@ const runs = {
     );
   },
   getDetail: (runId: string) => apiClient.get<RunDetail>(`/runs/${runId}`),
-  trigger: (workspaceId: string) => apiClient.post<RunSummary>(`/workspaces/${workspaceId}/run-now`),
+  trigger: (workspaceId: string) =>
+    apiClient.post<{ runId: string; status: 'queued'; message: string }>(
+      `/workspaces/${workspaceId}/run-now`,
+    ),
 };
 
 // Feedback

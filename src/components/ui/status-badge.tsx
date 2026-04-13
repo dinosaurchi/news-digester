@@ -10,6 +10,7 @@ type StatusVariant =
   | 'success'
   | 'failed'
   | 'running'
+  | 'queued'
   | 'draft'
   | 'published'
   | 'included'
@@ -25,6 +26,7 @@ const variantStyles: Record<StatusVariant, string> = {
   paused: 'bg-amber-50 text-amber-700 border-amber-200',
   pending: 'bg-amber-50 text-amber-700 border-amber-200',
   running: 'bg-blue-50 text-blue-700 border-blue-200',
+  queued: 'bg-amber-50 text-amber-700 border-amber-200',
   draft: 'bg-slate-50 text-slate-600 border-slate-200',
   archived: 'bg-slate-50 text-slate-500 border-slate-200',
   disabled: 'bg-slate-50 text-slate-500 border-slate-200',
@@ -42,6 +44,7 @@ const dotStyles: Record<StatusVariant, string> = {
   paused: 'bg-amber-500',
   pending: 'bg-amber-500',
   running: 'bg-blue-500',
+  queued: 'bg-amber-500',
   draft: 'bg-slate-400',
   archived: 'bg-slate-400',
   disabled: 'bg-slate-400',

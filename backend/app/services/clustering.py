@@ -342,10 +342,34 @@ def cluster_content_items(
     for _key, group_items in groups:
         lead = _select_lead_item(group_items)
 
+        # Determine clustering method from the key prefix
+        if _key.startswith("url:"):
+            method = "url_match"
+        elif _key.startswith("title:"):
+            method = "title_fingerprint"
+        elif _key.startswith("sim:"):
+            method = "similarity"
+        else:
+            method = "singleton"
+
+        # Build cluster metadata for explainability
+        cluster_meta: dict[str, Any] = {
+            "method": method,
+            "item_count": len(group_items),
+            "lead_item_id": lead.id,
+            "lead_title": (lead.title or "")[:500],
+        }
+        if method != "singleton" and len(group_items) > 1:
+            # Compute similarity signals for the pair/group
+            non_lead_ids = [it.id for it in group_items if it.id != lead.id]
+            cluster_meta["duplicate_item_ids"] = non_lead_ids
+
         cluster = ContentCluster(
             workspace_id=workspace_id,
             label=(lead.title or "")[:500],
             item_count=len(group_items),
+            clustering_method=method,
+            cluster_metadata_json=cluster_meta,
         )
         db.add(cluster)
         db.flush()  # populate cluster.id
@@ -354,6 +378,18 @@ def cluster_content_items(
             item.cluster_id = cluster.id
             if _has_is_lead_field(item):
                 item.is_lead = item.id == lead.id  # type: ignore[attr-defined]
+
+            # Set duplicate_reason on non-lead items in multi-item clusters
+            if item.id != lead.id and len(group_items) > 1:
+                if method == "url_match":
+                    item.duplicate_reason = f"url_match: same URL as lead {lead.id}"
+                elif method == "title_fingerprint":
+                    item.duplicate_reason = (
+                        f"title_fingerprint: same title as lead {lead.id}"
+                    )
+                elif method == "similarity":
+                    sim = compute_similarity(_item_to_dict(item), _item_to_dict(lead))
+                    item.duplicate_reason = f"similarity:{sim['combined_score']:.3f}: similar to lead {lead.id}"
 
         total_items += len(group_items)
         if len(group_items) == 1:

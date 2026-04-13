@@ -88,19 +88,29 @@ def execute_workspace_run(
     workspace: Workspace,
     *,
     run_type: str = "manual",
+    run: ProcessingRun | None = None,
 ) -> tuple[ProcessingRun, list[ContentItem], Report]:
-    """Execute the current Pass 7 pipeline synchronously for one workspace."""
+    """Execute the current Pass 7 pipeline synchronously for one workspace.
+
+    If *run* is provided (e.g. a pre-created "queued" run), it is reused
+    and its status is set to "running".  Otherwise a new run is created.
+    """
     now = datetime.now(timezone.utc)
-    run = ProcessingRun(
-        workspace_id=workspace.id,
-        run_type=run_type,
-        status="running",
-        started_at=now,
-        affected_counts_json={"feeds": 0, "articles": 0, "reports": 0},
-    )
-    db.add(run)
-    db.commit()
-    db.refresh(run)
+    if run is None:
+        run = ProcessingRun(
+            workspace_id=workspace.id,
+            run_type=run_type,
+            status="running",
+            started_at=now,
+            affected_counts_json={"feeds": 0, "articles": 0, "reports": 0},
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+    else:
+        run.status = "running"
+        run.started_at = now
+        db.commit()
 
     feeds = (
         db.query(FeedSource)
@@ -127,11 +137,16 @@ def execute_workspace_run(
         fetch_event = _start_event(db, run.id, "fetch_feeds", "Fetching feeds...")
         for feed in feeds:
             result = fetch_feed(feed)
+            # Update fetch reliability counters
+            feed.total_fetch_count = (feed.total_fetch_count or 0) + 1
             if not result.success:
                 # Record failure state on the feed — do NOT update last_fetched_at
                 feed.status = "error"
                 feed.last_error = result.error
                 feed.last_error_at = datetime.now(timezone.utc)
+                feed.consecutive_fetch_failures = (
+                    feed.consecutive_fetch_failures or 0
+                ) + 1
                 logger.warning("Skipping feed %s: %s", feed.name, result.error)
                 feeds_failed += 1
                 feed_details.append(
@@ -151,6 +166,8 @@ def execute_workspace_run(
             feed.last_error = None
             feed.last_error_at = None
             feed.last_fetched_at = datetime.now(timezone.utc)
+            feed.last_successful_fetch_at = datetime.now(timezone.utc)
+            feed.consecutive_fetch_failures = 0
             entries_fetched += len(result.entries)
             content_items, skipped = normalize_content(
                 workspace.id, feed, result.entries, db=db
@@ -235,6 +252,12 @@ def execute_workspace_run(
                 extra_metadata=cluster_stats,
             )
         except Exception as cluster_exc:
+            logger.error(
+                "pipeline stage=cluster_content run_id=%s error_type=%s error=%s",
+                run.id,
+                type(cluster_exc).__name__,
+                cluster_exc,
+            )
             _finish_event(
                 db,
                 cluster_event,
@@ -262,6 +285,12 @@ def execute_workspace_run(
                 },
             )
         except Exception as score_exc:
+            logger.error(
+                "pipeline stage=score_content run_id=%s error_type=%s error=%s",
+                run.id,
+                type(score_exc).__name__,
+                score_exc,
+            )
             _finish_event(
                 db,
                 score_event,
@@ -309,6 +338,12 @@ def execute_workspace_run(
                 },
             )
         except Exception as shortlist_exc:
+            logger.error(
+                "pipeline stage=select_shortlist run_id=%s error_type=%s error=%s",
+                run.id,
+                type(shortlist_exc).__name__,
+                shortlist_exc,
+            )
             _finish_event(
                 db,
                 shortlist_event,
@@ -348,6 +383,12 @@ def execute_workspace_run(
                 },
             )
         except Exception as report_exc:
+            logger.error(
+                "pipeline stage=generate_report run_id=%s error_type=%s error=%s",
+                run.id,
+                type(report_exc).__name__,
+                report_exc,
+            )
             _finish_event(
                 db,
                 report_event,
@@ -371,6 +412,12 @@ def execute_workspace_run(
         return run, all_items, report
 
     except Exception as exc:
+        logger.error(
+            "pipeline failed run_id=%s error_type=%s error=%s",
+            run.id,
+            type(exc).__name__,
+            exc,
+        )
         finished = datetime.now(timezone.utc)
         run.status = "failed"
         run.finished_at = finished

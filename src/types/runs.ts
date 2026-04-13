@@ -1,5 +1,5 @@
 export type RunType = 'scheduled' | 'manual';
-export type RunStatus = 'success' | 'failed' | 'running';
+export type RunStatus = 'success' | 'failed' | 'running' | 'queued';
 
 export interface FeedDetail {
   feedId: string;

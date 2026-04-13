@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     ADMIN_DISPLAY_NAME: str = "Admin"
     ADMIN_ROLE: str = "admin"
 
+    # Session storage
+    SESSION_TTL_SECONDS: int = 86_400  # 24 hours
+
     # Article body enrichment (optional pipeline step)
     ARTICLE_ENRICHMENT_ENABLED: bool = False
     ARTICLE_ENRICHMENT_TIMEOUT_SECONDS: int = 5

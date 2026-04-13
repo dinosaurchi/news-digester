@@ -78,6 +78,11 @@ class ReportChatResult:
 class OpenCodeClient:
     """Thin client that talks to the OpenCode Agent Adapter over HTTP."""
 
+    # Retry settings for transient OpenCode failures (e.g. LLM returns
+    # non-JSON text such as "I'm sorry, but I cannot assist…").
+    _MAX_RETRIES: int = 2
+    _RETRY_BACKOFF_SECONDS: float = 3.0
+
     def __init__(
         self,
         *,
@@ -127,12 +132,33 @@ class OpenCodeClient:
             input_data=input_data,
             metadata=metadata,
         )
-        raw = self._call_adapter_run(
-            title="sme-news-shortlist-refinement",
-            prompt=prompt,
-        )
 
-        output = self._extract_json_object(raw["output_text"])
+        # Retry on transient OpenCodeResponseError (e.g. LLM returns
+        # non-JSON text). Connection/timeout errors propagate immediately.
+        raw: dict[str, Any] = {}
+        output: dict[str, Any] = {}
+        for attempt in range(self._MAX_RETRIES + 1):
+            try:
+                raw = self._call_adapter_run(
+                    title="sme-news-shortlist-refinement",
+                    prompt=prompt,
+                )
+                output = self._extract_json_object(raw["output_text"])
+                break
+            except OpenCodeResponseError as exc:
+                if attempt < self._MAX_RETRIES:
+                    logger.warning(
+                        "OpenCode shortlist refinement returned invalid response "
+                        "(attempt %d/%d), retrying in %.0fs: %s",
+                        attempt + 1,
+                        self._MAX_RETRIES + 1,
+                        self._RETRY_BACKOFF_SECONDS,
+                        exc,
+                    )
+                    time.sleep(self._RETRY_BACKOFF_SECONDS)
+                else:
+                    raise
+
         selected_items = output.get("selected_items", [])
         rationale = output.get("rationale", "")
 
@@ -178,12 +204,32 @@ class OpenCodeClient:
             input_data=input_data,
             metadata=metadata,
         )
-        raw = self._call_adapter_run(
-            title="sme-news-report-generation",
-            prompt=prompt,
-        )
 
-        markdown = self._extract_report_markdown(raw["output_text"])
+        # Retry on transient OpenCodeResponseError (e.g. LLM returns
+        # non-JSON text). Connection/timeout errors propagate immediately.
+        raw: dict[str, Any] = {}
+        markdown: str = ""
+        for attempt in range(self._MAX_RETRIES + 1):
+            try:
+                raw = self._call_adapter_run(
+                    title="sme-news-report-generation",
+                    prompt=prompt,
+                )
+                markdown = self._extract_report_markdown(raw["output_text"])
+                break
+            except OpenCodeResponseError as exc:
+                if attempt < self._MAX_RETRIES:
+                    logger.warning(
+                        "OpenCode report generation returned invalid response "
+                        "(attempt %d/%d), retrying in %.0fs: %s",
+                        attempt + 1,
+                        self._MAX_RETRIES + 1,
+                        self._RETRY_BACKOFF_SECONDS,
+                        exc,
+                    )
+                    time.sleep(self._RETRY_BACKOFF_SECONDS)
+                else:
+                    raise
 
         return ReportResult(
             markdown=markdown,
@@ -252,29 +298,50 @@ class OpenCodeClient:
 
         url = f"{self._base_url}/v1/runs"
         logger.info(
-            "OpenCode run request: title=%s model=%s agent=%s url=%s",
+            "opencode request title=%s model=%s agent=%s url=%s",
             title,
             self._default_model,
             self._default_agent,
             url,
         )
 
+        request_start = time.monotonic()
         try:
             response = httpx.post(
                 url,
                 json=payload,
                 timeout=self._timeout,
             )
+            request_duration_ms = (time.monotonic() - request_start) * 1000
         except httpx.ConnectError as exc:
-            logger.error("OpenCode adapter unreachable: %s", exc)
+            request_duration_ms = (time.monotonic() - request_start) * 1000
+            logger.error(
+                "opencode error title=%s error_type=ConnectError duration_ms=%.1f error=%s",
+                title,
+                request_duration_ms,
+                exc,
+            )
             raise OpenCodeUnavailableError(
                 f"OpenCode adapter is unreachable at {self._base_url}: {exc}"
             ) from exc
         except httpx.TimeoutException as exc:
-            logger.error("OpenCode adapter timed out after %ds", self._timeout)
+            request_duration_ms = (time.monotonic() - request_start) * 1000
+            logger.error(
+                "opencode error title=%s error_type=TimeoutException duration_ms=%.1f timeout=%ds",
+                title,
+                request_duration_ms,
+                self._timeout,
+            )
             raise OpenCodeTimeoutError(
                 f"OpenCode adapter timed out after {self._timeout}s"
             ) from exc
+
+        logger.info(
+            "opencode response title=%s status=%d duration_ms=%.1f",
+            title,
+            response.status_code,
+            request_duration_ms,
+        )
 
         body = self._parse_json_response(response)
         if response.status_code >= 400:
@@ -386,10 +453,39 @@ class OpenCodeClient:
         metadata: dict[str, Any],
     ) -> str:
         return (
-            "You are refining an SME news digest shortlist.\n"
-            "Return ONLY valid JSON with shape:\n"
-            '{"selected_items":[<items copied from input>],"rationale":"<short rationale>"}\n'
-            "Keep only items that are highly relevant to the workspace context.\n\n"
+            "You are an expert news editor refining an SME intelligence digest shortlist.\n"
+            "Your task is to RERANK and FILTER a candidate article set to produce a\n"
+            "high-precision shortlist.\n\n"
+            "## Reranking criteria (evaluate each candidate on all four dimensions)\n\n"
+            "1. **Relevance** — How directly does the article address the workspace's\n"
+            "   priority themes, industry, or business context? Prefer actionable\n"
+            "   intelligence over generic news.\n"
+            "2. **Recency** — More recent articles are preferred. Older articles are\n"
+            "   only justified if they provide unique, high-value insight.\n"
+            "3. **Diversity** — Avoid redundancy. If multiple articles cover the same\n"
+            "   story or angle, keep the most comprehensive one and drop duplicates.\n"
+            "   Aim for a mix of topics when possible.\n"
+            "4. **Source quality** — Prefer reputable, primary sources. Industry\n"
+            "   publications and official announcements outrank aggregators or\n"
+            "   low-quality blogs.\n\n"
+            "## Reasoning\n"
+            "For each candidate, briefly reason about whether it should be included\n"
+            "or excluded based on the criteria above.\n\n"
+            "## Output format\n"
+            "Return ONLY valid JSON with this exact shape:\n"
+            "{\n"
+            '  "selected_items": [\n'
+            "    {\n"
+            '      "id": "<item id>",\n'
+            '      "title": "<item title>",\n'
+            '      "reason": "<one-sentence reason for inclusion>"\n'
+            "    }\n"
+            "  ],\n"
+            '  "rationale": "<overall rationale for the final selection>"\n'
+            "}\n\n"
+            "IMPORTANT: Only include items from the INPUT_JSON. Do not invent IDs.\n"
+            "Prefer quality over quantity — a smaller, highly relevant shortlist is\n"
+            "better than a bloated one.\n\n"
             f"INPUT_JSON:\n{json.dumps(input_data, ensure_ascii=False, indent=2)}\n\n"
             f"METADATA_JSON:\n{json.dumps(metadata, ensure_ascii=False, indent=2)}"
         )

@@ -8,10 +8,12 @@ from app.services.scoring import (
     _compute_decay_factor,
     compute_bm25_score,
     compute_combined_score,
+    compute_content_type_prior_score,
     compute_document_frequencies,
     compute_competitor_mention_score,
     compute_excluded_topic_score,
     compute_freshness_score,
+    compute_feed_health_score,
     compute_keyword_score,
     compute_source_authority_score,
     score_content_items,
@@ -379,6 +381,7 @@ def _make_workspace(
     excluded_topics=None,
     trusted_domains=None,
     min_relevance_score=0.1,
+    scoring_weights=None,
 ):
     """Helper to create a workspace with optional profile/settings."""
     from app.models.workspace import Workspace, WorkspaceProfile, WorkspaceSettings
@@ -398,6 +401,8 @@ def _make_workspace(
     thresholds: dict = {"min_relevance_score": min_relevance_score}
     if trusted_domains is not None:
         thresholds["trusted_domains"] = trusted_domains
+    if scoring_weights is not None:
+        thresholds["scoring_weights"] = scoring_weights
 
     settings = WorkspaceSettings(
         workspace_id=ws.id,
@@ -873,3 +878,662 @@ class TestBM25WithIDF:
         # Only "machine" contributes since "ai" IDF is 0
         # Expected: log(2)*1.0 / 2 = 0.347
         assert score == pytest.approx(0.347, abs=0.05)
+
+
+# ---------------------------------------------------------------------------
+# Content type prior scoring (Pass 4a)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeContentTypePriorScore:
+    """compute_content_type_prior_score returns a prior based on content type."""
+
+    def test_news_gets_highest_prior(self):
+        score = compute_content_type_prior_score("news")
+        assert score == pytest.approx(1.0)
+
+    def test_blog_gets_lower_prior(self):
+        score = compute_content_type_prior_score("blog")
+        assert score == pytest.approx(0.7)
+
+    def test_forum_gets_lowest_prior(self):
+        score = compute_content_type_prior_score("forum")
+        assert score == pytest.approx(0.5)
+
+    def test_unknown_type_gets_neutral(self):
+        score = compute_content_type_prior_score("podcast")
+        assert score == pytest.approx(0.5)
+
+    def test_none_returns_neutral(self):
+        score = compute_content_type_prior_score(None)
+        assert score == pytest.approx(0.5)
+
+    def test_empty_string_returns_neutral(self):
+        score = compute_content_type_prior_score("")
+        assert score == pytest.approx(0.5)
+
+    def test_case_insensitive(self):
+        score = compute_content_type_prior_score("NEWS")
+        assert score == pytest.approx(1.0)
+        score = compute_content_type_prior_score("Blog")
+        assert score == pytest.approx(0.7)
+
+    def test_custom_weights_override_defaults(self):
+        custom = {"news": 0.5, "blog": 1.0}
+        assert compute_content_type_prior_score(
+            "news", weights=custom
+        ) == pytest.approx(0.5)
+        assert compute_content_type_prior_score(
+            "blog", weights=custom
+        ) == pytest.approx(1.0)
+        # Unknown types still get neutral
+        assert compute_content_type_prior_score(
+            "forum", weights=custom
+        ) == pytest.approx(0.5)
+
+    def test_competitor_and_press_release(self):
+        assert compute_content_type_prior_score("competitor") == pytest.approx(0.8)
+        assert compute_content_type_prior_score("press_release") == pytest.approx(0.9)
+
+    def test_social_type(self):
+        assert compute_content_type_prior_score("social") == pytest.approx(0.4)
+
+
+# ---------------------------------------------------------------------------
+# Score breakdown includes all components (Pass 4a regression)
+# ---------------------------------------------------------------------------
+
+
+class TestScoreBreakdownAllComponents:
+    """Score breakdown JSON includes all component signals including content_type_prior."""
+
+    def test_breakdown_includes_content_type_prior(self, db_session):
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI article",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "scores" in breakdown
+        assert "content_type_prior" in breakdown["scores"]
+        assert breakdown["scores"]["content_type_prior"] == pytest.approx(1.0)
+
+    def test_breakdown_includes_content_type(self, db_session):
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI article",
+            content_type="blog",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "content_type" in breakdown
+        assert breakdown["content_type"] == "blog"
+
+    def test_content_type_prior_influences_score_when_weighted(self, db_session):
+        """When content_type_prior has non-zero weight, it affects combined score."""
+        from app.models.workspace import WorkspaceSettings
+
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["metal earth"],
+            # Pass scoring weights + content type weights via settings
+            scoring_weights={
+                "keyword": 0.20,
+                "competitor_mention": 0.15,
+                "freshness": 0.15,
+                "source_authority": 0.10,
+                "bm25": 0.15,
+                "content_type_prior": 0.25,
+            },
+        )
+
+        # Override the existing settings to add content_type_weights
+        existing_settings = (
+            db_session.query(WorkspaceSettings)
+            .filter(WorkspaceSettings.workspace_id == ws.id)
+            .first()
+        )
+        thresholds = existing_settings.thresholds or {}
+        thresholds["content_type_weights"] = {"news": 1.0, "blog": 0.3}
+        existing_settings.thresholds = thresholds
+        db_session.flush()
+
+        # News item about metal earth
+        news_item = _make_item(
+            db_session,
+            ws.id,
+            title="New Metal Earth model announced",
+            content_type="news",
+        )
+        # Blog item about metal earth (same keywords but lower content type prior)
+        blog_item = _make_item(
+            db_session,
+            ws.id,
+            title="New Metal Earth model announced",
+            content_type="blog",
+        )
+
+        score_content_items(db_session, [news_item, blog_item], ws)
+
+        # Both have identical keyword/bm25 scores, but news should score higher
+        # because content_type_prior(news)=1.0 > content_type_prior(blog)=0.3
+        assert news_item.final_score > blog_item.final_score
+
+    def test_all_score_components_present_in_breakdown(self, db_session):
+        """Verify every scoring component is present in the breakdown dict."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai", "robotics"],
+            competitors=["OpenAI"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="OpenAI launches new AI and robotics initiative",
+            url="https://reuters.com/tech/ai-robotics",
+            content_type="press_release",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        # All individual score components
+        for key in [
+            "keyword",
+            "competitor_mention",
+            "freshness",
+            "source_authority",
+            "bm25",
+            "content_type_prior",
+        ]:
+            assert key in breakdown["scores"], f"Missing score component: {key}"
+
+        # Metadata fields
+        assert "combined_score" in breakdown
+        assert "weights" in breakdown
+        assert "excluded_topic_score" in breakdown
+        assert "filter_reason" in breakdown
+        assert "content_type" in breakdown
+
+        # content_type_prior should reflect press_release default
+        assert breakdown["scores"]["content_type_prior"] == pytest.approx(0.9)
+
+
+# ---------------------------------------------------------------------------
+# Metal Earth regression test fixture (Pass 4a)
+# ---------------------------------------------------------------------------
+
+
+def _make_metal_earth_workspace(db):
+    """Create a Metal Earth-like workspace for regression testing.
+
+    Simulates a hobby/collectibles business that sells metal model kits
+    (licensed franchises, collectibles, aviation, architecture themes).
+    """
+    from app.models.workspace import Workspace, WorkspaceProfile, WorkspaceSettings
+
+    ws = Workspace(name="Metal Earth Models", customer="MetalEarthCo")
+    db.add(ws)
+    db.flush()
+
+    profile = WorkspaceProfile(
+        workspace_id=ws.id,
+        business_name="Metal Earth Models",
+        description="Specialist retailer of Metal Earth 3D metal model kits",
+        priority_themes=[
+            "metal earth",
+            "3d model",
+            "model kit",
+            "licensed franchise",
+            "collectibles",
+            "hobby",
+            "aviation model",
+            "architecture model",
+            "star wars",
+            "marvel",
+            "DIY craft",
+        ],
+        competitors=["Fascinations", "MetalCraft", "HobbyBoss"],
+        excluded_topics=[
+            "celebrity gossip",
+            "sports results",
+            "real estate",
+            "cryptocurrency",
+        ],
+    )
+    db.add(profile)
+
+    settings = WorkspaceSettings(
+        workspace_id=ws.id,
+        thresholds={
+            "min_relevance_score": 0.15,
+            "scoring_weights": {
+                "keyword": 0.25,
+                "competitor_mention": 0.15,
+                "freshness": 0.15,
+                "source_authority": 0.10,
+                "bm25": 0.15,
+                "content_type_prior": 0.20,
+            },
+            "content_type_weights": {
+                "news": 1.0,
+                "press_release": 0.95,
+                "blog": 0.8,
+                "competitor": 0.9,
+                "forum": 0.6,
+                "social": 0.3,
+            },
+            "trusted_domains": ["reuters.com", "bbc.com", "techcrunch.com"],
+        },
+    )
+    db.add(settings)
+    db.flush()
+    return ws
+
+
+class TestMetalEarthRegression:
+    """Metal Earth workspace: themed content scores higher than irrelevant content."""
+
+    def test_themed_content_scores_higher_than_irrelevant(self, db_session):
+        ws = _make_metal_earth_workspace(db_session)
+
+        # Themed content items
+        themed_items = [
+            _make_item(
+                db_session,
+                ws.id,
+                title="New Metal Earth Star Wars Millennium Falcon kit announced",
+                content_type="news",
+                url="https://reuters.com/lifestyle/metal-earth-star-wars",
+            ),
+            _make_item(
+                db_session,
+                ws.id,
+                title="Fascinations releases new 3D architecture model series",
+                content_type="press_release",
+                url="https://fascinations.com/press/architecture-models",
+            ),
+            _make_item(
+                db_session,
+                ws.id,
+                title="Hobby enthusiasts review best DIY metal model kits 2024",
+                content_type="blog",
+                url="https://hobbyblog.com/best-metal-models",
+            ),
+        ]
+
+        # Irrelevant content items
+        irrelevant_items = [
+            _make_item(
+                db_session,
+                ws.id,
+                title="Celebrity gossip roundup: who wore what at the gala",
+                content_type="news",
+                url="https://gossipsite.com/celebrity-gala",
+            ),
+            _make_item(
+                db_session,
+                ws.id,
+                title="Bitcoin reaches new all-time high as crypto surges",
+                content_type="news",
+                url="https://cryptonews.com/bitcoin-surge",
+            ),
+        ]
+
+        all_items = themed_items + irrelevant_items
+        score_content_items(db_session, all_items, ws)
+
+        themed_scores = [item.final_score for item in themed_items]
+        irrelevant_scores = [item.final_score for item in irrelevant_items]
+
+        # Every themed item should score higher than every irrelevant item
+        for ts in themed_scores:
+            for irs in irrelevant_scores:
+                assert ts is not None and irs is not None, "Scores should not be None"
+                assert ts > irs, f"Themed score {ts} should be > irrelevant score {irs}"
+
+    def test_competitor_mention_detected_in_metal_earth_context(self, db_session):
+        ws = _make_metal_earth_workspace(db_session)
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Fascinations announces partnership with Disney for new model kits",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert breakdown["scores"]["competitor_mention"] == pytest.approx(1.0)
+
+    def test_excluded_topic_drift_penalized(self, db_session):
+        """Obvious topic drift (excluded topics) should be excluded."""
+        ws = _make_metal_earth_workspace(db_session)
+
+        crypto_item = _make_item(
+            db_session,
+            ws.id,
+            title="Cryptocurrency market analysis: Bitcoin and Ethereum trends",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [crypto_item], ws)
+
+        assert crypto_item.status == "excluded"
+        assert crypto_item.exclusion_reason == "matched_excluded_topic"
+
+    def test_trusted_domain_boost_in_metal_earth_context(self, db_session):
+        ws = _make_metal_earth_workspace(db_session)
+
+        reuters_item = _make_item(
+            db_session,
+            ws.id,
+            title="New DIY craft trend: metal model building gains popularity",
+            content_type="news",
+            url="https://reuters.com/lifestyle/diy-craft-trend",
+        )
+        unknown_item = _make_item(
+            db_session,
+            ws.id,
+            title="New DIY craft trend: metal model building gains popularity",
+            content_type="news",
+            url="https://random-blog.xyz/diy-craft-trend",
+        )
+
+        score_content_items(db_session, [reuters_item, unknown_item], ws)
+
+        # Reuters item should have higher source_authority
+        reuters_auth = reuters_item.score_breakdown_json["scores"]["source_authority"]
+        unknown_auth = unknown_item.score_breakdown_json["scores"]["source_authority"]
+        assert reuters_auth > unknown_auth
+
+    def test_multiple_themes_accumulate_score(self, db_session):
+        """Content matching multiple priority themes should score higher."""
+        ws = _make_metal_earth_workspace(db_session)
+
+        single_theme = _make_item(
+            db_session,
+            ws.id,
+            title="New model kit available",
+            content_type="news",
+        )
+        multi_theme = _make_item(
+            db_session,
+            ws.id,
+            title="New Metal Earth 3D model kit combines Star Wars and aviation themes",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [single_theme, multi_theme], ws)
+
+        assert multi_theme.final_score > single_theme.final_score
+
+
+# ---------------------------------------------------------------------------
+# Feed health scoring (Pass 4c)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeFeedHealthScore:
+    """compute_feed_health_score returns a weight based on feed reliability."""
+
+    def test_no_data_returns_neutral(self):
+        """Zero success rate (no fetches) → neutral 1.0."""
+        assert compute_feed_health_score(0.0) == pytest.approx(1.0)
+
+    def test_high_success_rate_full_weight(self):
+        """>80% success rate → full weight 1.0."""
+        assert compute_feed_health_score(0.90) == pytest.approx(1.0)
+        assert compute_feed_health_score(0.81) == pytest.approx(1.0)
+        assert compute_feed_health_score(1.0) == pytest.approx(1.0)
+
+    def test_mid_success_rate_reduced_weight(self):
+        """50-80% success rate → 0.8 weight."""
+        assert compute_feed_health_score(0.50) == pytest.approx(0.8)
+        assert compute_feed_health_score(0.65) == pytest.approx(0.8)
+        assert compute_feed_health_score(0.80) == pytest.approx(0.8)
+
+    def test_low_success_rate_low_weight(self):
+        """<50% success rate → 0.5 weight."""
+        assert compute_feed_health_score(0.49) == pytest.approx(0.5)
+        assert compute_feed_health_score(0.0) == pytest.approx(1.0)  # special: no data
+        assert compute_feed_health_score(0.01) == pytest.approx(0.5)
+
+    def test_stale_feed_penalty(self):
+        """Stale feed gets additional multiplicative penalty."""
+        # Non-stale, high success → 1.0
+        assert compute_feed_health_score(0.90, is_stale=False) == pytest.approx(1.0)
+        # Stale, high success → 0.5 (1.0 * 0.5 stale penalty)
+        assert compute_feed_health_score(0.90, is_stale=True) == pytest.approx(0.5)
+        # Stale, mid success → 0.4 (0.8 * 0.5)
+        assert compute_feed_health_score(0.65, is_stale=True) == pytest.approx(0.4)
+        # Stale, low success → 0.25 (0.5 * 0.5)
+        assert compute_feed_health_score(0.30, is_stale=True) == pytest.approx(0.25)
+
+    def test_custom_thresholds(self):
+        """Custom thresholds can be passed."""
+        # With high_threshold=0.5 and mid_threshold=0.3
+        # >50% → 1.0, 30-50% → 0.8, <30% → 0.5
+        assert compute_feed_health_score(
+            0.6, high_threshold=0.5, mid_threshold=0.3
+        ) == pytest.approx(1.0)
+        assert compute_feed_health_score(
+            0.4, high_threshold=0.5, mid_threshold=0.3
+        ) == pytest.approx(0.8)
+        assert compute_feed_health_score(
+            0.2, high_threshold=0.5, mid_threshold=0.3
+        ) == pytest.approx(0.5)
+
+    def test_custom_stale_penalty(self):
+        """Custom stale penalty can be passed."""
+        assert compute_feed_health_score(
+            0.9, is_stale=True, stale_penalty=0.3
+        ) == pytest.approx(0.3)
+        assert compute_feed_health_score(
+            0.9, is_stale=False, stale_penalty=0.3
+        ) == pytest.approx(1.0)
+
+    def test_score_clamped_to_zero_one(self):
+        """Score is always clamped to [0, 1]."""
+        score = compute_feed_health_score(0.01, is_stale=True, stale_penalty=10.0)
+        assert 0.0 <= score <= 1.0
+
+
+class TestFeedHealthInPipelineScoring:
+    """Content from unreliable/stale feeds scores lower in pipeline scoring."""
+
+    def _make_feed(self, db, ws_id, **overrides):
+        """Helper to create a FeedSource with reliability tracking fields."""
+        from app.models.feed import FeedSource
+
+        defaults = {
+            "workspace_id": ws_id,
+            "name": "Test Feed",
+            "url": "https://example.com/feed",
+            "type": "rss",
+            "status": "healthy",
+            "consecutive_fetch_failures": 0,
+            "total_fetch_count": 0,
+        }
+        defaults.update(overrides)
+        feed = FeedSource(**defaults)
+        db.add(feed)
+        db.flush()
+        return feed
+
+    def test_unreliable_feed_content_scores_lower(self, db_session):
+        """Content from a feed with low success rate should score lower."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+
+        # Reliable feed (100% success, not stale)
+        reliable_feed = self._make_feed(
+            db_session,
+            ws.id,
+            name="Reliable Feed",
+            total_fetch_count=10,
+            consecutive_fetch_failures=0,
+        )
+
+        # Unreliable feed (33% success rate, not stale — only 2 consecutive failures,
+        # total < threshold so is_stale=False)
+        unreliable_feed = self._make_feed(
+            db_session,
+            ws.id,
+            name="Unreliable Feed",
+            total_fetch_count=3,
+            consecutive_fetch_failures=2,
+        )
+
+        # Create identical items from each feed
+        reliable_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI breakthrough announced today",
+            feed_source_id=reliable_feed.id,
+        )
+        unreliable_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI breakthrough announced today",
+            feed_source_id=unreliable_feed.id,
+        )
+
+        score_content_items(db_session, [reliable_item, unreliable_item], ws)
+
+        # Reliable feed item should score higher
+        assert reliable_item.final_score is not None
+        assert unreliable_item.final_score is not None
+        assert reliable_item.final_score > unreliable_item.final_score
+
+        # Verify feed_health_weight appears in breakdown
+        unreliable_breakdown = unreliable_item.score_breakdown_json
+        assert "feed_health_weight" in unreliable_breakdown
+        # 33% success rate → low tier → 0.5 weight
+        assert unreliable_breakdown["feed_health_weight"] == pytest.approx(0.5)
+
+    def test_stale_feed_content_scores_lower(self, db_session):
+        """Content from a stale feed should score even lower."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+
+        # Healthy feed (100% success, not stale)
+        healthy_feed = self._make_feed(
+            db_session,
+            ws.id,
+            name="Healthy Feed",
+            total_fetch_count=10,
+            consecutive_fetch_failures=0,
+        )
+
+        # Stale feed (high success rate but 5+ consecutive failures)
+        # 90% success rate (9 successes, 1 stale period), 5 consecutive failures now
+        stale_feed = self._make_feed(
+            db_session,
+            ws.id,
+            name="Stale Feed",
+            total_fetch_count=15,
+            consecutive_fetch_failures=5,
+        )
+
+        healthy_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI advances in robotics",
+            feed_source_id=healthy_feed.id,
+        )
+        stale_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI advances in robotics",
+            feed_source_id=stale_feed.id,
+        )
+
+        score_content_items(db_session, [healthy_item, stale_item], ws)
+
+        assert healthy_item.final_score is not None
+        assert stale_item.final_score is not None
+        assert healthy_item.final_score > stale_item.final_score
+
+        # Stale feed should have aggressive penalty
+        stale_breakdown = stale_item.score_breakdown_json
+        assert "feed_health_weight" in stale_breakdown
+        # High success rate (10/15 ≈ 0.67 → mid tier 0.8) but stale → 0.8 * 0.5 = 0.4
+        assert stale_breakdown["feed_health_weight"] == pytest.approx(0.4)
+
+    def test_no_feed_source_no_penalty(self, db_session):
+        """Items without a feed_source_id should not be penalized."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+
+        # Item with no feed association
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI news",
+            feed_source_id=None,
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        assert item.final_score is not None
+        breakdown = item.score_breakdown_json
+        # No feed_health_weight should appear when no feed
+        assert "feed_health_weight" not in breakdown
+
+    def test_feed_health_in_breakdown_scores(self, db_session):
+        """feed_health appears in the scores section of the breakdown."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+
+        feed = self._make_feed(
+            db_session,
+            ws.id,
+            total_fetch_count=10,
+            consecutive_fetch_failures=3,  # 70% success → mid tier (0.8)
+        )
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI article",
+            feed_source_id=feed.id,
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "feed_health" in breakdown["scores"]
+        assert breakdown["scores"]["feed_health"] == pytest.approx(0.8)
+        assert "feed_health_weight" in breakdown
+        assert breakdown["feed_health_weight"] == pytest.approx(0.8)
+
+    def test_stale_low_success_most_penalized(self, db_session):
+        """Stale + low success rate = most aggressive penalty."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+
+        # Stale + low success (<50%): weight = 0.5 * 0.5 = 0.25
+        bad_feed = self._make_feed(
+            db_session,
+            ws.id,
+            total_fetch_count=10,
+            consecutive_fetch_failures=6,  # 40% success, and >=5 failures → stale
+        )
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI news from bad source",
+            feed_source_id=bad_feed.id,
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert breakdown["feed_health_weight"] == pytest.approx(0.25)

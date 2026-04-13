@@ -46,6 +46,15 @@ export default function WorkspaceOverviewPage() {
   const { data: runs, isLoading: runsLoading } = useQuery({
     queryKey: ['runs', workspaceId],
     queryFn: () => api.runs.list(workspaceId),
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return false;
+      return (data as Array<{ status: string }>).some(
+        (r) => r.status === 'running' || r.status === 'queued',
+      )
+        ? 3000
+        : false;
+    },
   });
 
   const { data: reports, isLoading: reportsLoading } = useQuery({
@@ -75,17 +84,12 @@ export default function WorkspaceOverviewPage() {
 
   const runMutation = useMutation({
     mutationFn: () => api.runs.trigger(workspaceId),
-    onSuccess: (run) => {
-      if (run.status === 'failed') {
-        setRunToast({
-          success: false,
-          message: run.error
-            ? `Run failed: ${run.error.length > 80 ? run.error.slice(0, 80) + '…' : run.error}`
-            : 'Intelligence cycle run failed.',
-        });
-      } else {
-        setRunToast({ success: true, message: 'Intelligence cycle triggered successfully.' });
-      }
+    onSuccess: (result) => {
+      // The 202 response returns an acknowledgement, not the full run object
+      setRunToast({
+        success: true,
+        message: result.message || 'Intelligence cycle queued successfully.',
+      });
       queryClient.invalidateQueries({ queryKey: ['runs', workspaceId] });
     },
     onError: (err) => {
@@ -170,23 +174,29 @@ export default function WorkspaceOverviewPage() {
             lastRun?.durationMs
               ? `${Math.round(lastRun.durationMs / 1000)}s duration`
               : lastRun
-                ? 'In progress...'
+                ? lastRun.status === 'queued'
+                  ? 'Queued...'
+                  : 'In progress...'
                 : 'No runs yet'
           }
-          icon={lastRun?.status === 'success' ? CheckCircle2 : lastRun?.status === 'failed' ? XCircle : Zap}
+          icon={lastRun?.status === 'success' ? CheckCircle2 : lastRun?.status === 'failed' ? XCircle : Loader2}
           color={
             lastRun?.status === 'success'
               ? 'text-emerald-600'
               : lastRun?.status === 'failed'
                 ? 'text-red-600'
-                : 'text-blue-600'
+                : lastRun?.status === 'queued'
+                  ? 'text-amber-600'
+                  : 'text-blue-600'
           }
           bg={
             lastRun?.status === 'success'
               ? 'bg-emerald-50'
               : lastRun?.status === 'failed'
                 ? 'bg-red-50'
-                : 'bg-blue-50'
+                : lastRun?.status === 'queued'
+                  ? 'bg-amber-50'
+                  : 'bg-blue-50'
           }
         />
         <OverviewStatCard
@@ -228,13 +238,17 @@ export default function WorkspaceOverviewPage() {
                             ? 'bg-emerald-50 text-emerald-600'
                             : run.status === 'failed'
                               ? 'bg-red-50 text-red-600'
-                              : 'bg-blue-50 text-blue-600'
+                              : run.status === 'queued'
+                                ? 'bg-amber-50 text-amber-600'
+                                : 'bg-blue-50 text-blue-600'
                         )}
                       >
                         {run.status === 'success' ? (
                           <CheckCircle2 className="w-4 h-4" />
                         ) : run.status === 'failed' ? (
                           <XCircle className="w-4 h-4" />
+                        ) : run.status === 'queued' ? (
+                          <Clock className="w-4 h-4" />
                         ) : (
                           <Zap className="w-4 h-4" />
                         )}

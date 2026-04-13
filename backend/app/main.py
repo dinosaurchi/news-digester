@@ -1,9 +1,11 @@
 import logging
 import os
 import time
+import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.api.session import router as session_router
@@ -33,6 +35,9 @@ app = FastAPI(
 
 
 # ── Startup: run migrations and seed ─────────────────────────────────
+# Fail-fast philosophy: every critical initialization step (config validation,
+# DB migration, seed/bootstrap) aborts the process via SystemExit on failure.
+# This prevents the app from serving traffic in a partially-initialized state.
 @app.on_event("startup")
 def startup():
     # Skip auto-migration in test environment
@@ -68,6 +73,7 @@ def startup():
         settings.OPENCODE_TIMEOUT_SECONDS,
     )
 
+    # ── CRITICAL INITIALIZATION (must succeed — abort on failure) ─────
     import subprocess
 
     logger.info("Running database migrations...")
@@ -75,8 +81,12 @@ def startup():
         subprocess.run(["alembic", "upgrade", "head"], check=True, capture_output=True)
         logger.info("Migrations complete")
     except subprocess.CalledProcessError as e:
-        logger.error(f"Migration failed: {e.stderr.decode()}")
-    # Run seed if no data exists
+        stderr_output = e.stderr.decode() if e.stderr else str(e)
+        msg = f"FATAL: Database migration failed: {stderr_output}"
+        logger.critical(msg)
+        raise SystemExit(msg)
+
+    # ── CRITICAL INITIALIZATION: seed data and admin bootstrap ────────
     try:
         from app.db.session import SessionLocal
         from app.models import Workspace
@@ -96,7 +106,11 @@ def startup():
         logger.info("Admin user ready: %s", admin_user.username)
         db.close()
     except Exception as e:
-        logger.error(f"Seed check failed: {e}")
+        msg = f"FATAL: Seed/bootstrap failed: {e}"
+        logger.critical(msg)
+        raise SystemExit(msg)
+
+    # ── OPTIONAL INITIALIZATION (safe to skip on failure) ────────────
 
 
 # ── CORS ─────────────────────────────────────────────────────────────
@@ -109,14 +123,24 @@ app.add_middleware(
 )
 
 
-# ── Request logging middleware ───────────────────────────────────────
+# ── Request ID + logging middleware ──────────────────────────────────
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
     start = time.time()
+    logger.info(
+        "request_id=%s method=%s path=%s started",
+        request_id,
+        request.method,
+        request.url.path,
+    )
     response = await call_next(request)
     duration_ms = (time.time() - start) * 1000
+    response.headers["X-Request-ID"] = request_id
     logger.info(
-        "%s %s → %d (%.1fms)",
+        "request_id=%s method=%s path=%s status=%d duration_ms=%.1f",
+        request_id,
         request.method,
         request.url.path,
         response.status_code,
@@ -125,10 +149,85 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# ── Health endpoint ──────────────────────────────────────────────────
+# ── Dependency health checks ───────────────────────────────────────────
+
+
+def check_database() -> tuple[str, str | None]:
+    """Check database connectivity. Returns (status, error_message)."""
+    try:
+        from sqlalchemy import text
+
+        from app.db.session import engine
+
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return "ok", None
+    except Exception as e:
+        return "failed", str(e)
+
+
+def check_redis() -> tuple[str, str | None]:
+    """Check Redis connectivity (optional dependency).
+
+    If REDIS_URL is not configured, the check is skipped and reports "ok".
+    """
+    redis_url = getattr(settings, "REDIS_URL", "")
+    if not redis_url or not redis_url.strip():
+        return "ok", None  # not configured — optional dependency
+    try:
+        import redis
+
+        client = redis.from_url(redis_url, socket_timeout=2)
+        client.ping()
+        client.close()
+        return "ok", None
+    except Exception as e:
+        return "failed", str(e)
+
+
+def check_opencode() -> tuple[str, str | None]:
+    """Check that OpenCode adapter configuration exists."""
+    if not settings.OPENCODE_BASE_URL or not settings.OPENCODE_BASE_URL.strip():
+        return "failed", "OPENCODE_BASE_URL is not configured"
+    return "ok", None
+
+
+# ── Health endpoint (backward compatible) ──────────────────────────────
 @app.get("/api/health")
 def health():
     return {"status": "ok", "version": settings.APP_VERSION}
+
+
+# ── Liveness endpoint ──────────────────────────────────────────────────
+@app.get("/api/healthz")
+def healthz():
+    """Liveness probe — process is alive, no dependency checks."""
+    return {"status": "ok"}
+
+
+# ── Readiness endpoint ─────────────────────────────────────────────────
+@app.get("/api/ready")
+def readiness():
+    """Readiness probe — checks critical dependencies before serving traffic."""
+    checks: dict[str, tuple[str, str | None]] = {
+        "database": check_database(),
+        "redis": check_redis(),
+        "opencode": check_opencode(),
+    }
+
+    all_ok = all(status == "ok" for status, _ in checks.values())
+    errors: dict[str, str] = {
+        name: error for name, (status, error) in checks.items() if error is not None
+    }
+
+    body: dict = {
+        "status": "ok" if all_ok else "degraded",
+        "checks": {name: status for name, (status, _) in checks.items()},
+    }
+    if errors:
+        body["errors"] = errors
+
+    return JSONResponse(content=body, status_code=200 if all_ok else 503)
 
 
 # ── Routers ──────────────────────────────────────────────────────────
