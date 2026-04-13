@@ -68,6 +68,7 @@ def startup():
         settings.OPENCODE_TIMEOUT_SECONDS,
     )
 
+    # ── CRITICAL INITIALIZATION (must succeed — abort on failure) ─────
     import subprocess
 
     logger.info("Running database migrations...")
@@ -75,8 +76,12 @@ def startup():
         subprocess.run(["alembic", "upgrade", "head"], check=True, capture_output=True)
         logger.info("Migrations complete")
     except subprocess.CalledProcessError as e:
-        logger.error(f"Migration failed: {e.stderr.decode()}")
-    # Run seed if no data exists
+        stderr_output = e.stderr.decode() if e.stderr else str(e)
+        msg = f"FATAL: Database migration failed: {stderr_output}"
+        logger.critical(msg)
+        raise SystemExit(msg)
+
+    # ── CRITICAL INITIALIZATION: seed data and admin bootstrap ────────
     try:
         from app.db.session import SessionLocal
         from app.models import Workspace
@@ -96,7 +101,11 @@ def startup():
         logger.info("Admin user ready: %s", admin_user.username)
         db.close()
     except Exception as e:
-        logger.error(f"Seed check failed: {e}")
+        msg = f"FATAL: Seed/bootstrap failed: {e}"
+        logger.critical(msg)
+        raise SystemExit(msg)
+
+    # ── OPTIONAL INITIALIZATION (safe to skip on failure) ────────────
 
 
 # ── CORS ─────────────────────────────────────────────────────────────
