@@ -252,29 +252,50 @@ class OpenCodeClient:
 
         url = f"{self._base_url}/v1/runs"
         logger.info(
-            "OpenCode run request: title=%s model=%s agent=%s url=%s",
+            "opencode request title=%s model=%s agent=%s url=%s",
             title,
             self._default_model,
             self._default_agent,
             url,
         )
 
+        request_start = time.monotonic()
         try:
             response = httpx.post(
                 url,
                 json=payload,
                 timeout=self._timeout,
             )
+            request_duration_ms = (time.monotonic() - request_start) * 1000
         except httpx.ConnectError as exc:
-            logger.error("OpenCode adapter unreachable: %s", exc)
+            request_duration_ms = (time.monotonic() - request_start) * 1000
+            logger.error(
+                "opencode error title=%s error_type=ConnectError duration_ms=%.1f error=%s",
+                title,
+                request_duration_ms,
+                exc,
+            )
             raise OpenCodeUnavailableError(
                 f"OpenCode adapter is unreachable at {self._base_url}: {exc}"
             ) from exc
         except httpx.TimeoutException as exc:
-            logger.error("OpenCode adapter timed out after %ds", self._timeout)
+            request_duration_ms = (time.monotonic() - request_start) * 1000
+            logger.error(
+                "opencode error title=%s error_type=TimeoutException duration_ms=%.1f timeout=%ds",
+                title,
+                request_duration_ms,
+                self._timeout,
+            )
             raise OpenCodeTimeoutError(
                 f"OpenCode adapter timed out after {self._timeout}s"
             ) from exc
+
+        logger.info(
+            "opencode response title=%s status=%d duration_ms=%.1f",
+            title,
+            response.status_code,
+            request_duration_ms,
+        )
 
         body = self._parse_json_response(response)
         if response.status_code >= 400:

@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -119,14 +120,24 @@ app.add_middleware(
 )
 
 
-# ── Request logging middleware ───────────────────────────────────────
+# ── Request ID + logging middleware ──────────────────────────────────
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
     start = time.time()
+    logger.info(
+        "request_id=%s method=%s path=%s started",
+        request_id,
+        request.method,
+        request.url.path,
+    )
     response = await call_next(request)
     duration_ms = (time.time() - start) * 1000
+    response.headers["X-Request-ID"] = request_id
     logger.info(
-        "%s %s → %d (%.1fms)",
+        "request_id=%s method=%s path=%s status=%d duration_ms=%.1f",
+        request_id,
         request.method,
         request.url.path,
         response.status_code,
