@@ -47,6 +47,7 @@ class ContentItem(Base):
     )
     inclusion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     exclusion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duplicate_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     report_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     source_entry_id: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime, default=_now)
@@ -71,6 +72,10 @@ class ContentCluster(Base):
     )
     label: Mapped[str | None] = mapped_column(String(500), nullable=True)
     item_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    clustering_method: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )  # url_match, title_fingerprint, similarity, singleton
+    cluster_metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[str | None] = mapped_column(
         DateTime, default=_now, onupdate=_now

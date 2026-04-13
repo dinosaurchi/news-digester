@@ -820,3 +820,404 @@ class TestConfigurableThresholds:
         # These items share URL and title, so they cluster regardless of thresholds
         assert result["clusters_created"] == 1
         assert result["items_clustered"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Cluster metadata explainability (Pass 4a)
+# ---------------------------------------------------------------------------
+
+
+class TestClusterMetadataExplainability:
+    """Clusters store method and metadata for debugging / auditability."""
+
+    def test_url_match_cluster_stores_method(self, db_session):
+        ws = _make_workspace(db_session)
+        item1 = _make_item(
+            db_session,
+            ws.id,
+            title="Story A",
+            url="https://example.com/news?utm_source=tw",
+        )
+        item2 = _make_item(
+            db_session,
+            ws.id,
+            title="Story B",
+            url="https://example.com/news?fbclid=x",
+        )
+
+        cluster_content_items(db_session, [item1, item2], ws.id)
+
+        cluster = db_session.query(ContentCluster).first()
+        assert cluster is not None
+        assert cluster.clustering_method == "url_match"
+
+    def test_title_fingerprint_cluster_stores_method(self, db_session):
+        ws = _make_workspace(db_session)
+        item1 = _make_item(
+            db_session,
+            ws.id,
+            title="Breaking Story",
+            url="https://source-a.com/a",
+        )
+        item2 = _make_item(
+            db_session,
+            ws.id,
+            title="BREAKING STORY",
+            url="https://source-b.com/b",
+        )
+
+        cluster_content_items(db_session, [item1, item2], ws.id)
+
+        cluster = db_session.query(ContentCluster).first()
+        assert cluster is not None
+        assert cluster.clustering_method == "title_fingerprint"
+
+    def test_singleton_cluster_stores_method(self, db_session):
+        ws = _make_workspace(db_session)
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Unique Story",
+            url="https://unique.com/story",
+        )
+
+        cluster_content_items(db_session, [item], ws.id)
+
+        cluster = db_session.query(ContentCluster).first()
+        assert cluster is not None
+        assert cluster.clustering_method == "singleton"
+
+    def test_cluster_metadata_json_contains_lead_info(self, db_session):
+        ws = _make_workspace(db_session)
+        item1 = _make_item(
+            db_session,
+            ws.id,
+            title="Story A",
+            url="https://example.com/x?utm_source=tw",
+            published_at=datetime(2024, 6, 5, tzinfo=timezone.utc),
+        )
+        item2 = _make_item(
+            db_session,
+            ws.id,
+            title="Story B",
+            url="https://example.com/x?fbclid=y",
+            published_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        )
+
+        cluster_content_items(db_session, [item1, item2], ws.id)
+
+        cluster = db_session.query(ContentCluster).first()
+        assert cluster is not None
+        meta = cluster.cluster_metadata_json
+        assert meta is not None
+        assert meta["method"] == "url_match"
+        assert meta["item_count"] == 2
+        assert "lead_item_id" in meta
+        assert "lead_title" in meta
+        assert "duplicate_item_ids" in meta
+        # Lead should be item2 (earlier published_at)
+        assert meta["lead_item_id"] == item2.id
+
+    def test_similarity_cluster_stores_method(self, db_session):
+        ws = _make_workspace(db_session)
+        item1 = _make_item(
+            db_session,
+            ws.id,
+            title="Company X Announces New CEO",
+            url="https://news.example.com/company-x-ceo",
+            published_at=datetime(2024, 6, 1, 10, 0, tzinfo=timezone.utc),
+        )
+        item2 = _make_item(
+            db_session,
+            ws.id,
+            title="Company X Announces New Chief Executive",
+            url="https://news.example.com/company-x-chief",
+            published_at=datetime(2024, 6, 1, 14, 0, tzinfo=timezone.utc),
+        )
+
+        cluster_content_items(
+            db_session,
+            [item1, item2],
+            ws.id,
+            similarity_threshold=0.5,
+            domain_title_threshold=0.5,
+        )
+
+        cluster = db_session.query(ContentCluster).first()
+        assert cluster is not None
+        assert cluster.clustering_method == "similarity"
+        meta = cluster.cluster_metadata_json
+        assert meta is not None
+        assert meta["method"] == "similarity"
+
+
+# ---------------------------------------------------------------------------
+# Duplicate reason visibility (Pass 4a)
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateReasonVisibility:
+    """Non-lead items in multi-item clusters get duplicate_reason set."""
+
+    def test_url_dup_non_lead_has_duplicate_reason(self, db_session):
+        ws = _make_workspace(db_session)
+        item1 = _make_item(
+            db_session,
+            ws.id,
+            title="Story A",
+            url="https://example.com/news?utm_source=tw",
+            published_at=datetime(2024, 6, 5, tzinfo=timezone.utc),
+        )
+        item2 = _make_item(
+            db_session,
+            ws.id,
+            title="Story B",
+            url="https://example.com/news?fbclid=x",
+            published_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        )
+
+        cluster_content_items(db_session, [item1, item2], ws.id)
+
+        db_session.refresh(item1)
+        db_session.refresh(item2)
+
+        # Lead (item2, earlier) should NOT have a duplicate_reason
+        assert item2.duplicate_reason is None
+        # Non-lead (item1) should have a duplicate_reason
+        assert item1.duplicate_reason is not None
+        assert "url_match" in item1.duplicate_reason
+
+    def test_title_dup_non_lead_has_duplicate_reason(self, db_session):
+        ws = _make_workspace(db_session)
+        item1 = _make_item(
+            db_session,
+            ws.id,
+            title="Identical Headline",
+            url="https://source-a.com/article",
+        )
+        item2 = _make_item(
+            db_session,
+            ws.id,
+            title="Identical Headline",
+            url="https://source-b.com/article",
+        )
+
+        cluster_content_items(db_session, [item1, item2], ws.id)
+
+        db_session.refresh(item1)
+        db_session.refresh(item2)
+
+        # One should be lead (no duplicate_reason), the other should have reason
+        reasons = [item1.duplicate_reason, item2.duplicate_reason]
+        assert sum(1 for r in reasons if r is None) == 1
+        assert (
+            sum(1 for r in reasons if r is not None and "title_fingerprint" in r) == 1
+        )
+
+    def test_singleton_has_no_duplicate_reason(self, db_session):
+        ws = _make_workspace(db_session)
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Unique Story",
+            url="https://unique.com/story",
+        )
+
+        cluster_content_items(db_session, [item], ws.id)
+
+        db_session.refresh(item)
+        assert item.duplicate_reason is None
+
+    def test_all_non_leads_in_multi_dup_have_reason(self, db_session):
+        ws = _make_workspace(db_session)
+        items = [
+            _make_item(
+                db_session,
+                ws.id,
+                title=f"Article {i}",
+                url=f"https://example.com/news?ref={i}",
+            )
+            for i in range(4)
+        ]
+
+        cluster_content_items(db_session, items, ws.id)
+
+        for item in items:
+            db_session.refresh(item)
+
+        # Exactly one lead (no duplicate_reason), 3 non-leads with reasons
+        leads = [item for item in items if item.duplicate_reason is None]
+        dups = [item for item in items if item.duplicate_reason is not None]
+        assert len(leads) == 1
+        assert len(dups) == 3
+        for d in dups:
+            assert "url_match" in d.duplicate_reason
+
+
+# ---------------------------------------------------------------------------
+# Content-to-report traceability (Pass 4a)
+# ---------------------------------------------------------------------------
+
+
+class TestContentToReportTraceability:
+    """Content items can be traced to their cluster and vice versa."""
+
+    def test_item_has_cluster_id_set(self, db_session):
+        ws = _make_workspace(db_session)
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Traceable Story",
+            url="https://example.com/story",
+        )
+
+        cluster_content_items(db_session, [item], ws.id)
+
+        db_session.refresh(item)
+        assert item.cluster_id is not None
+
+    def test_cluster_contains_correct_item_count(self, db_session):
+        ws = _make_workspace(db_session)
+        items = [
+            _make_item(
+                db_session,
+                ws.id,
+                title="Dup Story",
+                url=f"https://example.com/dup?ref={i}",
+            )
+            for i in range(3)
+        ]
+
+        cluster_content_items(db_session, items, ws.id)
+
+        cluster = db_session.query(ContentCluster).first()
+        assert cluster is not None
+        assert cluster.item_count == 3
+
+        # Query items by cluster_id
+        clustered_items = (
+            db_session.query(ContentItem)
+            .filter(ContentItem.cluster_id == cluster.id)
+            .all()
+        )
+        assert len(clustered_items) == 3
+
+    def test_report_id_nullable_on_content_item(self, db_session):
+        """ContentItem.report_id should be None until assigned to a report."""
+        ws = _make_workspace(db_session)
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Unassigned Story",
+            url="https://example.com/unassigned",
+        )
+
+        cluster_content_items(db_session, [item], ws.id)
+
+        db_session.refresh(item)
+        # After clustering (but before report generation), report_id is None
+        assert item.report_id is None
+
+
+# ---------------------------------------------------------------------------
+# Syndicated stories from different feeds (Pass 4a)
+# ---------------------------------------------------------------------------
+
+
+class TestSyndicatedStories:
+    """Same content from different feeds/domains is properly clustered."""
+
+    def test_syndicated_story_same_title_different_domains(self, db_session):
+        """Syndicated article appearing on multiple domains gets one cluster."""
+        ws = _make_workspace(db_session)
+        syndicated_items = [
+            _make_item(
+                db_session,
+                ws.id,
+                title="Tech Company Announces Record Revenue",
+                url=f"https://{domain}.com/tech-company-revenue",
+                source_name=f"{domain} News",
+            )
+            for domain in ["reuters", "apnews", "bloomberg"]
+        ]
+
+        result = cluster_content_items(
+            db_session,
+            syndicated_items,
+            ws.id,
+        )
+
+        # Title fingerprint should group all three
+        assert result["clusters_created"] == 1
+        assert result["items_clustered"] == 3
+
+        # All share the same cluster_id
+        db_session.refresh(syndicated_items[0])
+        cluster_id = syndicated_items[0].cluster_id
+        for item in syndicated_items:
+            db_session.refresh(item)
+            assert item.cluster_id == cluster_id
+
+    def test_syndicated_with_unique_content_stays_separate(self, db_session):
+        """Unique content should NOT be merged with syndicated cluster."""
+        ws = _make_workspace(db_session)
+        # Syndicated cluster
+        synd1 = _make_item(
+            db_session,
+            ws.id,
+            title="Major Merger Announced",
+            url="https://source-a.com/merger",
+        )
+        synd2 = _make_item(
+            db_session,
+            ws.id,
+            title="Major Merger Announced",
+            url="https://source-b.com/merger",
+        )
+        # Unique story
+        unique = _make_item(
+            db_session,
+            ws.id,
+            title="Local Startup Raises Funding Round",
+            url="https://localnews.com/startup-funding",
+        )
+
+        result = cluster_content_items(
+            db_session,
+            [synd1, synd2, unique],
+            ws.id,
+        )
+
+        assert result["clusters_created"] == 2
+        assert result["items_clustered"] == 3
+
+        # Syndicated items share cluster, unique item has its own
+        db_session.refresh(synd1)
+        db_session.refresh(synd2)
+        db_session.refresh(unique)
+        assert synd1.cluster_id == synd2.cluster_id
+        assert unique.cluster_id != synd1.cluster_id
+
+    def test_syndicated_non_leads_marked_as_duplicates(self, db_session):
+        """Non-lead syndicated items get duplicate_reason set."""
+        ws = _make_workspace(db_session)
+        items = [
+            _make_item(
+                db_session,
+                ws.id,
+                title="Breaking: Peace Agreement Signed",
+                url=f"https://feed{i}.com/peace-agreement",
+            )
+            for i in range(3)
+        ]
+
+        cluster_content_items(db_session, items, ws.id)
+
+        for item in items:
+            db_session.refresh(item)
+
+        # One lead, two non-leads with duplicate reasons
+        non_leads = [item for item in items if item.duplicate_reason is not None]
+        assert len(non_leads) == 2
+        for nl in non_leads:
+            assert "title_fingerprint" in nl.duplicate_reason

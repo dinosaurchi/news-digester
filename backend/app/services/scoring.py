@@ -315,7 +315,51 @@ _WEIGHTS: dict[str, float] = {
     "freshness": 0.20,
     "source_authority": 0.15,
     "bm25": 0.20,
+    "content_type_prior": 0.0,  # disabled by default; enable via workspace settings
 }
+
+# ---------------------------------------------------------------------------
+# Content type prior
+# ---------------------------------------------------------------------------
+
+# Default prior weights per content type.  Higher values indicate content
+# types that are generally more relevant for a typical news-monitoring
+# workspace.  Override per workspace via ``settings.thresholds.content_type_weights``.
+_DEFAULT_CONTENT_TYPE_WEIGHTS: dict[str, float] = {
+    "news": 1.0,
+    "press_release": 0.9,
+    "blog": 0.7,
+    "competitor": 0.8,
+    "forum": 0.5,
+    "social": 0.4,
+}
+
+
+def compute_content_type_prior_score(
+    content_type: str | None,
+    weights: dict[str, float] | None = None,
+) -> float:
+    """Return a prior score based on the item's content type.
+
+    Parameters
+    ----------
+    content_type:
+        The content type string (e.g. ``"news"``, ``"blog"``).  When
+        ``None`` or empty, returns the neutral prior (0.5).
+    weights:
+        Optional dict mapping content-type strings to prior weights.
+        Falls back to :data:`_DEFAULT_CONTENT_TYPE_WEIGHTS` when ``None``.
+        Unknown content types receive a neutral prior of 0.5.
+
+    Returns
+    -------
+    A float between 0.0 and 1.0.
+    """
+    if not content_type:
+        return 0.5  # neutral for unknown / missing
+
+    active_weights = weights if weights is not None else _DEFAULT_CONTENT_TYPE_WEIGHTS
+    return float(active_weights.get(content_type.lower(), 0.5))
 
 
 def _validate_weight_overrides(
@@ -691,6 +735,23 @@ def score_content_items(
                     workspace.id,
                 )
 
+    # Content type prior weights (default: use built-in defaults)
+    content_type_weights: dict[str, float] | None = None
+    if settings and settings.thresholds:
+        raw_ct_weights = settings.thresholds.get("content_type_weights")
+        if raw_ct_weights is not None and isinstance(raw_ct_weights, dict):
+            content_type_weights = {
+                str(k): float(v)
+                for k, v in raw_ct_weights.items()
+                if isinstance(v, (int, float))
+            }
+            if content_type_weights:
+                logger.info(
+                    "Applying content type prior overrides for workspace %s: %s",
+                    workspace.id,
+                    content_type_weights,
+                )
+
     # ------------------------------------------------------------------
     # 1b. Load feedback signals for the workspace
     # ------------------------------------------------------------------
@@ -742,6 +803,10 @@ def score_content_items(
                 trusted_domains,
             ),
             "bm25": compute_bm25_score(item_text, priority_themes, idf=batch_idf),
+            "content_type_prior": compute_content_type_prior_score(
+                item.content_type,
+                weights=content_type_weights,
+            ),
         }
 
         # Combined weighted score
@@ -757,6 +822,9 @@ def score_content_items(
         # Include IDF values in the breakdown for transparency
         if batch_idf:
             breakdown["bm25_idf"] = batch_idf
+
+        # Include content type in breakdown for debugging
+        breakdown["content_type"] = item.content_type
 
         # ------------------------------------------------------------------
         # 2b. Apply feedback adjustment
