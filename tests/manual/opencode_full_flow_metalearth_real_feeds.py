@@ -316,9 +316,9 @@ def main() -> int:
 
     # ── Step 6: Run-now (with polling) ──────────────────────────────────
     status, run = client.request("POST", f"/workspaces/{workspace_id}/run-now", {})
-    require(status == 201, f"run-now failed: {status} {run}")
-    run_id = run["id"]
-    print(f"Run created: {run_id} status={run.get('status')}")
+    require(status == 202, f"run-now failed: {status} {run}")
+    run_id = run["runId"]
+    print(f"Run created: {run_id} status={run.get('runId')}")
 
     # Poll until the run reaches a terminal state.
     POLL_TIMEOUT = 300  # seconds
@@ -326,7 +326,8 @@ def main() -> int:
     elapsed = 0
     run_status = run.get("status", "pending")
     while (
-        run_status not in ("success", "failed", "cancelled") and elapsed < POLL_TIMEOUT
+        run_status not in ("success", "succeeded", "failed", "cancelled")
+        and elapsed < POLL_TIMEOUT
     ):
         time.sleep(POLL_INTERVAL)
         elapsed += POLL_INTERVAL
@@ -336,7 +337,7 @@ def main() -> int:
         print(f"  polling ... run {run_id} status={run_status} elapsed={elapsed}s")
 
     require(
-        run_status == "success",
+        run_status in ("success", "succeeded"),
         f"Run did not reach success status (got '{run_status}') within {POLL_TIMEOUT}s",
     )
     print(f"Run completed successfully: {run_id}")
