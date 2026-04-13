@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem
+from app.models.feed import FeedSource
 from app.models.workspace import Workspace
 
 logger = logging.getLogger(__name__)
@@ -317,6 +318,58 @@ _WEIGHTS: dict[str, float] = {
     "bm25": 0.20,
     "content_type_prior": 0.0,  # disabled by default; enable via workspace settings
 }
+
+# ---------------------------------------------------------------------------
+# Feed health / reliability scoring
+# ---------------------------------------------------------------------------
+
+# Feed success-rate thresholds (configurable).
+_FEED_HEALTH_HIGH_THRESHOLD: float = 0.80  # >80% → full weight (1.0)
+_FEED_HEALTH_MID_THRESHOLD: float = 0.50  # 50-80% → reduced weight (0.8)
+# <50% → low weight (0.5)
+
+# Staleness penalty: additional multiplier for content from stale feeds.
+_STALE_FEED_PENALTY: float = 0.5  # stale feeds get this extra multiplier
+
+
+def compute_feed_health_score(
+    feed_success_rate: float,
+    is_stale: bool = False,
+    *,
+    high_threshold: float = _FEED_HEALTH_HIGH_THRESHOLD,
+    mid_threshold: float = _FEED_HEALTH_MID_THRESHOLD,
+    stale_penalty: float = _STALE_FEED_PENALTY,
+) -> float:
+    """Return a feed health weight between 0.0 and 1.0.
+
+    Scoring tiers (based on feed success rate):
+    - ``>high_threshold`` (default >0.80) → 1.0 (full weight)
+    - ``mid_threshold`` to ``high_threshold`` (default 0.50–0.80) → 0.8
+    - ``<mid_threshold`` (default <0.50) → 0.5
+
+    An additional *stale_penalty* multiplier is applied when the feed is
+    flagged as stale, further downweighting its content.
+
+    When *feed_success_rate* is 0.0 (no fetches attempted yet), returns
+    1.0 (neutral — benefit of the doubt).
+    """
+    if feed_success_rate <= 0.0:
+        # No data yet — neutral, no penalty
+        return 1.0
+
+    if feed_success_rate > high_threshold:
+        weight = 1.0
+    elif feed_success_rate >= mid_threshold:
+        weight = 0.8
+    else:
+        weight = 0.5
+
+    # Apply staleness penalty multiplicatively
+    if is_stale:
+        weight *= stale_penalty
+
+    return max(0.0, min(1.0, weight))
+
 
 # ---------------------------------------------------------------------------
 # Content type prior
@@ -760,6 +813,22 @@ def score_content_items(
     )
 
     # ------------------------------------------------------------------
+    # 1c. Load feed health data for scoring
+    # ------------------------------------------------------------------
+    feed_health_map: dict[str, dict] = {}  # feed_id → {success_rate, is_stale}
+    try:
+        feed_ids = {item.feed_source_id for item in items if item.feed_source_id}
+        if feed_ids:
+            feed_rows = db.query(FeedSource).filter(FeedSource.id.in_(feed_ids)).all()
+            for f in feed_rows:
+                feed_health_map[f.id] = {
+                    "success_rate": f.fetch_success_rate,
+                    "is_stale": f.is_stale,
+                }
+    except Exception:
+        logger.warning("Could not load feed health data", exc_info=True)
+
+    # ------------------------------------------------------------------
     # 1c. Pre-compute item texts and batch IDF for BM25 scoring
     # ------------------------------------------------------------------
     items_texts: list[str] = []
@@ -809,6 +878,18 @@ def score_content_items(
             ),
         }
 
+        # Compute feed health score and apply as a multiplicative weight
+        feed_health_score = 1.0
+        feed_info = (
+            feed_health_map.get(item.feed_source_id) if item.feed_source_id else None
+        )
+        if feed_info is not None:
+            feed_health_score = compute_feed_health_score(
+                feed_info["success_rate"],
+                feed_info["is_stale"],
+            )
+            individual_scores["feed_health"] = feed_health_score
+
         # Combined weighted score
         combined_score, breakdown = compute_combined_score(
             individual_scores,
@@ -835,6 +916,16 @@ def score_content_items(
         if feedback_adj != 0.0:
             combined_score = max(0.0, min(1.0, combined_score + feedback_adj))
             breakdown["feedback_adjustment"] = feedback_adj
+
+        # ------------------------------------------------------------------
+        # 2c. Apply feed health weight (multiplicative)
+        # ------------------------------------------------------------------
+        if feed_info is not None and feed_health_score < 1.0:
+            combined_score = max(0.0, min(1.0, combined_score * feed_health_score))
+            breakdown["feed_health_weight"] = feed_health_score
+        # Always include feed_health in scores for transparency
+        if feed_info is not None:
+            breakdown.setdefault("scores", {})["feed_health"] = feed_health_score
 
         feedback_info: dict = {}
         if topics_matched:

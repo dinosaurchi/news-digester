@@ -13,6 +13,7 @@ from app.services.scoring import (
     compute_competitor_mention_score,
     compute_excluded_topic_score,
     compute_freshness_score,
+    compute_feed_health_score,
     compute_keyword_score,
     compute_source_authority_score,
     score_content_items,
@@ -1276,3 +1277,263 @@ class TestMetalEarthRegression:
         score_content_items(db_session, [single_theme, multi_theme], ws)
 
         assert multi_theme.final_score > single_theme.final_score
+
+
+# ---------------------------------------------------------------------------
+# Feed health scoring (Pass 4c)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeFeedHealthScore:
+    """compute_feed_health_score returns a weight based on feed reliability."""
+
+    def test_no_data_returns_neutral(self):
+        """Zero success rate (no fetches) → neutral 1.0."""
+        assert compute_feed_health_score(0.0) == pytest.approx(1.0)
+
+    def test_high_success_rate_full_weight(self):
+        """>80% success rate → full weight 1.0."""
+        assert compute_feed_health_score(0.90) == pytest.approx(1.0)
+        assert compute_feed_health_score(0.81) == pytest.approx(1.0)
+        assert compute_feed_health_score(1.0) == pytest.approx(1.0)
+
+    def test_mid_success_rate_reduced_weight(self):
+        """50-80% success rate → 0.8 weight."""
+        assert compute_feed_health_score(0.50) == pytest.approx(0.8)
+        assert compute_feed_health_score(0.65) == pytest.approx(0.8)
+        assert compute_feed_health_score(0.80) == pytest.approx(0.8)
+
+    def test_low_success_rate_low_weight(self):
+        """<50% success rate → 0.5 weight."""
+        assert compute_feed_health_score(0.49) == pytest.approx(0.5)
+        assert compute_feed_health_score(0.0) == pytest.approx(1.0)  # special: no data
+        assert compute_feed_health_score(0.01) == pytest.approx(0.5)
+
+    def test_stale_feed_penalty(self):
+        """Stale feed gets additional multiplicative penalty."""
+        # Non-stale, high success → 1.0
+        assert compute_feed_health_score(0.90, is_stale=False) == pytest.approx(1.0)
+        # Stale, high success → 0.5 (1.0 * 0.5 stale penalty)
+        assert compute_feed_health_score(0.90, is_stale=True) == pytest.approx(0.5)
+        # Stale, mid success → 0.4 (0.8 * 0.5)
+        assert compute_feed_health_score(0.65, is_stale=True) == pytest.approx(0.4)
+        # Stale, low success → 0.25 (0.5 * 0.5)
+        assert compute_feed_health_score(0.30, is_stale=True) == pytest.approx(0.25)
+
+    def test_custom_thresholds(self):
+        """Custom thresholds can be passed."""
+        # With high_threshold=0.5 and mid_threshold=0.3
+        # >50% → 1.0, 30-50% → 0.8, <30% → 0.5
+        assert compute_feed_health_score(
+            0.6, high_threshold=0.5, mid_threshold=0.3
+        ) == pytest.approx(1.0)
+        assert compute_feed_health_score(
+            0.4, high_threshold=0.5, mid_threshold=0.3
+        ) == pytest.approx(0.8)
+        assert compute_feed_health_score(
+            0.2, high_threshold=0.5, mid_threshold=0.3
+        ) == pytest.approx(0.5)
+
+    def test_custom_stale_penalty(self):
+        """Custom stale penalty can be passed."""
+        assert compute_feed_health_score(
+            0.9, is_stale=True, stale_penalty=0.3
+        ) == pytest.approx(0.3)
+        assert compute_feed_health_score(
+            0.9, is_stale=False, stale_penalty=0.3
+        ) == pytest.approx(1.0)
+
+    def test_score_clamped_to_zero_one(self):
+        """Score is always clamped to [0, 1]."""
+        score = compute_feed_health_score(0.01, is_stale=True, stale_penalty=10.0)
+        assert 0.0 <= score <= 1.0
+
+
+class TestFeedHealthInPipelineScoring:
+    """Content from unreliable/stale feeds scores lower in pipeline scoring."""
+
+    def _make_feed(self, db, ws_id, **overrides):
+        """Helper to create a FeedSource with reliability tracking fields."""
+        from app.models.feed import FeedSource
+
+        defaults = {
+            "workspace_id": ws_id,
+            "name": "Test Feed",
+            "url": "https://example.com/feed",
+            "type": "rss",
+            "status": "healthy",
+            "consecutive_fetch_failures": 0,
+            "total_fetch_count": 0,
+        }
+        defaults.update(overrides)
+        feed = FeedSource(**defaults)
+        db.add(feed)
+        db.flush()
+        return feed
+
+    def test_unreliable_feed_content_scores_lower(self, db_session):
+        """Content from a feed with low success rate should score lower."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+
+        # Reliable feed (100% success, not stale)
+        reliable_feed = self._make_feed(
+            db_session,
+            ws.id,
+            name="Reliable Feed",
+            total_fetch_count=10,
+            consecutive_fetch_failures=0,
+        )
+
+        # Unreliable feed (33% success rate, not stale — only 2 consecutive failures,
+        # total < threshold so is_stale=False)
+        unreliable_feed = self._make_feed(
+            db_session,
+            ws.id,
+            name="Unreliable Feed",
+            total_fetch_count=3,
+            consecutive_fetch_failures=2,
+        )
+
+        # Create identical items from each feed
+        reliable_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI breakthrough announced today",
+            feed_source_id=reliable_feed.id,
+        )
+        unreliable_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI breakthrough announced today",
+            feed_source_id=unreliable_feed.id,
+        )
+
+        score_content_items(db_session, [reliable_item, unreliable_item], ws)
+
+        # Reliable feed item should score higher
+        assert reliable_item.final_score is not None
+        assert unreliable_item.final_score is not None
+        assert reliable_item.final_score > unreliable_item.final_score
+
+        # Verify feed_health_weight appears in breakdown
+        unreliable_breakdown = unreliable_item.score_breakdown_json
+        assert "feed_health_weight" in unreliable_breakdown
+        # 33% success rate → low tier → 0.5 weight
+        assert unreliable_breakdown["feed_health_weight"] == pytest.approx(0.5)
+
+    def test_stale_feed_content_scores_lower(self, db_session):
+        """Content from a stale feed should score even lower."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+
+        # Healthy feed (100% success, not stale)
+        healthy_feed = self._make_feed(
+            db_session,
+            ws.id,
+            name="Healthy Feed",
+            total_fetch_count=10,
+            consecutive_fetch_failures=0,
+        )
+
+        # Stale feed (high success rate but 5+ consecutive failures)
+        # 90% success rate (9 successes, 1 stale period), 5 consecutive failures now
+        stale_feed = self._make_feed(
+            db_session,
+            ws.id,
+            name="Stale Feed",
+            total_fetch_count=15,
+            consecutive_fetch_failures=5,
+        )
+
+        healthy_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI advances in robotics",
+            feed_source_id=healthy_feed.id,
+        )
+        stale_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI advances in robotics",
+            feed_source_id=stale_feed.id,
+        )
+
+        score_content_items(db_session, [healthy_item, stale_item], ws)
+
+        assert healthy_item.final_score is not None
+        assert stale_item.final_score is not None
+        assert healthy_item.final_score > stale_item.final_score
+
+        # Stale feed should have aggressive penalty
+        stale_breakdown = stale_item.score_breakdown_json
+        assert "feed_health_weight" in stale_breakdown
+        # High success rate (10/15 ≈ 0.67 → mid tier 0.8) but stale → 0.8 * 0.5 = 0.4
+        assert stale_breakdown["feed_health_weight"] == pytest.approx(0.4)
+
+    def test_no_feed_source_no_penalty(self, db_session):
+        """Items without a feed_source_id should not be penalized."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+
+        # Item with no feed association
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI news",
+            feed_source_id=None,
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        assert item.final_score is not None
+        breakdown = item.score_breakdown_json
+        # No feed_health_weight should appear when no feed
+        assert "feed_health_weight" not in breakdown
+
+    def test_feed_health_in_breakdown_scores(self, db_session):
+        """feed_health appears in the scores section of the breakdown."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+
+        feed = self._make_feed(
+            db_session,
+            ws.id,
+            total_fetch_count=10,
+            consecutive_fetch_failures=3,  # 70% success → mid tier (0.8)
+        )
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI article",
+            feed_source_id=feed.id,
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "feed_health" in breakdown["scores"]
+        assert breakdown["scores"]["feed_health"] == pytest.approx(0.8)
+        assert "feed_health_weight" in breakdown
+        assert breakdown["feed_health_weight"] == pytest.approx(0.8)
+
+    def test_stale_low_success_most_penalized(self, db_session):
+        """Stale + low success rate = most aggressive penalty."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+
+        # Stale + low success (<50%): weight = 0.5 * 0.5 = 0.25
+        bad_feed = self._make_feed(
+            db_session,
+            ws.id,
+            total_fetch_count=10,
+            consecutive_fetch_failures=6,  # 40% success, and >=5 failures → stale
+        )
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI news from bad source",
+            feed_source_id=bad_feed.id,
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert breakdown["feed_health_weight"] == pytest.approx(0.25)

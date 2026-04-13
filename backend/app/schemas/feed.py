@@ -35,6 +35,11 @@ class FeedOut(BaseModel):
     tags: list[str] = Field(default_factory=list)
     created_at: Optional[str] = Field(default=None, alias="createdAt")
     updated_at: Optional[str] = Field(default=None, alias="updatedAt")
+    # Feed reliability / quality fields
+    is_stale: bool = Field(default=False, alias="isStale")
+    fetch_success_rate: float = Field(default=0.0, alias="fetchSuccessRate")
+    consecutive_fetch_failures: int = Field(default=0, alias="consecutiveFetchFailures")
+    total_fetch_count: int = Field(default=0, alias="totalFetchCount")
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -57,4 +62,9 @@ def _feed_to_out(feed) -> dict:
         "tags": feed.tags or [],
         "createdAt": feed.created_at.isoformat() if feed.created_at else None,
         "updatedAt": feed.updated_at.isoformat() if feed.updated_at else None,
+        # Feed reliability / quality fields
+        "isStale": feed.is_stale,
+        "fetchSuccessRate": round(feed.fetch_success_rate, 4),
+        "consecutiveFetchFailures": feed.consecutive_fetch_failures,
+        "totalFetchCount": feed.total_fetch_count,
     }

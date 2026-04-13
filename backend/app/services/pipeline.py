@@ -137,11 +137,16 @@ def execute_workspace_run(
         fetch_event = _start_event(db, run.id, "fetch_feeds", "Fetching feeds...")
         for feed in feeds:
             result = fetch_feed(feed)
+            # Update fetch reliability counters
+            feed.total_fetch_count = (feed.total_fetch_count or 0) + 1
             if not result.success:
                 # Record failure state on the feed — do NOT update last_fetched_at
                 feed.status = "error"
                 feed.last_error = result.error
                 feed.last_error_at = datetime.now(timezone.utc)
+                feed.consecutive_fetch_failures = (
+                    feed.consecutive_fetch_failures or 0
+                ) + 1
                 logger.warning("Skipping feed %s: %s", feed.name, result.error)
                 feeds_failed += 1
                 feed_details.append(
@@ -161,6 +166,8 @@ def execute_workspace_run(
             feed.last_error = None
             feed.last_error_at = None
             feed.last_fetched_at = datetime.now(timezone.utc)
+            feed.last_successful_fetch_at = datetime.now(timezone.utc)
+            feed.consecutive_fetch_failures = 0
             entries_fetched += len(result.entries)
             content_items, skipped = normalize_content(
                 workspace.id, feed, result.entries, db=db

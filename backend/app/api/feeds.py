@@ -115,15 +115,20 @@ def test_feed(feed_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Feed not found")
 
     result = validate_feed_source(feed)
+    # Update fetch reliability counters
+    feed.total_fetch_count = (feed.total_fetch_count or 0) + 1
     if result.success:
         feed.status = "healthy"
         feed.last_error = None
         feed.last_error_at = None
         feed.last_fetched_at = datetime.now(timezone.utc)
+        feed.last_successful_fetch_at = datetime.now(timezone.utc)
+        feed.consecutive_fetch_failures = 0
     else:
         feed.status = "error"
         feed.last_error = result.error
         feed.last_error_at = datetime.now(timezone.utc)
+        feed.consecutive_fetch_failures = (feed.consecutive_fetch_failures or 0) + 1
     db.commit()
     db.refresh(feed)
 
