@@ -1,50 +1,18 @@
 """ProcessingRun API endpoints."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.report import Report, ReportMessage
+from app.models.run import ProcessingRun
 from app.schemas.run import _run_summary_to_out, _run_event_to_step
 from app.services import run as run_service
 from app.services import workspace as ws_service
-from app.services.pipeline import execute_workspace_run
 
 router = APIRouter(prefix="/api", tags=["runs"])
-
-
-def _build_pipeline_error(
-    run,
-    *,
-    stage: str | None = None,
-    details: str | None = None,
-) -> dict:
-    """Build a standardized pipeline error response body.
-
-    Shape::
-
-        {
-            "error": {
-                "code": "PIPELINE_FAILURE",
-                "message": "Pipeline execution failed",
-                "details": "...",
-                "runId": "...",
-                "stage": "..."
-            }
-        }
-    """
-    return {
-        "error": {
-            "code": "PIPELINE_FAILURE",
-            "message": "Pipeline execution failed",
-            "details": details or run.error_summary,
-            "runId": run.id,
-            "stage": stage,
-        }
-    }
 
 
 # ── Workspace-scoped run endpoints ────────────────────────────────────
@@ -121,39 +89,35 @@ def get_run_detail(run_id: str, db: Session = Depends(get_db)):
 # ── Run-now trigger ────────────────────────────────────────────────────
 
 
-@router.post("/workspaces/{workspace_id}/run-now", status_code=201)
+@router.post("/workspaces/{workspace_id}/run-now", status_code=202)
 def run_now(workspace_id: str, db: Session = Depends(get_db)):
     """Trigger an immediate processing run for a workspace.
 
-    Runs the full pipeline synchronously: fetch feeds → normalize content →
-    cluster → score content → select shortlist → generate report.  In production
-    this would be dispatched to a Celery task and the endpoint would return the
-    run ID immediately.
+    Creates a ProcessingRun with status "queued" and dispatches the
+    pipeline to a Celery worker.  Returns immediately with 202 Accepted.
     """
-    from app.services import run as run_service
-
     ws = ws_service.get_workspace(db, workspace_id)
     if ws is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    try:
-        run, _, _ = execute_workspace_run(db, ws, run_type="manual")
-    except Exception:
-        # The pipeline marks the run as failed and persists it before re-raising.
-        # Retrieve the persisted failed run and return a structured error response
-        # that clearly indicates failure (HTTP 500) rather than a success result.
-        failed_runs = run_service.list_runs(db, workspace_id, run_type="manual")
-        if failed_runs:
-            run = failed_runs[0]
-            # Determine which pipeline stage failed from the run events.
-            events = run_service.get_run_events(db, run.id)
-            failed_event = next((e for e in events if e.status == "error"), None)
-            stage = failed_event.step_name if failed_event else None
-            details = failed_event.message if failed_event else run.error_summary
-            return JSONResponse(
-                status_code=500,
-                content=_build_pipeline_error(run, stage=stage, details=details),
-            )
-        raise
+    now = datetime.now(timezone.utc)
+    run = ProcessingRun(
+        workspace_id=ws.id,
+        run_type="manual",
+        status="queued",
+        started_at=now,
+        affected_counts_json={"feeds": 0, "articles": 0, "reports": 0},
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
 
-    return _run_summary_to_out(run)
+    from app.tasks.pipeline import run_workspace_pipeline
+
+    run_workspace_pipeline.delay(run.id, ws.id)
+
+    return {
+        "runId": run.id,
+        "status": "queued",
+        "message": "Pipeline execution queued",
+    }

@@ -84,8 +84,8 @@ class TestSchedulerSelection:
 
         calls: list[tuple[str, str]] = []
 
-        def fake_delay(workspace_id: str, run_type: str):
-            calls.append((workspace_id, run_type))
+        def fake_delay(run_id: str, workspace_id: str):
+            calls.append((run_id, workspace_id))
 
         monkeypatch.setattr(
             "app.tasks.pipeline.run_workspace_pipeline.delay",
@@ -98,4 +98,6 @@ class TestSchedulerSelection:
 
         result = run_scheduled_workspaces()
         assert result["enqueued"] == 1
-        assert calls == [(enabled_ws, "scheduled")]
+        assert len(calls) == 1
+        assert calls[0][1] == enabled_ws  # workspace_id
+        assert len(calls[0][0]) > 0  # run_id is a non-empty string

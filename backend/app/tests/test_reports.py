@@ -631,10 +631,11 @@ class TestSourceMetadata:
     def test_run_now_message_sources_are_content_item_ids(self, client):
         ws_id = _create_workspace(client)
 
-        # Trigger run-now (synchronous — completes before returning)
+        # Trigger run-now (async — returns 202 with queued status;
+        # sync_celery_tasks fixture executes pipeline synchronously)
         run_resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert run_resp.status_code == 201
-        run_id = run_resp.json()["id"]
+        assert run_resp.status_code == 202
+        run_id = run_resp.json()["runId"]
 
         # Find the generated report via run detail links
         detail_resp = client.get(f"/api/runs/{run_id}")

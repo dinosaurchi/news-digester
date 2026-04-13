@@ -248,14 +248,29 @@ class TestListRuns:
 class TestRunNow:
     """POST /api/workspaces/{workspace_id}/run-now"""
 
-    def test_run_now_creates_run(self, client):
-        """Triggering run-now creates a ProcessingRun record."""
+    def test_run_now_returns_202_with_queued_status(self, client):
+        """Triggering run-now returns 202 with runId and queued status."""
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
+        assert resp.status_code == 202
         data = resp.json()
-        assert "id" in data
+        assert "runId" in data
+        assert data["status"] == "queued"
+        assert data["message"] == "Pipeline execution queued"
+
+    def test_run_now_creates_run(self, client):
+        """Triggering run-now creates a ProcessingRun record (sync via fixture)."""
+        ws_id = _create_workspace(client)
+
+        resp = client.post(f"/api/workspaces/{ws_id}/run-now")
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
+
+        # Verify the run was created and completed (sync fixture executes it)
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        assert detail_resp.status_code == 200
+        data = detail_resp.json()
         assert data["workspaceId"] == ws_id
         assert data["type"] == "manual"
         assert data["status"] == "success"
@@ -270,12 +285,12 @@ class TestRunNow:
         assert resp.status_code == 404
 
     def test_run_now_creates_events(self, client):
-        """Run-now creates 6 pipeline step events."""
+        """Run-now creates 6 pipeline step events (sync via fixture)."""
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         # Verify events were created by fetching run detail
         detail_resp = client.get(f"/api/runs/{run_id}")
@@ -299,8 +314,11 @@ class TestRunNow:
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        data = resp.json()
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
+
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        data = detail_resp.json()
 
         assert data["status"] == "success"
         assert data["affectedCounts"]["feeds"] == 0
@@ -312,8 +330,8 @@ class TestRunNow:
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         assert detail_resp.status_code == 200
@@ -326,7 +344,7 @@ class TestRunNow:
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        run_id = resp.json()["id"]
+        run_id = resp.json()["runId"]
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         steps = detail_resp.json()["steps"]
@@ -342,16 +360,16 @@ class TestRunNow:
 
         resp1 = client.post(f"/api/workspaces/{ws_id}/run-now")
         resp2 = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp1.status_code == 201
-        assert resp2.status_code == 201
-        assert resp1.json()["id"] != resp2.json()["id"]
+        assert resp1.status_code == 202
+        assert resp2.status_code == 202
+        assert resp1.json()["runId"] != resp2.json()["runId"]
 
     def test_run_now_appears_in_runs_list(self, client):
         """A run-now run appears in the workspace runs list."""
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        run_id = resp.json()["id"]
+        run_id = resp.json()["runId"]
 
         list_resp = client.get(f"/api/workspaces/{ws_id}/runs")
         assert list_resp.status_code == 200
@@ -363,7 +381,7 @@ class TestRunNow:
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        run_id = resp.json()["id"]
+        run_id = resp.json()["runId"]
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         snippets = detail_resp.json()["logSnippets"]
@@ -400,8 +418,8 @@ class TestRunNow:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         assert detail_resp.status_code == 200
@@ -470,7 +488,7 @@ class TestRunNow:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
+        assert resp.status_code == 202
 
         # Query ContentItems directly from the DB
         db = TestingSessionLocal()
@@ -509,8 +527,8 @@ class TestRunNow:
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         # Query events directly from the DB
         db = TestingSessionLocal()
@@ -595,8 +613,8 @@ class TestRunNow:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         db = TestingSessionLocal()
         try:
@@ -735,7 +753,7 @@ class TestRunNowScoring:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
+        assert resp.status_code == 202
 
         db = TestingSessionLocal()
         try:
@@ -827,7 +845,7 @@ class TestRunNowScoring:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
+        assert resp.status_code == 202
 
         db = TestingSessionLocal()
         try:
@@ -879,7 +897,7 @@ class TestRunNowScoring:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
+        assert resp.status_code == 202
 
         # Get the content item ID from the DB
         db = TestingSessionLocal()
@@ -973,7 +991,7 @@ class TestRunNowScoring:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
+        assert resp.status_code == 202
 
         db = TestingSessionLocal()
         try:
@@ -1011,8 +1029,8 @@ class TestRunNowShortlist:
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         db = TestingSessionLocal()
         try:
@@ -1079,8 +1097,8 @@ class TestRunNowShortlist:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         db = TestingSessionLocal()
         try:
@@ -1157,8 +1175,8 @@ class TestRunNowShortlist:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         db = TestingSessionLocal()
         try:
@@ -1180,7 +1198,7 @@ class TestRunNowShortlist:
             db.close()
 
     def test_run_now_llm_failure_causes_run_failure(self, client, monkeypatch):
-        """When LLM fails, run fails with explicit error."""
+        """When LLM fails, run is marked failed (endpoint returns 202, check detail)."""
         from app.tests.conftest import TestingSessionLocal
         from app.models.run import ProcessingRunEvent
         from app.services.opencode_client import OpenCodeUnavailableError
@@ -1223,16 +1241,16 @@ class TestRunNowShortlist:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        # Pipeline failure must return HTTP 500 with structured error, not 201
-        assert resp.status_code == 500
-        data = resp.json()
-        assert data["error"]["code"] == "PIPELINE_FAILURE"
-        assert data["error"]["message"] == "Pipeline execution failed"
-        assert "adapter unreachable" in (data["error"].get("details") or "")
-        assert data["error"]["runId"] is not None
-        assert data["error"]["stage"] == "select_shortlist"
+        # Endpoint always returns 202 with queued status (pipeline runs async via fixture)
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
-        run_id = data["error"]["runId"]
+        # Verify the run is failed by checking the run detail
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        assert detail_resp.status_code == 200
+        detail = detail_resp.json()
+        assert detail["status"] == "failed"
+        assert "adapter unreachable" in (detail["error"] or "")
 
         db = TestingSessionLocal()
         try:
@@ -1249,7 +1267,7 @@ class TestRunNowShortlist:
             db.close()
 
     def test_run_now_llm_report_failure_causes_run_failure(self, client, monkeypatch):
-        """When LLM fails during report generation, the run fails with explicit error."""
+        """When LLM fails during report generation, the run is marked failed."""
         from app.tests.conftest import TestingSessionLocal
         from app.models.run import ProcessingRunEvent
         from app.services.opencode_client import OpenCodeUnavailableError
@@ -1303,15 +1321,13 @@ class TestRunNowShortlist:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 500
-        data = resp.json()
-        assert data["error"]["code"] == "PIPELINE_FAILURE"
-        assert data["error"]["message"] == "Pipeline execution failed"
-        assert "report adapter down" in (data["error"].get("details") or "")
-        assert data["error"]["runId"] is not None
-        assert data["error"]["stage"] == "generate_report"
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
-        run_id = data["error"]["runId"]
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        detail = detail_resp.json()
+        assert detail["status"] == "failed"
+        assert "report adapter down" in (detail["error"] or "")
 
         db = TestingSessionLocal()
         try:
@@ -1388,13 +1404,14 @@ class TestUnexpectedExceptionPropagation:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 500
-        data = resp.json()
-        assert data["error"]["code"] == "PIPELINE_FAILURE"
-        assert data["error"]["stage"] == "score_content"
-        assert "unexpected scoring error" in (data["error"].get("details") or "")
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
-        run_id = data["error"]["runId"]
+        # Verify run is failed via detail endpoint
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        detail = detail_resp.json()
+        assert detail["status"] == "failed"
+        assert "unexpected scoring error" in (detail["error"] or "")
 
         db = TestingSessionLocal()
         try:
@@ -1436,13 +1453,13 @@ class TestUnexpectedExceptionPropagation:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 500
-        data = resp.json()
-        assert data["error"]["code"] == "PIPELINE_FAILURE"
-        assert data["error"]["stage"] == "select_shortlist"
-        assert "unexpected shortlist error" in (data["error"].get("details") or "")
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
-        run_id = data["error"]["runId"]
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        detail = detail_resp.json()
+        assert detail["status"] == "failed"
+        assert "unexpected shortlist error" in (detail["error"] or "")
 
         db = TestingSessionLocal()
         try:
@@ -1495,13 +1512,13 @@ class TestUnexpectedExceptionPropagation:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 500
-        data = resp.json()
-        assert data["error"]["code"] == "PIPELINE_FAILURE"
-        assert data["error"]["stage"] == "generate_report"
-        assert "unexpected report error" in (data["error"].get("details") or "")
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
-        run_id = data["error"]["runId"]
+        detail_resp = client.get(f"/api/runs/{run_id}")
+        detail = detail_resp.json()
+        assert detail["status"] == "failed"
+        assert "unexpected report error" in (detail["error"] or "")
 
         db = TestingSessionLocal()
         try:
@@ -1572,8 +1589,8 @@ class TestRunNowReportGeneration:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         # Get the report from the run detail links
         detail_resp = client.get(f"/api/runs/{run_id}")
@@ -1623,8 +1640,8 @@ class TestRunNowReportGeneration:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         report_ids = detail_resp.json()["links"]["reports"]
@@ -1684,8 +1701,8 @@ class TestRunNowReportGeneration:
         )
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         report_ids = detail_resp.json()["links"]["reports"]
@@ -1704,8 +1721,8 @@ class TestRunNowReportGeneration:
         ws_id = _create_workspace(client)
 
         resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert resp.status_code == 201
-        run_id = resp.json()["id"]
+        assert resp.status_code == 202
+        run_id = resp.json()["runId"]
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         report_ids = detail_resp.json()["links"]["reports"]
@@ -1781,8 +1798,8 @@ class TestRunNowReportGeneration:
 
         # Create initial report via run-now
         run_resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert run_resp.status_code == 201
-        run_id = run_resp.json()["id"]
+        assert run_resp.status_code == 202
+        run_id = run_resp.json()["runId"]
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         report_ids = detail_resp.json()["links"]["reports"]

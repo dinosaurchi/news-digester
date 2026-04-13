@@ -206,6 +206,28 @@ def client(db_session):
     app.dependency_overrides.clear()
 
 
+@pytest.fixture(autouse=True)
+def sync_celery_tasks(monkeypatch):
+    """Make Celery pipeline tasks execute synchronously in tests.
+
+    Patches ``SessionLocal`` inside the tasks module so the task function
+    uses the in-memory test DB, and replaces ``.delay()`` with a wrapper
+    that calls the task function directly.  Exceptions from the task are
+    swallowed to simulate true async dispatch (the caller never sees them).
+    """
+    from app.tasks.pipeline import run_workspace_pipeline as _task
+
+    monkeypatch.setattr("app.tasks.pipeline.SessionLocal", TestingSessionLocal)
+
+    def _sync_delay(run_id: str, workspace_id: str):
+        try:
+            _task(run_id, workspace_id)
+        except Exception:
+            pass  # simulate async: task exceptions don't propagate to caller
+
+    monkeypatch.setattr(_task, "delay", _sync_delay)
+
+
 @pytest.fixture
 def auth_client(client):
     """A test client that has an active session cookie."""

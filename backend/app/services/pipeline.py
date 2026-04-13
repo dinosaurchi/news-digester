@@ -88,19 +88,29 @@ def execute_workspace_run(
     workspace: Workspace,
     *,
     run_type: str = "manual",
+    run: ProcessingRun | None = None,
 ) -> tuple[ProcessingRun, list[ContentItem], Report]:
-    """Execute the current Pass 7 pipeline synchronously for one workspace."""
+    """Execute the current Pass 7 pipeline synchronously for one workspace.
+
+    If *run* is provided (e.g. a pre-created "queued" run), it is reused
+    and its status is set to "running".  Otherwise a new run is created.
+    """
     now = datetime.now(timezone.utc)
-    run = ProcessingRun(
-        workspace_id=workspace.id,
-        run_type=run_type,
-        status="running",
-        started_at=now,
-        affected_counts_json={"feeds": 0, "articles": 0, "reports": 0},
-    )
-    db.add(run)
-    db.commit()
-    db.refresh(run)
+    if run is None:
+        run = ProcessingRun(
+            workspace_id=workspace.id,
+            run_type=run_type,
+            status="running",
+            started_at=now,
+            affected_counts_json={"feeds": 0, "articles": 0, "reports": 0},
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+    else:
+        run.status = "running"
+        run.started_at = now
+        db.commit()
 
     feeds = (
         db.query(FeedSource)

@@ -45,14 +45,18 @@ class TestSeededEndToEndPipeline:
         )
 
         feed_ids = [
-            _create_feed(client, ws_id, name="Tech News Feed", url="https://tech.example.com/rss"),
+            _create_feed(
+                client, ws_id, name="Tech News Feed", url="https://tech.example.com/rss"
+            ),
             _create_feed(
                 client,
                 ws_id,
                 name="Industry Feed",
                 url="https://industry.example.com/rss",
             ),
-            _create_feed(client, ws_id, name="Cloud Feed", url="https://cloud.example.com/rss"),
+            _create_feed(
+                client, ws_id, name="Cloud Feed", url="https://cloud.example.com/rss"
+            ),
         ]
 
         now = datetime.now(timezone.utc)
@@ -121,13 +125,13 @@ class TestSeededEndToEndPipeline:
         )
 
         run_resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert run_resp.status_code == 201
-        run_id = run_resp.json()["id"]
-        assert run_resp.json()["status"] == "success"
+        assert run_resp.status_code == 202
+        run_id = run_resp.json()["runId"]
 
         detail_resp = client.get(f"/api/runs/{run_id}")
         assert detail_resp.status_code == 200
         detail = detail_resp.json()
+        assert detail["status"] == "success"
         fetch_step = _fetch_step(detail)
         assert fetch_step["metadata"]["feedsAttempted"] == 3
         assert fetch_step["metadata"]["feedsSucceeded"] == 3
@@ -185,8 +189,12 @@ class TestSeededEndToEndPipeline:
         _create_workspace_profile(client, ws_id, priority_themes=["AI", "automation"])
         _create_workspace_settings(client, ws_id)
 
-        _create_feed(client, ws_id, name="Source X", url="https://source-x.example.com/rss")
-        _create_feed(client, ws_id, name="Source Y", url="https://source-y.example.com/rss")
+        _create_feed(
+            client, ws_id, name="Source X", url="https://source-x.example.com/rss"
+        )
+        _create_feed(
+            client, ws_id, name="Source Y", url="https://source-y.example.com/rss"
+        )
 
         now = datetime.now(timezone.utc)
         entries_by_url = {
@@ -243,12 +251,12 @@ class TestSeededEndToEndPipeline:
         )
 
         first_run_resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert first_run_resp.status_code == 201
-        first_run_id = first_run_resp.json()["id"]
+        assert first_run_resp.status_code == 202
+        first_run_id = first_run_resp.json()["runId"]
 
         second_run_resp = client.post(f"/api/workspaces/{ws_id}/run-now")
-        assert second_run_resp.status_code == 201
-        second_run_id = second_run_resp.json()["id"]
+        assert second_run_resp.status_code == 202
+        second_run_id = second_run_resp.json()["runId"]
 
         second_detail_resp = client.get(f"/api/runs/{second_run_id}")
         assert second_detail_resp.status_code == 200
@@ -280,7 +288,11 @@ class TestSeededEndToEndPipeline:
             content_count = (
                 db.query(ContentItem).filter(ContentItem.workspace_id == ws_id).count()
             )
-            run_count = db.query(ProcessingRun).filter(ProcessingRun.workspace_id == ws_id).count()
+            run_count = (
+                db.query(ProcessingRun)
+                .filter(ProcessingRun.workspace_id == ws_id)
+                .count()
+            )
             assert content_count == 4
             assert run_count == 2
         finally:
