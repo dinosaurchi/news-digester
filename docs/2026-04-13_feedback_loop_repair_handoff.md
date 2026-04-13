@@ -79,6 +79,23 @@ When a user clicks the same vote to toggle it off, the endpoint still creates a 
 
 **Impact:** The feedback summary dashboard shows incorrect sentiment labels. A suppression preference (negative weight) appears as "neutral" and a neutral preference (weight 1.0) appears as "positive".
 
+### Issue 7 — BM25 scoring drops multi-word priority themes
+
+**Location:** `scoring.py:261-300` (`compute_bm25_score()`)
+
+`compute_document_frequencies()` computes IDF values for full query strings using substring checks, but `compute_bm25_score()` tokenises the document text into single-word tokens and then looks up each **entire query term** as a single key in the token-frequency map.
+
+For a priority theme like `"edge computing"`:
+- IDF is computed for the full string `"edge computing"`
+- TF keys are `"edge"` and `"computing"`
+- The lookup `if "edge computing" in tf` is always false
+
+This means BM25 contributes `0.0` for multi-word priority themes even when all component words are present in the content.
+
+**Evidence:** Direct reproduction against the current helper returns `0.0` for text containing both words of `"edge computing"` and `"cloud security"` when those themes are passed as query terms in a multi-document batch.
+
+**Impact:** Workspaces that rely on realistic multi-word priority themes lose the BM25 component entirely or partially, wasting a configured relevance weight and depressing final scores for otherwise relevant content.
+
 ---
 
 ## Non-negotiable requirements
@@ -86,6 +103,7 @@ When a user clicks the same vote to toggle it off, the endpoint still creates a 
 - Feedback events of type `topic_preference` and `source_preference` must create/update actual preference records that scoring reads
 - Thumbs up/down must have a measurable downstream effect (at minimum, tracked and surfaced; ideally influencing future scoring)
 - Topic matching must be flexible enough to produce non-zero matches on realistic data
+- BM25 scoring must handle multi-word priority themes correctly
 - `build_score_breakdown()` must expose feedback adjustment data to the API
 - Vote toggle must not create misleading feedback events
 - Sentiment labels must be correct
@@ -101,6 +119,7 @@ When a user clicks the same vote to toggle it off, the endpoint still creates a 
 **In scope:**
 - Backend feedback event → preference conversion
 - Backend topic matching improvement
+- Backend BM25 multi-word theme matching repair
 - Backend score breakdown API enrichment
 - Backend vote event semantics
 - Backend sentiment label fix
@@ -308,6 +327,72 @@ With the new matching logic. Keep it deterministic and efficient — no ML or em
 - [ ] All existing scoring tests still pass
 - [ ] `make ci` passes
 
+### 2.4 Repair BM25 matching for multi-word priority themes
+
+The current BM25 helper is inconsistent with its own query term and IDF handling:
+- `compute_document_frequencies()` treats each query term as a full phrase for IDF
+- `compute_bm25_score()` only matches exact single-token keys in `tf`
+
+This must be fixed so multi-word priority themes contribute to BM25 instead of always returning zero.
+
+Recommendation:
+- Normalise query terms into word tokens
+- Score each query term by aggregating the matched token frequencies for its component words
+- Preserve the existing score cap and normalisation behaviour so this remains a lightweight BM25-style signal, not a scoring rewrite
+
+Example expected behaviour:
+- Query term: `"edge computing"`
+- Text: `"Enterprise edge platforms are reshaping computing infrastructure"`
+- Result: BM25 contribution is non-zero because both `"edge"` and `"computing"` appear
+
+Guardrails:
+- Single-word query terms must keep their current behaviour
+- Multi-word terms should not require the exact phrase order
+- Matching should be case-insensitive
+- Punctuation boundaries should not prevent obvious matches
+
+### 2.5 Update `compute_bm25_score()` and related regression coverage
+
+Files to modify:
+- `backend/app/services/scoring.py` — `compute_bm25_score()` and any helper logic needed for consistent token matching
+- `backend/app/tests/test_scoring.py` — add multi-word BM25 regressions
+
+Required unit tests:
+
+1. **`test_bm25_multiword_term_matches_when_component_words_present`**
+   - Text contains both words from `"edge computing"`
+   - Assert: BM25 score is greater than 0
+
+2. **`test_bm25_multiword_term_no_match_when_only_partial_words_present`**
+   - Text contains `"edge"` but not `"computing"`
+   - Assert: BM25 contribution is 0
+
+3. **`test_bm25_mixed_single_and_multiword_terms`**
+   - Query terms include `"ai"` and `"cloud security"`
+   - Assert: both term types can contribute in the same score
+
+4. **`test_bm25_multiword_matching_case_insensitive`**
+   - Query term `"edge computing"`, text `"EDGE COMPUTING trends"`
+   - Assert: score is greater than 0
+
+5. **`test_bm25_multiword_regression_with_batch_idf`**
+   - Compute IDF across multiple documents for `"edge computing"`
+   - Assert: a matching document gets non-zero BM25 with the computed IDF map
+
+6. **`test_score_content_items_multiword_priority_themes_contribute_bm25`**
+   - Workspace uses realistic multi-word priority themes
+   - Score at least one matching item
+   - Assert: `score_breakdown_json["scores"]["bm25"] > 0`
+
+Add acceptance criteria for this BM25 repair:
+
+- [ ] Multi-word priority themes contribute non-zero BM25 when their component words appear in content
+- [ ] Partial-word or partial-theme matches do not incorrectly inflate BM25
+- [ ] Existing single-word BM25 behaviour remains covered
+- [ ] `score_content_items()` shows non-zero BM25 for realistic multi-word workspace themes
+- [ ] All existing scoring tests still pass
+- [ ] `make ci` passes
+
 ---
 
 # Pass 3 — Score breakdown API enrichment & sentiment label fix
@@ -425,7 +510,7 @@ Recommendation: **Option A** — a toggle-off is the absence of feedback, not ne
 
 ## Goal
 
-Deploy the fixes from Passes 1–3 with `make up` and validate correctness via API-level integration tests.
+Deploy the fixes from Passes 1–3, including the BM25 repair in Pass 2, with `make up` and validate correctness via API-level integration tests.
 
 ## Prerequisite
 
@@ -462,16 +547,23 @@ Create `tests/integration/test_feedback_api.py` (or shell script) that runs agai
    - GET content items
    - Assert: items from the preferred source have `feedbackAdjustment > 0` in score breakdown
 
-3. **Score breakdown API enrichment**
+3. **Multi-word BM25 scoring verification**
+   - Create workspace with multi-word priority themes such as `"edge computing"` and `"cloud security"`
+   - Seed or ingest content where component words appear in relevant items
+   - Trigger scoring
+   - GET content items or content detail
+   - Assert: relevant items show `scoreBreakdown.relevance > 0` and raw breakdown contains `bm25 > 0`
+
+4. **Score breakdown API enrichment**
    - GET `/api/content/{id}` for an item that was scored with feedback
    - Assert: `scoreBreakdown` contains `feedbackAdjustment` and `feedback` keys
 
-4. **Feedback summary sentiment correctness**
+5. **Feedback summary sentiment correctness**
    - PUT topic preferences with mixed weights (positive, negative, zero)
    - GET `/feedback/summary`
    - Assert: sentiments correctly reflect weights
 
-5. **Vote toggle correctness**
+6. **Vote toggle correctness**
    - Create report, get message ID
    - POST thumb up
    - Assert: feedback event count = 1
@@ -479,7 +571,7 @@ Create `tests/integration/test_feedback_api.py` (or shell script) that runs agai
    - Assert: feedback event count still = 1 (no new event)
    - Assert: message feedback = null
 
-6. **Feedback events list enrichment**
+7. **Feedback events list enrichment**
    - Create several feedback events with thread/message references
    - GET `/feedback`
    - Assert: events include `reportTitle` and `messageExcerpt` where applicable
@@ -495,9 +587,10 @@ Run the test script against the live stack and capture results.
 ## Acceptance criteria
 
 - [ ] `make up` succeeds with the updated code
-- [ ] All 6 API integration tests pass against the deployed stack
+- [ ] All 7 API integration tests pass against the deployed stack
 - [ ] No regressions in existing API behaviour
 - [ ] Feedback event → preference → scoring pipeline works end-to-end
+- [ ] Multi-word priority themes produce non-zero BM25 in deployed scoring flows
 
 ---
 
@@ -541,13 +634,18 @@ Create `e2e/feedback.spec.ts` following the patterns in the existing `e2e/full-u
    - Navigate to feedback page
    - Assert: thumbs up count increased by 1
 
-5. **Score breakdown shows feedback data (content detail)**
+5. **Content detail shows non-zero scoring for multi-word themed content**
+   - Navigate to content page for a workspace with multi-word priority themes
+   - Click a relevant content item
+   - Assert: score breakdown section is visible and the item shows a materially non-zero relevance/final score
+
+6. **Score breakdown shows feedback data (content detail)**
    - Navigate to content page for a workspace with preferences
    - Click on a content item
    - Assert: score breakdown section visible
    - If feedback adjustment exists, assert it is displayed
 
-6. **Feedback page shows correct sentiment labels**
+7. **Feedback page shows correct sentiment labels**
    - Navigate to feedback page for a workspace with topic/source preferences
    - Assert: positive-weight preferences show "positive" label
    - Assert: negative-weight preferences show "negative" label (not "neutral")
@@ -568,7 +666,7 @@ The login helper and workspace helper functions exist in `e2e/full-ui.spec.ts` �
 
 ## Acceptance criteria
 
-- [ ] All 6 Playwright E2E tests pass against the deployed stack
+- [ ] All 7 Playwright E2E tests pass against the deployed stack
 - [ ] Tests run via `npx playwright test e2e/feedback.spec.ts`
 - [ ] No regressions in existing E2E tests (`npx playwright test e2e/full-ui.spec.ts`)
 - [ ] Feedback UI correctly reflects the backend fixes from Passes 1–3
@@ -609,6 +707,7 @@ make backend-test
 
 - Create a fresh workspace
 - Add feeds and trigger a run
+- Verify that content matching multi-word priority themes receives non-zero BM25 in stored score breakdowns
 - Submit topic/source preference feedback via the feedback page
 - Trigger another run
 - Verify scored content items reflect the preference (check score breakdown in content detail)
