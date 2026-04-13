@@ -35,6 +35,9 @@ app = FastAPI(
 
 
 # ── Startup: run migrations and seed ─────────────────────────────────
+# Fail-fast philosophy: every critical initialization step (config validation,
+# DB migration, seed/bootstrap) aborts the process via SystemExit on failure.
+# This prevents the app from serving traffic in a partially-initialized state.
 @app.on_event("startup")
 def startup():
     # Skip auto-migration in test environment

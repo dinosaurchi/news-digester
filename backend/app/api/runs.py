@@ -93,8 +93,10 @@ def get_run_detail(run_id: str, db: Session = Depends(get_db)):
 def run_now(workspace_id: str, db: Session = Depends(get_db)):
     """Trigger an immediate processing run for a workspace.
 
-    Creates a ProcessingRun with status "queued" and dispatches the
-    pipeline to a Celery worker.  Returns immediately with 202 Accepted.
+    This endpoint is **asynchronous**: it creates a ProcessingRun record,
+    dispatches the pipeline to a Celery worker, and returns 202 immediately.
+    The caller should poll GET /api/runs/{runId} to track status progression
+    (queued → running → succeeded/failed).
     """
     ws = ws_service.get_workspace(db, workspace_id)
     if ws is None:

@@ -1,4 +1,10 @@
-"""Session and password-authentication service."""
+"""Session and password-authentication service.
+
+Sessions are stored in **Redis** (not in the database) via the redis_session
+helper module.  Each session key has a configurable TTL (default 24 h).
+If Redis is unavailable, session creation and validation will fail — this is
+intentional to avoid silent fallback to stateless auth with stale credentials.
+"""
 
 import base64
 import hashlib
