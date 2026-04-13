@@ -407,10 +407,39 @@ class OpenCodeClient:
         metadata: dict[str, Any],
     ) -> str:
         return (
-            "You are refining an SME news digest shortlist.\n"
-            "Return ONLY valid JSON with shape:\n"
-            '{"selected_items":[<items copied from input>],"rationale":"<short rationale>"}\n'
-            "Keep only items that are highly relevant to the workspace context.\n\n"
+            "You are an expert news editor refining an SME intelligence digest shortlist.\n"
+            "Your task is to RERANK and FILTER a candidate article set to produce a\n"
+            "high-precision shortlist.\n\n"
+            "## Reranking criteria (evaluate each candidate on all four dimensions)\n\n"
+            "1. **Relevance** — How directly does the article address the workspace's\n"
+            "   priority themes, industry, or business context? Prefer actionable\n"
+            "   intelligence over generic news.\n"
+            "2. **Recency** — More recent articles are preferred. Older articles are\n"
+            "   only justified if they provide unique, high-value insight.\n"
+            "3. **Diversity** — Avoid redundancy. If multiple articles cover the same\n"
+            "   story or angle, keep the most comprehensive one and drop duplicates.\n"
+            "   Aim for a mix of topics when possible.\n"
+            "4. **Source quality** — Prefer reputable, primary sources. Industry\n"
+            "   publications and official announcements outrank aggregators or\n"
+            "   low-quality blogs.\n\n"
+            "## Reasoning\n"
+            "For each candidate, briefly reason about whether it should be included\n"
+            "or excluded based on the criteria above.\n\n"
+            "## Output format\n"
+            "Return ONLY valid JSON with this exact shape:\n"
+            "{\n"
+            '  "selected_items": [\n'
+            "    {\n"
+            '      "id": "<item id>",\n'
+            '      "title": "<item title>",\n'
+            '      "reason": "<one-sentence reason for inclusion>"\n'
+            "    }\n"
+            "  ],\n"
+            '  "rationale": "<overall rationale for the final selection>"\n'
+            "}\n\n"
+            "IMPORTANT: Only include items from the INPUT_JSON. Do not invent IDs.\n"
+            "Prefer quality over quantity — a smaller, highly relevant shortlist is\n"
+            "better than a bloated one.\n\n"
             f"INPUT_JSON:\n{json.dumps(input_data, ensure_ascii=False, indent=2)}\n\n"
             f"METADATA_JSON:\n{json.dumps(metadata, ensure_ascii=False, indent=2)}"
         )

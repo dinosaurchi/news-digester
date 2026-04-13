@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem
-from app.models.run import ProcessingRun
+from app.models.run import ProcessingRun, ProcessingRunEvent
 from app.models.workspace import Workspace
 from app.services.opencode_client import OpenCodeClient
 
@@ -100,9 +101,10 @@ def select_shortlist(
     capped = deduped[:max_articles]
 
     # ------------------------------------------------------------------
-    # 5. Mandatory LLM refinement
+    # 5. Mandatory LLM refinement (explicit rerank stage)
     # ------------------------------------------------------------------
-    capped = _refine_via_llm(opencode_client, capped, workspace)
+    if capped:
+        capped = _rerank_via_llm(db, opencode_client, capped, workspace, run)
 
     return capped
 
@@ -151,19 +153,77 @@ def _dedup_clusters(items: list[ContentItem]) -> list[ContentItem]:
     return result
 
 
-def _refine_via_llm(
+def _persist_rerank_event(
+    db: Session,
+    run: ProcessingRun,
+    *,
+    stage: str,
+    items_data: list[dict[str, Any]],
+    message: str,
+) -> ProcessingRunEvent:
+    """Create a pipeline run event for the rerank stage."""
+    now = datetime.now(timezone.utc)
+    event = ProcessingRunEvent(
+        run_id=run.id,
+        step_name=stage,
+        status="completed",
+        message=message,
+        metadata_json={
+            "stage": stage,
+            "started_at": now.isoformat(),
+            "completed_at": now.isoformat(),
+            "items": items_data,
+        },
+    )
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    logger.info("Persisted rerank event stage=%s item_count=%d", stage, len(items_data))
+    return event
+
+
+def _rerank_via_llm(
+    db: Session,
     client: OpenCodeClient,
     items: list[ContentItem],
     workspace: Workspace,
+    run: ProcessingRun,
 ) -> list[ContentItem]:
-    """Refine the shortlist using the LLM client.
+    """Explicit rerank stage: score-based candidates → LLM-refined shortlist.
 
-    The LLM may reorder or filter the shortlist.  Its rationale is logged.
+    This function:
+    1. Persists the pre-rerank candidate set as a run event.
+    2. Calls the LLM to rerank/filter candidates.
+    3. Persists the post-rerank shortlist as a run event.
 
     **Exceptions from the LLM call are not caught** — they propagate to the
     caller so the pipeline can mark the run as failed.
     """
-    # Build lightweight dicts for the LLM (include id for matching)
+    # ------------------------------------------------------------------
+    # 1. Persist pre-rerank candidate set
+    # ------------------------------------------------------------------
+    pre_rerank_data: list[dict[str, Any]] = []
+    for item in items:
+        pre_rerank_data.append(
+            {
+                "id": item.id,
+                "title": item.title,
+                "score": item.final_score,
+                "source_type": item.content_type,
+                "source_name": item.source_name,
+            }
+        )
+    _persist_rerank_event(
+        db,
+        run,
+        stage="pre_rerank",
+        items_data=pre_rerank_data,
+        message=f"Pre-rerank candidate set: {len(items)} items",
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Build lightweight dicts for the LLM
+    # ------------------------------------------------------------------
     item_dicts: list[dict[str, Any]] = []
     for item in items:
         item_dicts.append(
@@ -173,6 +233,7 @@ def _refine_via_llm(
                 "url": item.url,
                 "summary": item.summary_snippet,
                 "source_name": item.source_name,
+                "source_type": item.content_type,
                 "score": item.final_score,
                 "published_at": (
                     item.published_at.isoformat() if item.published_at else None
@@ -191,30 +252,39 @@ def _refine_via_llm(
         workspace_context["competitors"] = workspace.profile.competitors or []
         workspace_context["excluded_topics"] = workspace.profile.excluded_topics or []
 
-    # Call the LLM — exceptions propagate (no silent fallback)
+    # ------------------------------------------------------------------
+    # 3. Call the LLM — exceptions propagate (no silent fallback)
+    # ------------------------------------------------------------------
     llm_result = client.refine_shortlist(item_dicts, workspace_context)
 
     # Log the rationale
     if llm_result.rationale:
-        logger.info("LLM shortlist rationale: %s", llm_result.rationale)
+        logger.info("LLM rerank rationale: %s", llm_result.rationale)
 
-    # Match LLM-selected items back to ContentItem objects by id
+    # ------------------------------------------------------------------
+    # 4. Match LLM-selected items back to ContentItem objects by id
+    # ------------------------------------------------------------------
     item_by_id: dict[str, ContentItem] = {item.id: item for item in items}
     refined: list[ContentItem] = []
+    # Build a map of LLM reasons per selected item
+    llm_reasons: dict[str, str] = {}
     for selected in llm_result.selected_items:
         item_id = selected.get("id")
+        reason = selected.get("reason", "")
         if item_id and item_id in item_by_id:
             refined.append(item_by_id[item_id])
+        if item_id and reason:
+            llm_reasons[item_id] = reason
 
     # Validate: identify any IDs the LLM returned that don't match known items
     requested_ids = {s.get("id") for s in llm_result.selected_items if s.get("id")}
     resolved_ids = {item.id for item in refined}
     unresolved_ids = requested_ids - resolved_ids
     for uid in unresolved_ids:
-        logger.warning("LLM shortlist: unresolved ID %s", uid)
+        logger.warning("LLM rerank: unresolved ID %s", uid)
     logger.info(
-        "LLM shortlist: %d requested, %d resolved, %d unresolved",
-        len(requested_ids),
+        "LLM rerank: %d candidates, %d selected, %d unresolved",
+        len(items),
         len(resolved_ids),
         len(unresolved_ids),
     )
@@ -225,9 +295,35 @@ def _refine_via_llm(
     # NOT a disabled-mode fallback.  The LLM call itself always runs.
     if not refined:
         logger.warning(
-            "LLM shortlist refinement returned no matching items; "
+            "LLM rerank returned no matching items; "
             "using score-based shortlist as response-validation safeguard"
         )
         refined = items
+
+    # ------------------------------------------------------------------
+    # 5. Persist post-rerank shortlist
+    # ------------------------------------------------------------------
+    post_rerank_data: list[dict[str, Any]] = []
+    for item in refined:
+        post_rerank_data.append(
+            {
+                "id": item.id,
+                "title": item.title,
+                "score": item.final_score,
+                "source_type": item.content_type,
+                "source_name": item.source_name,
+                "reason": llm_reasons.get(item.id, ""),
+            }
+        )
+    _persist_rerank_event(
+        db,
+        run,
+        stage="post_rerank",
+        items_data=post_rerank_data,
+        message=(
+            f"Post-rerank shortlist: {len(refined)} items selected "
+            f"from {len(items)} candidates"
+        ),
+    )
 
     return refined
