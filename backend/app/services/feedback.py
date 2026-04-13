@@ -46,7 +46,9 @@ def get_feedback_summary(db: Session, workspace_id: str) -> dict:
             {
                 "topic": tp.topic,
                 "weight": tp.weight,
-                "sentiment": "positive" if tp.weight >= 1.0 else "neutral",
+                "sentiment": "positive"
+                if tp.weight > 0
+                else ("negative" if tp.weight < 0 else "neutral"),
             }
             for tp in topic_prefs_from_table
         ]
@@ -80,7 +82,9 @@ def get_feedback_summary(db: Session, workspace_id: str) -> dict:
             {
                 "source": sp.source_name,
                 "weight": sp.weight,
-                "sentiment": "positive" if sp.weight >= 1.0 else "neutral",
+                "sentiment": "positive"
+                if sp.weight > 0
+                else ("negative" if sp.weight < 0 else "neutral"),
             }
             for sp in source_prefs_from_table
         ]

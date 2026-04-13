@@ -198,19 +198,19 @@ def thumb_message(message_id: str, body: ThumbIn, db: Session = Depends(get_db))
 
     report_service.update_message_feedback(db, msg, new_feedback)
 
-    # Create a feedback event
-    feedback_type = "thumbs_up" if body.value == "up" else "thumbs_down"
-    sentiment = "positive" if body.value == "up" else "negative"
-    if new_feedback is None:
-        sentiment = "neutral"
-    feedback_service.create_feedback_event(
-        db,
-        workspace_id=msg.thread and msg.thread.workspace_id or "",
-        feedback_type=feedback_type,
-        sentiment=sentiment,
-        thread_id=msg.thread_id,
-        message_id=msg.id,
-    )
+    # Create a feedback event only when the net action is real feedback.
+    # A toggle-off (new_feedback is None) is the absence of feedback, not new feedback.
+    if new_feedback is not None:
+        feedback_type = "thumbs_up" if body.value == "up" else "thumbs_down"
+        sentiment = "positive" if body.value == "up" else "negative"
+        feedback_service.create_feedback_event(
+            db,
+            workspace_id=msg.thread and msg.thread.workspace_id or "",
+            feedback_type=feedback_type,
+            sentiment=sentiment,
+            thread_id=msg.thread_id,
+            message_id=msg.id,
+        )
 
     db.commit()
     db.refresh(msg)

@@ -69,12 +69,25 @@ def build_score_breakdown(item: ContentItem) -> dict:
     breakdown = item.score_breakdown_json
     if breakdown and "scores" in breakdown:
         scores = breakdown["scores"]
-        return {
+        result = {
             "relevance": round(float(scores.get("keyword", 0)), 4),
             "llm": round(float(scores.get("bm25", 0)), 4),
             "freshness": round(float(scores.get("freshness", 0)), 4),
             "sourceAuthority": round(float(scores.get("source_authority", 0)), 4),
         }
+        # Expose feedback adjustment data when present
+        if breakdown.get("feedback_adjustment") is not None:
+            result["feedbackAdjustment"] = round(
+                float(breakdown["feedback_adjustment"]), 4
+            )
+        if "feedback" in breakdown:
+            fb = breakdown["feedback"]
+            result["feedback"] = {
+                "topicsMatched": fb.get("topics_matched", []),
+                "sourcesMatched": fb.get("sources_matched", []),
+                "eventCount": fb.get("event_count", 0),
+            }
+        return result
     # Fallback for items not yet scored by the new pipeline
     return {
         "relevance": item.local_relevance_score or 0,
