@@ -6,7 +6,7 @@ import { useParams } from 'react-router-dom';
 import {
   Play, Info, Activity, ChevronDown, ChevronUp, ChevronRight,
   AlertTriangle, FileText, CheckCircle2, XCircle, Loader2,
-  ArrowUpDown, ExternalLink,
+  ArrowUpDown, ExternalLink, Clock,
 } from 'lucide-react';
 import { formatDate, formatDuration, cn } from '@/lib/utils';
 import { useState, useMemo } from 'react';
@@ -183,7 +183,11 @@ export default function RunsPage() {
     refetchInterval: (query) => {
       const data = query.state.data;
       if (!data) return false;
-      return (data as Array<{ status: string }>).some(r => r.status === 'running') ? 3000 : false;
+      return (data as Array<{ status: string }>).some(
+        (r) => r.status === 'running' || r.status === 'queued',
+      )
+        ? 3000
+        : false;
     },
   });
 
@@ -191,20 +195,21 @@ export default function RunsPage() {
     queryKey: ['run-detail', selectedId],
     queryFn: () => api.runs.getDetail(selectedId!),
     enabled: !!selectedId,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return false;
+      return data.status === 'running' || data.status === 'queued' ? 3000 : false;
+    },
   });
 
   /* ---- trigger mutation ---- */
   const triggerMutation = useMutation({
     mutationFn: () => api.runs.trigger(workspaceId),
-    onSuccess: (run) => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['runs', workspaceId] });
-      if (run.status === 'failed') {
-        toast.error(
-          run.error
-            ? `Run failed: ${run.error.length > 80 ? run.error.slice(0, 80) + '…' : run.error}`
-            : 'Intelligence cycle run failed.',
-        );
-      }
+      // The 202 response returns an acknowledgement, not the full run object.
+      // Run failures will surface via the polling/refreshed run list.
+      toast.success(result.message || 'Run queued successfully.');
     },
     onError: (err) => {
       const msg =
@@ -339,6 +344,7 @@ export default function RunsPage() {
             <option value="success">Success</option>
             <option value="failed">Failed</option>
             <option value="running">Running</option>
+            <option value="queued">Queued</option>
           </select>
 
           {hasActiveFilters && (
@@ -403,6 +409,7 @@ export default function RunsPage() {
                       className={cn(
                         'hover:bg-slate-50/70 transition-colors cursor-pointer group',
                         run.status === 'failed' && 'bg-red-50/30',
+                        run.status === 'queued' && 'bg-amber-50/30',
                       )}
                       onClick={() => setSelectedId(run.id)}
                     >
@@ -423,6 +430,7 @@ export default function RunsPage() {
                           {run.status === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />}
                           {run.status === 'failed' && <XCircle className="w-3.5 h-3.5 text-red-500" />}
                           {run.status === 'running' && <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />}
+                          {run.status === 'queued' && <Clock className="w-3.5 h-3.5 text-amber-500" />}
                           <StatusBadge status={run.status} />
                         </div>
                       </td>
@@ -434,9 +442,15 @@ export default function RunsPage() {
                       <td className="px-3 py-2.5">
                         <span className={cn(
                           'text-xs tabular-nums',
-                          run.status === 'running' ? 'text-blue-500 font-medium' : 'text-slate-500',
+                          run.status === 'running' || run.status === 'queued'
+                            ? 'text-blue-500 font-medium'
+                            : 'text-slate-500',
                         )}>
-                          {run.status === 'running' ? 'Running…' : formatDuration(run.durationMs)}
+                          {run.status === 'running'
+                            ? 'Running…'
+                            : run.status === 'queued'
+                              ? 'Queued…'
+                              : formatDuration(run.durationMs)}
                         </span>
                       </td>
                       {/* Feeds */}
@@ -549,7 +563,9 @@ function RunDetailSheet({
         ? 'border-l-4 border-l-red-500'
         : detail?.status === 'running'
           ? 'border-l-4 border-l-blue-500'
-          : '';
+          : detail?.status === 'queued'
+            ? 'border-l-4 border-l-amber-500'
+            : '';
 
   return (
     <Sheet
@@ -607,9 +623,15 @@ function RunDetailSheet({
                 <p className="text-[10px] font-bold text-slate-400 uppercase">Duration</p>
                 <p className={cn(
                   'text-xs font-bold mt-0.5 tabular-nums',
-                  detail.status === 'running' ? 'text-blue-600' : 'text-slate-700',
+                  detail.status === 'running' || detail.status === 'queued'
+                    ? 'text-blue-600'
+                    : 'text-slate-700',
                 )}>
-                  {detail.status === 'running' ? 'Running…' : formatDuration(detail.durationMs)}
+                  {detail.status === 'running'
+                    ? 'Running…'
+                    : detail.status === 'queued'
+                      ? 'Queued…'
+                      : formatDuration(detail.durationMs)}
                 </p>
               </div>
             </div>
