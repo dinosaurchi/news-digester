@@ -25,6 +25,24 @@ interface FeedbackSummary {
 /*  Helpers                                                            */
 /* ================================================================== */
 
+/** Reset feedback on all non-user messages in a thread so tests start from a clean state. */
+async function resetThreadFeedback(
+  request: APIRequestContext,
+  threadId: string,
+) {
+  const res = await request.get(`/api/report-threads/${threadId}/messages`);
+  if (!res.ok()) return;
+  const messages: Array<{ id: string; role: string; feedback: string | null }> =
+    await res.json();
+  for (const msg of messages) {
+    if (msg.role !== 'user' && msg.feedback) {
+      await request.post(`/api/report-messages/${msg.id}/thumb`, {
+        data: { value: msg.feedback },
+      });
+    }
+  }
+}
+
 /** Log in via the UI and wait for the workspaces page to load. */
 async function login(page: Page) {
   await page.goto('/login');
@@ -117,8 +135,8 @@ test.describe('Feedback Page - Summary Stats', () => {
 
     // Verify the 4 summary stat cards are rendered
     await expect(page.getByText('Total Feedback Events')).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText('Thumbs Up')).toBeVisible();
-    await expect(page.getByText('Thumbs Down')).toBeVisible();
+    await expect(page.getByText('Thumbs Up').first()).toBeVisible();
+    await expect(page.getByText('Thumbs Down').first()).toBeVisible();
     await expect(page.getByText('Net Sentiment')).toBeVisible();
 
     // Verify the feedback timeline section is present
@@ -145,6 +163,8 @@ test.describe('Thumbs Up/Down on Report Message', () => {
       return;
     }
     threadId = reports[0].id;
+    // Reset feedback so each test starts from a clean state
+    await resetThreadFeedback(request, threadId);
   });
 
   test('thumbs up toggles on and off for a report message', async ({ page }) => {
@@ -162,16 +182,33 @@ test.describe('Thumbs Up/Down on Report Message', () => {
 
     const thumbUp = page.locator('button[title="Helpful"]').first();
 
-    // Click thumbs up
+    // Click thumbs up — wait for vote API + messages refetch
+    const voteResponsePromise = page.waitForResponse(
+      resp => resp.url().includes('/report-messages/') && resp.url().includes('/thumb'),
+      { timeout: 10000 },
+    );
     await thumbUp.click();
-    await page.waitForTimeout(1000);
+    await voteResponsePromise;
+    // Wait for the query invalidation refetch to complete
+    await page.waitForResponse(
+      resp => resp.url().includes(`/report-threads/${threadId}/messages`) && resp.request().method() === 'GET',
+      { timeout: 10000 },
+    );
 
     // Assert: thumbs up button shows active state (blue highlight)
     await expect(thumbUp).toHaveClass(/bg-blue-100/);
 
-    // Click thumbs up again to toggle off
+    // Click thumbs up again to toggle off — wait for vote API + messages refetch
+    const voteOffResponsePromise = page.waitForResponse(
+      resp => resp.url().includes('/report-messages/') && resp.url().includes('/thumb'),
+      { timeout: 10000 },
+    );
     await thumbUp.click();
-    await page.waitForTimeout(1000);
+    await voteOffResponsePromise;
+    await page.waitForResponse(
+      resp => resp.url().includes(`/report-threads/${threadId}/messages`) && resp.request().method() === 'GET',
+      { timeout: 10000 },
+    );
 
     // Assert: thumbs up returns to inactive state (no blue highlight)
     await expect(thumbUp).not.toHaveClass(/bg-blue-100/);
@@ -192,17 +229,33 @@ test.describe('Thumbs Up/Down on Report Message', () => {
     const thumbUp = page.locator('button[title="Helpful"]').first();
     const thumbDown = page.locator('button[title="Not helpful"]').first();
 
-    // Click thumbs up
+    // Click thumbs up — wait for vote API + messages refetch
+    const voteUpResponsePromise = page.waitForResponse(
+      resp => resp.url().includes('/report-messages/') && resp.url().includes('/thumb'),
+      { timeout: 10000 },
+    );
     await thumbUp.click();
-    await page.waitForTimeout(1000);
+    await voteUpResponsePromise;
+    await page.waitForResponse(
+      resp => resp.url().includes(`/report-threads/${threadId}/messages`) && resp.request().method() === 'GET',
+      { timeout: 10000 },
+    );
 
     // Assert: thumbs up is active
     await expect(thumbUp).toHaveClass(/bg-blue-100/);
     await expect(thumbDown).not.toHaveClass(/bg-red-100/);
 
-    // Click thumbs down
+    // Click thumbs down — wait for vote API + messages refetch
+    const voteDownResponsePromise = page.waitForResponse(
+      resp => resp.url().includes('/report-messages/') && resp.url().includes('/thumb'),
+      { timeout: 10000 },
+    );
     await thumbDown.click();
-    await page.waitForTimeout(1000);
+    await voteDownResponsePromise;
+    await page.waitForResponse(
+      resp => resp.url().includes(`/report-threads/${threadId}/messages`) && resp.request().method() === 'GET',
+      { timeout: 10000 },
+    );
 
     // Assert: thumbs down is active, thumbs up is inactive
     await expect(thumbDown).toHaveClass(/bg-red-100/);
@@ -314,7 +367,8 @@ test.describe('Content Detail - Scoring', () => {
 
     // Verify at least the freshness score is typically non-zero (it's based on date)
     // The score bars render with a width percentage; a non-zero score should have a visible bar
-    const scoreBars = scoreSection.locator('.bg-indigo-500');
+    // Bars use bg-emerald-500 (>80), bg-amber-500 (>50), or bg-red-500 (<=50)
+    const scoreBars = scoreSection.locator('.bg-emerald-500, .bg-amber-500, .bg-red-500');
     const scoreBarCount = await scoreBars.count();
     expect(scoreBarCount).toBeGreaterThan(0);
   });
