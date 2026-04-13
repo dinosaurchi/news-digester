@@ -1,4 +1,4 @@
-/* global process */
+/* global process, setInterval, console */
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -16,6 +16,8 @@ const envSchema = z.object({
   OPENCODE_CONFIG_DIR: z.string().default("/opencode/config"),
   MODEL_CATALOG_OVERRIDE: z.string().default("opencode/gpt-5-nano"),
   AGENT_CATALOG_OVERRIDE: z.string().default("general"),
+  SESSION_TTL_MS: z.coerce.number().int().positive().default(3_600_000), // 1 hour
+  GC_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),  // 5 minutes
 });
 
 const env = envSchema.parse(process.env);
@@ -40,6 +42,35 @@ async function saveState() {
   await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
   await fs.promises.rename(tempPath, env.STATE_PATH);
 }
+
+async function reapExpiredSessions() {
+  const now = Date.now();
+  let reaped = 0;
+  for (const [id, session] of Object.entries(state.sessions)) {
+    if (session.status !== "completed" && session.status !== "failed") continue;
+    const completedAt = session.completed_at
+      ? new Date(session.completed_at).getTime()
+      : 0;
+    if (completedAt > 0 && now - completedAt > env.SESSION_TTL_MS) {
+      delete state.sessions[id];
+      reaped++;
+    }
+  }
+  if (reaped > 0) {
+    await saveState();
+  }
+  return reaped;
+}
+
+// Periodic garbage collection
+setInterval(() => {
+  reapExpiredSessions().catch((err) =>
+    console.error("session gc failed", err),
+  );
+}, env.GC_INTERVAL_MS);
+
+// Run once at startup to clean stale sessions from previous runs
+reapExpiredSessions().catch(() => {});
 
 function nowIso() {
   return new Date().toISOString();
@@ -228,6 +259,22 @@ app.get("/v1/sessions/:session_id/result", async (request, reply) => {
     completed_at: session.completed_at,
     source: session.output_text ? "cli" : "unavailable",
   };
+});
+
+app.delete("/v1/sessions/:session_id", async (request, reply) => {
+  const session = state.sessions[request.params.session_id];
+  if (!session) {
+    reply.code(404).send({ error: { code: "SESSION_NOT_FOUND", message: "Session not found" } });
+    return;
+  }
+  delete state.sessions[request.params.session_id];
+  await saveState();
+  return { deleted: true, session_id: request.params.session_id };
+});
+
+app.post("/v1/sessions/purge", async () => {
+  const reaped = await reapExpiredSessions();
+  return { purged: reaped, remaining: Object.keys(state.sessions).length };
 });
 
 app.get("/v1/sessions/:session_id/usage", async (request, reply) => {
