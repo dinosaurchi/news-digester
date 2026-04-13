@@ -291,15 +291,31 @@ def compute_bm25_score(
     for token in tokens:
         tf[token] = tf.get(token, 0) + 1
 
-    # Sum log(1 + tf) * idf (when provided) for each query term present
+    # Sum log(1 + tf) * idf (when provided) for each query term present.
+    # Multi-word query terms are split into component words; all words
+    # must appear in the document for the term to contribute, and the
+    # per-word TF scores are averaged.
     raw_score = 0.0
     for term in query_terms:
         term_lower = term.lower()
-        if term_lower in tf:
-            tf_score = math.log(1 + tf[term_lower])
-            if idf is not None and term_lower in idf:
-                tf_score *= idf[term_lower]
-            raw_score += tf_score
+        words = term_lower.split()
+
+        if len(words) <= 1:
+            # Single-word term: original behaviour — direct TF lookup
+            if term_lower in tf:
+                tf_score = math.log(1 + tf[term_lower])
+                if idf is not None and term_lower in idf:
+                    tf_score *= idf[term_lower]
+                raw_score += tf_score
+        else:
+            # Multi-word term: ALL component words must be present
+            if all(word in tf for word in words):
+                # Average of log(1 + tf) across component words
+                word_tf_scores = [math.log(1 + tf[word]) for word in words]
+                tf_score = sum(word_tf_scores) / len(word_tf_scores)
+                if idf is not None and term_lower in idf:
+                    tf_score *= idf[term_lower]
+                raw_score += tf_score
 
     # Normalise by number of query terms so the score reflects match density
     normalised = raw_score / len(query_terms)
