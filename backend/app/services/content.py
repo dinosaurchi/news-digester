@@ -69,9 +69,19 @@ def build_score_breakdown(item: ContentItem) -> dict:
     breakdown = item.score_breakdown_json
     if breakdown and "scores" in breakdown:
         scores = breakdown["scores"]
+        weights = breakdown.get("weights", {})
+        # Combine keyword and BM25 as the displayed "relevance" signal,
+        # weighted by their respective scoring weights so the number reflects
+        # their actual contribution to the final score.
+        kw = float(scores.get("keyword", 0))
+        bm25 = float(scores.get("bm25", 0))
+        kw_w = float(weights.get("keyword", 0.25))
+        bm25_w = float(weights.get("bm25", 0.20))
+        total_w = kw_w + bm25_w
+        relevance = (kw * kw_w + bm25 * bm25_w) / total_w if total_w > 0 else max(kw, bm25)
         result = {
-            "relevance": round(float(scores.get("keyword", 0)), 4),
-            "llm": round(float(scores.get("bm25", 0)), 4),
+            "relevance": round(relevance, 4),
+            "llm": round(float(scores.get("llm", 0)), 4),
             "freshness": round(float(scores.get("freshness", 0)), 4),
             "sourceAuthority": round(float(scores.get("source_authority", 0)), 4),
         }
