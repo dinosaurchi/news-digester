@@ -628,8 +628,10 @@ def _topic_matches_text(topic_key: str, text: str) -> bool:
 
     Matching rules:
     - Multi-word topics: all individual words must appear in the text (AND
-      logic), each matched as a case-insensitive substring.  The words do
-      not need to appear contiguously or in order.
+      logic), each matched with word-boundary regex so that short component
+      words like "AI" do not produce false positives from words such as
+      "MAIL" or "EMAIL".  The words do not need to appear contiguously or
+      in order.
     - Single-word topics: the word is matched using word-boundary regex
       (``\\bword\\b``) to avoid false positives such as "AI" matching
       "MAIL" or "PAIR".
@@ -642,13 +644,12 @@ def _topic_matches_text(topic_key: str, text: str) -> bool:
     lower_text = text.lower()
     words = topic_key.lower().split()
 
-    if len(words) == 1:
-        # Single-word topic: use word-boundary matching
-        pattern = r"\b" + re.escape(words[0]) + r"\b"
-        return re.search(pattern, lower_text) is not None
-
-    # Multi-word topic: ALL words must appear as substrings (AND logic)
-    return all(word in lower_text for word in words)
+    # Both single- and multi-word topics use word-boundary matching so that
+    # short words like "ai" don't match inside longer words.
+    return all(
+        re.search(r"\b" + re.escape(word) + r"\b", lower_text) is not None
+        for word in words
+    )
 
 
 def _compute_feedback_adjustment(

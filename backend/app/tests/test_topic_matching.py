@@ -40,6 +40,15 @@ class TestTopicMatchesText:
         """Substring occurrence inside another word → no match."""
         assert not _topic_matches_text("AI", "The email said MAIN and PAIR")
 
+    def test_multiword_topic_no_false_positive_from_component_word_substring(self):
+        """Component word 'ai' inside 'email' must not cause a false positive."""
+        # "ai" appears inside "email" — the multi-word topic should NOT match
+        assert not _topic_matches_text("ai computing", "email about computing trends")
+
+    def test_multiword_topic_no_false_positive_short_word_in_longer_word(self):
+        """Component word 'or' should not match inside 'word', 'order', etc."""
+        assert not _topic_matches_text("or machine", "word machine learning")
+
     def test_case_insensitive_matching(self):
         assert _topic_matches_text("edge computing", "EDGE COMPUTING trends")
 
