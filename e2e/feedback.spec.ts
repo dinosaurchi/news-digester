@@ -454,7 +454,7 @@ test.describe('Score Breakdown - Feedback Data', () => {
       const breakdown = detail.scoreBreakdown;
       expect(breakdown).toBeDefined();
       expect(breakdown.relevance).toBeDefined();
-      expect(breakdown.llm).toBeDefined();
+      expect(breakdown.bm25).toBeDefined();
       expect(breakdown.freshness).toBeDefined();
       expect(breakdown.sourceAuthority).toBeDefined();
 

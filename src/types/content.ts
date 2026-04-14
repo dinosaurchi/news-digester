@@ -10,7 +10,7 @@ export interface ContentItem {
   publishedAt: string;
   type: ContentType;
   relevanceScore: number;
-  llmScore: number;
+  bm25Score: number;
   finalScore: number;
   status: ContentStatus;
   clusterId?: string;
@@ -25,7 +25,7 @@ export interface ContentItemDetail extends ContentItem {
   body: string;
   scoreBreakdown: {
     relevance: number;
-    llm: number;
+    bm25: number;
     freshness: number;
     sourceAuthority: number;
     feedbackAdjustment?: number;

@@ -169,7 +169,7 @@ export default function ContentDetailPage() {
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Score Breakdown</h3>
             <div className="bg-slate-50 rounded-lg p-4 space-y-3">
               <ScoreRow label="Relevance" score={detail.scoreBreakdown.relevance * 100} />
-              <ScoreRow label="BM25" score={detail.scoreBreakdown.llm * 100} />
+              <ScoreRow label="BM25" score={detail.scoreBreakdown.bm25 * 100} />
               <ScoreRow label="Freshness" score={detail.scoreBreakdown.freshness * 100} />
               <ScoreRow label="Source Authority" score={detail.scoreBreakdown.sourceAuthority * 100} />
               {detail.scoreBreakdown.feedbackAdjustment != null && (

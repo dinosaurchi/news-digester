@@ -92,7 +92,7 @@ class TestListContent:
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
-        assert data[0]["llmScore"] == 0.61
+        assert data[0]["bm25Score"] == 0.61
 
     def test_list_content_filter_status(self, client):
         """Filter by status returns only matching items."""
@@ -200,12 +200,12 @@ class TestGetContentDetail:
         assert data["title"] == "Detail Test"
         assert "scoreBreakdown" in data
         assert data["scoreBreakdown"]["relevance"] == 0.85
-        assert data["scoreBreakdown"]["llm"] == 0.9
+        assert data["scoreBreakdown"]["bm25"] == 0.9
         assert "freshness" in data["scoreBreakdown"]
         assert "sourceAuthority" in data["scoreBreakdown"]
 
-    def test_get_content_detail_uses_bm25_for_legacy_llm_breakdown_field(self, client):
-        """Detail API maps persisted BM25 into the legacy llm breakdown field."""
+    def test_get_content_detail_uses_bm25_breakdown_field(self, client):
+        """Detail API exposes persisted BM25 via the bm25 breakdown field."""
         ws_id = _create_workspace(client)
         item_id = _create_content_item(
             client,
@@ -226,8 +226,8 @@ class TestGetContentDetail:
         resp = client.get(f"/api/content/{item_id}")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["llmScore"] == 0.72
-        assert data["scoreBreakdown"]["llm"] == 0.72
+        assert data["bm25Score"] == 0.72
+        assert data["scoreBreakdown"]["bm25"] == 0.72
 
     def test_get_content_detail_with_cluster(self, client):
         """Content item with cluster_id returns clusterItems."""
@@ -281,7 +281,7 @@ class TestGetContentDetail:
         assert "sourceUrl" in data
         assert "publishedAt" in data
         assert "relevanceScore" in data
-        assert "llmScore" in data
+        assert "bm25Score" in data
         assert "finalScore" in data
         assert "clusterId" in data
         assert "inclusionReason" in data

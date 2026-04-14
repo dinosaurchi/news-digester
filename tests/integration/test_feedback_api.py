@@ -354,7 +354,7 @@ def test_multiword_bm25_scoring(api: ApiClient) -> None:
     items = resp.json()
 
     # Look at scoreBreakdown of items for non-zero scores.
-    # The API returns: relevance (keyword), llm (bm25), freshness, sourceAuthority.
+    # The API returns: relevance (keyword), bm25, freshness, sourceAuthority.
     # Items scored with the new code may have non-zero relevance/bm25.
     found_nonzero_relevance = False
     found_nonzero_bm25 = False
@@ -369,7 +369,7 @@ def test_multiword_bm25_scoring(api: ApiClient) -> None:
 
         if breakdown.get("relevance", 0) > 0:
             found_nonzero_relevance = True
-        if breakdown.get("llm", 0) > 0:
+        if breakdown.get("bm25", 0) > 0:
             found_nonzero_bm25 = True
 
         if found_nonzero_relevance and found_nonzero_bm25:
@@ -381,7 +381,7 @@ def test_multiword_bm25_scoring(api: ApiClient) -> None:
     if found_nonzero_relevance:
         print(f"    [INFO] Found non-zero relevance score in {checked} items checked")
     if found_nonzero_bm25:
-        print(f"    [INFO] Found non-zero BM25 (llm) score in {checked} items checked")
+        print(f"    [INFO] Found non-zero BM25 score in {checked} items checked")
 
     # At minimum, the scoreBreakdown API should return the expected keys
     # for items that have been scored.
@@ -397,7 +397,7 @@ def test_multiword_bm25_scoring(api: ApiClient) -> None:
     assert_eq(sample_resp.status_code, 200, "get first content item detail")
     sample_breakdown = sample_resp.json().get("scoreBreakdown", {})
     assert_in("relevance", sample_breakdown, "scoreBreakdown has relevance key")
-    assert_in("llm", sample_breakdown, "scoreBreakdown has llm (bm25) key")
+    assert_in("bm25", sample_breakdown, "scoreBreakdown has bm25 key")
     assert_in("freshness", sample_breakdown, "scoreBreakdown has freshness key")
     assert_in(
         "sourceAuthority", sample_breakdown, "scoreBreakdown has sourceAuthority key"
