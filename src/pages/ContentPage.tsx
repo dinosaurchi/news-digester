@@ -402,7 +402,7 @@ export default function ContentPage() {
                   <SortableTh label="Published" column="publishedAt" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                   <SortableTh label="Type" column="type" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                   <SortableTh label="Relevance" column="relevanceScore" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[90px]" />
-                  <SortableTh label="LLM" column="llmScore" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[70px]" />
+                  <SortableTh label="BM25" column="llmScore" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[70px]" />
                   <SortableTh label="Final" column="finalScore" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[80px]" />
                   <SortableTh label="Status" column="status" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                   <th className="px-3 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">Cluster</th>
@@ -550,4 +550,3 @@ export default function ContentPage() {
     </div>
   );
 }
-

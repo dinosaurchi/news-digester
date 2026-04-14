@@ -50,6 +50,15 @@ def _content_item_to_out(item) -> dict:
     if item.report_id:
         linked_report_ids.append(item.report_id)
 
+    llm_score = item.llm_score
+    breakdown = item.score_breakdown_json or {}
+    if llm_score is None and isinstance(breakdown, dict):
+        scores = breakdown.get("scores")
+        if isinstance(scores, dict):
+            bm25_score = scores.get("bm25", scores.get("llm"))
+            if isinstance(bm25_score, (int, float)):
+                llm_score = float(bm25_score)
+
     return {
         "id": item.id,
         "workspaceId": item.workspace_id,
@@ -59,7 +68,7 @@ def _content_item_to_out(item) -> dict:
         "publishedAt": item.published_at.isoformat() if item.published_at else None,
         "type": item.content_type,
         "relevanceScore": item.local_relevance_score,
-        "llmScore": item.llm_score,
+        "llmScore": llm_score,
         "finalScore": item.final_score,
         "status": item.status,
         "clusterId": item.cluster_id,

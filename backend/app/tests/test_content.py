@@ -69,6 +69,31 @@ class TestListContent:
         assert "Item 1" in titles
         assert "Item 2" in titles
 
+    def test_list_content_uses_bm25_for_legacy_llm_score_field(self, client):
+        """List API exposes persisted BM25 when llm_score is unset."""
+        ws_id = _create_workspace(client)
+        _create_content_item(
+            client,
+            ws_id,
+            title="BM25-backed item",
+            llm_score=None,
+            score_breakdown_json={
+                "scores": {
+                    "keyword": 0.4,
+                    "bm25": 0.61,
+                    "freshness": 0.8,
+                    "source_authority": 0.5,
+                },
+                "weights": {"keyword": 0.25, "bm25": 0.2},
+            },
+        )
+
+        resp = client.get(f"/api/workspaces/{ws_id}/content")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["llmScore"] == 0.61
+
     def test_list_content_filter_status(self, client):
         """Filter by status returns only matching items."""
         ws_id = _create_workspace(client)
@@ -178,6 +203,31 @@ class TestGetContentDetail:
         assert data["scoreBreakdown"]["llm"] == 0.9
         assert "freshness" in data["scoreBreakdown"]
         assert "sourceAuthority" in data["scoreBreakdown"]
+
+    def test_get_content_detail_uses_bm25_for_legacy_llm_breakdown_field(self, client):
+        """Detail API maps persisted BM25 into the legacy llm breakdown field."""
+        ws_id = _create_workspace(client)
+        item_id = _create_content_item(
+            client,
+            ws_id,
+            title="BM25 detail test",
+            llm_score=None,
+            score_breakdown_json={
+                "scores": {
+                    "keyword": 0.5,
+                    "bm25": 0.72,
+                    "freshness": 0.9,
+                    "source_authority": 0.4,
+                },
+                "weights": {"keyword": 0.25, "bm25": 0.2},
+            },
+        )
+
+        resp = client.get(f"/api/content/{item_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["llmScore"] == 0.72
+        assert data["scoreBreakdown"]["llm"] == 0.72
 
     def test_get_content_detail_with_cluster(self, client):
         """Content item with cluster_id returns clusterItems."""

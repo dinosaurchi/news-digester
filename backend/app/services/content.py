@@ -81,7 +81,9 @@ def build_score_breakdown(item: ContentItem) -> dict:
         relevance = (kw * kw_w + bm25 * bm25_w) / total_w if total_w > 0 else max(kw, bm25)
         result = {
             "relevance": round(relevance, 4),
-            "llm": round(float(scores.get("llm", 0)), 4),
+            # The legacy "llm" API field now surfaces the BM25 signal because
+            # the current scoring pipeline persists `bm25`, not `llm`.
+            "llm": round(float(scores.get("bm25", scores.get("llm", 0))), 4),
             "freshness": round(float(scores.get("freshness", 0)), 4),
             "sourceAuthority": round(float(scores.get("source_authority", 0)), 4),
         }
