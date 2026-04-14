@@ -176,16 +176,21 @@ test.describe('2. Workspace Page', () => {
     await page.getByPlaceholder('e.g., TechCorp Strategy').fill(wsName);
     await page.getByPlaceholder('e.g., TechCorp Inc.').fill(wsCustomer);
 
-    // Submit
+    // Submit and capture workspace ID for cleanup
     const [response] = await Promise.all([
       page.waitForResponse(resp => resp.url().includes('/api/workspaces') && resp.request().method() === 'POST'),
       page.getByRole('button', { name: 'Create', exact: true }).click(),
     ]);
     expect([200, 201].includes(response.status())).toBeTruthy();
+    const wsData = await response.json();
+    const wsId = wsData.id;
 
     // Verify modal closes and workspace appears
     await expect(page.getByRole('heading', { name: 'Create Workspace' })).not.toBeVisible({ timeout: 10000 });
     await expect(page.getByText(wsName)).toBeVisible({ timeout: 10000 });
+
+    // Cleanup: soft-delete the workspace so it doesn't linger
+    await page.request.delete(`/api/workspaces/${wsId}`);
   });
 
   test('workspace search filters the list', async ({ page }) => {
