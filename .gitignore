@@ -26,3 +26,4 @@ venv/
 /test-results/
 /playwright-report/
 /blob-report/
+cookies.txt
