@@ -266,6 +266,19 @@ def execute_workspace_run(
             )
             raise
 
+        # Merge any existing workspace items not fetched in this run so the
+        # full corpus is rescored with the current algorithm and preferences.
+        new_item_ids = {item.id for item in all_items}
+        existing_items = (
+            db.query(ContentItem)
+            .filter(
+                ContentItem.workspace_id == workspace.id,
+                ContentItem.id.notin_(new_item_ids),
+            )
+            .all()
+        )
+        all_items = all_items + existing_items
+
         score_event = _start_event(db, run.id, "score_content", "Scoring content...")
         try:
             score_result = score_content_items(db, all_items, workspace)

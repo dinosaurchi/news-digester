@@ -1554,11 +1554,15 @@ class TestBM25MultiWordTerms:
         score = compute_bm25_score(text, ["edge computing"])
         assert score > 0.0
 
-    def test_bm25_multiword_term_no_match_when_only_partial_words_present(self):
-        """A multi-word term scores 0 when only some component words are present."""
-        text = "The cutting edge of modern design"
-        score = compute_bm25_score(text, ["edge computing"])
-        assert score == pytest.approx(0.0)
+    def test_bm25_multiword_term_partial_match_scores_less_than_full_match(self):
+        """A multi-word term gives partial credit when only some component words
+        are present — scores > 0 but strictly less than when all words match."""
+        partial_text = "The cutting edge of modern design"  # only "edge"
+        full_text = "Enterprise edge platforms reshaping computing infrastructure"
+        partial_score = compute_bm25_score(partial_text, ["edge computing"])
+        full_score = compute_bm25_score(full_text, ["edge computing"])
+        assert partial_score > 0.0
+        assert full_score > partial_score
 
     def test_bm25_mixed_single_and_multiword_terms(self):
         """Both single-word and multi-word query terms contribute in the

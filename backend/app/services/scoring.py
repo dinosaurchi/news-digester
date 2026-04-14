@@ -282,7 +282,9 @@ def compute_bm25_score(
     if not text or not query_terms:
         return 0.0
 
-    tokens = text.lower().split()
+    # Tokenise document: strip punctuation so "wars," matches "wars"
+    tokens = [re.sub(r"[^\w]", "", t) for t in text.lower().split()]
+    tokens = [t for t in tokens if t]
     if not tokens:
         return 0.0
 
@@ -292,27 +294,34 @@ def compute_bm25_score(
         tf[token] = tf.get(token, 0) + 1
 
     # Sum log(1 + tf) * idf (when provided) for each query term present.
-    # Multi-word query terms are split into component words; all words
-    # must appear in the document for the term to contribute, and the
-    # per-word TF scores are averaged.
+    # Multi-word query terms give partial credit: each component word that
+    # appears contributes proportionally to coverage (matched / total words).
     raw_score = 0.0
     for term in query_terms:
         term_lower = term.lower()
-        words = term_lower.split()
+        # Strip punctuation from theme words too so commas don't break matching
+        words = [re.sub(r"[^\w]", "", w) for w in term_lower.split()]
+        words = [w for w in words if w]
 
-        if len(words) <= 1:
+        if not words:
+            continue
+
+        if len(words) == 1:
             # Single-word term: original behaviour — direct TF lookup
-            if term_lower in tf:
-                tf_score = math.log(1 + tf[term_lower])
+            if words[0] in tf:
+                tf_score = math.log(1 + tf[words[0]])
                 if idf is not None and term_lower in idf:
                     tf_score *= idf[term_lower]
                 raw_score += tf_score
         else:
-            # Multi-word term: ALL component words must be present
-            if all(word in tf for word in words):
-                # Average of log(1 + tf) across component words
-                word_tf_scores = [math.log(1 + tf[word]) for word in words]
-                tf_score = sum(word_tf_scores) / len(word_tf_scores)
+            # Multi-word term: partial credit — each matched word contributes.
+            # Coverage ratio (matched/total) scales the score so fully-matching
+            # themes score higher than partially-matching ones.
+            matched = [w for w in words if w in tf]
+            if matched:
+                coverage = len(matched) / len(words)
+                avg_tf = sum(math.log(1 + tf[w]) for w in matched) / len(matched)
+                tf_score = coverage * avg_tf
                 if idf is not None and term_lower in idf:
                     tf_score *= idf[term_lower]
                 raw_score += tf_score
