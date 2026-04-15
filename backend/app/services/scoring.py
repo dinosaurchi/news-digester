@@ -77,6 +77,142 @@ def _compute_decay_factor(
 
 
 # ---------------------------------------------------------------------------
+# Text normalization helpers
+# ---------------------------------------------------------------------------
+
+
+def normalize_competitor_name(name: str) -> str:
+    """Lowercase and strip whitespace from a competitor name.
+
+    For full alias generation including parenthetical stripping, use
+    :func:`generate_competitor_aliases` instead.
+    """
+    if not name:
+        return ""
+    return name.lower().strip()
+
+
+def generate_competitor_aliases(name: str) -> list[str]:
+    """Generate matching aliases from a raw competitor profile string.
+
+    Strips parenthetical annotations and generates meaningful aliases:
+
+    1. The base name (lowercased, parentheticals removed)
+    2. Capitalized multi-word phrases extracted from parenthetical content
+    3. Suffix alias (base name with first word dropped)
+    4. First word of the base name
+
+    Returns a deterministic, deduplicated list of aliases.  Empty input
+    returns ``[]``.
+    """
+    if not name or not name.strip():
+        return []
+
+    aliases: list[str] = []
+
+    # Strip parenthetical content to isolate the base name
+    base_name = re.sub(r"\s*\([^)]*\)\s*", " ", name).strip()
+    base_lower = base_name.lower()
+
+    if not base_lower:
+        return []
+
+    # 1. Always include the full base name
+    aliases.append(base_lower)
+
+    # 2. Extract capitalized multi-word phrases from parenthetical content
+    parentheticals = re.findall(r"\(([^)]+)\)", name)
+    for paren_content in parentheticals:
+        words = paren_content.split()
+        i = 0
+        while i < len(words):
+            if words[i] and words[i][0].isupper():
+                phrase_words = [words[i]]
+                j = i + 1
+                while j < len(words) and words[j] and words[j][0].isupper():
+                    phrase_words.append(words[j])
+                    j += 1
+                if len(phrase_words) >= 2:
+                    phrase = " ".join(w.lower() for w in phrase_words)
+                    if phrase not in aliases:
+                        aliases.append(phrase)
+                i = j
+            else:
+                i += 1
+
+    # 3. Suffix alias: base name with the first word dropped
+    base_words = base_lower.split()
+    if len(base_words) >= 2:
+        suffix = " ".join(base_words[1:])
+        if suffix not in aliases:
+            aliases.append(suffix)
+
+    # 4. First word of the base name (if not already present)
+    if base_words and base_words[0] not in aliases:
+        aliases.append(base_words[0])
+
+    return aliases
+
+
+def normalize_theme(theme: str) -> str:
+    """Lowercase and strip whitespace from a theme string.
+
+    For sub-term decomposition, use :func:`decompose_theme` instead.
+    """
+    if not theme:
+        return ""
+    return theme.lower().strip()
+
+
+def decompose_theme(theme: str) -> list[str]:
+    """Decompose a theme string into meaningful sub-terms for matching.
+
+    Rules:
+
+    1. Split on commas to separate distinct theme phrases.
+    2. Split each phrase on ``" and "`` to separate conjunctive terms.
+    3. For 3+ word sub-terms, extract bigrams as additional matching terms.
+    4. Deduplicate while preserving insertion order.
+
+    Returns a deterministic, deduplicated list.  Empty input returns ``[]``.
+    """
+    if not theme or not theme.strip():
+        return []
+
+    # Steps 1–2: split on commas, then on " and "
+    terms: list[str] = []
+    for comma_part in theme.split(","):
+        comma_part = comma_part.strip()
+        if not comma_part:
+            continue
+        for and_part in comma_part.split(" and "):
+            term = and_part.strip().lower()
+            if term:
+                terms.append(term)
+
+    # Step 3: for 3+ word terms, extract bigrams
+    expanded: list[str] = list(terms)
+    for term in terms:
+        words = term.split()
+        if len(words) >= 3:
+            for i in range(len(words) - 1):
+                bigram = f"{words[i]} {words[i + 1]}"
+                if bigram not in expanded:
+                    expanded.append(bigram)
+
+    # Step 4: deduplicate while preserving order
+    seen: set[str] = set()
+    result: list[str] = []
+    for t in expanded:
+        t = t.strip()
+        if t and t not in seen:
+            seen.add(t)
+            result.append(t)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Keyword matching
 # ---------------------------------------------------------------------------
 
@@ -96,6 +232,12 @@ def compute_keyword_score_detailed(
 ) -> tuple[float, list[str], list[str]]:
     """Return keyword match score along with matched/unmatched keyword lists.
 
+    Each keyword is decomposed into sub-terms via :func:`decompose_theme`
+    so that a comma-separated or conjunctive theme like
+    ``"Star Wars, Marvel"`` matches when *any* sub-term (``"star wars"`` or
+    ``"marvel"``) appears in *text*.  The raw lowercased keyword is always
+    included as a fallback matching term.
+
     Returns
     -------
     (score, matched_keywords, unmatched_keywords) where:
@@ -111,9 +253,19 @@ def compute_keyword_score_detailed(
     unmatched: list[str] = []
     for kw in keywords:
         kw_lower = kw.lower()
-        if kw_lower in lower_text:
-            matched.append(kw_lower)
-        else:
+        # Decompose into sub-terms for flexible matching
+        sub_terms = decompose_theme(kw)
+        # Always include the raw lowercased keyword as a fallback
+        all_terms = list(dict.fromkeys([kw_lower] + sub_terms))
+
+        # A keyword matches if ANY of its terms appear in the text
+        found = False
+        for term in all_terms:
+            if term and term in lower_text:
+                matched.append(kw_lower)
+                found = True
+                break
+        if not found:
             unmatched.append(kw_lower)
     score = len(matched) / len(keywords) if keywords else 0.0
     return score, matched, unmatched
@@ -144,6 +296,13 @@ def compute_competitor_mention_score_detailed(
 ) -> tuple[float, list[str], list[str]]:
     """Return competitor mention score along with matched/unmatched lists.
 
+    Each competitor name is expanded into aliases via
+    :func:`generate_competitor_aliases` so that a raw profile string like
+    ``"Tenyo Metallic Nano (Japanese licensee, same factory)"`` matches when
+    *any* alias (``"tenyo metallic nano"``, ``"metallic nano"``, ``"tenyo"``)
+    appears in *text*.  The raw lowercased name is always included as a
+    fallback matching term.
+
     Returns
     -------
     (score, matched_competitors, unmatched_competitors) where:
@@ -159,9 +318,19 @@ def compute_competitor_mention_score_detailed(
     unmatched: list[str] = []
     for name in competitors:
         name_lower = name.lower()
-        if name_lower in lower_text:
-            matched.append(name_lower)
-        else:
+        # Generate aliases for flexible matching
+        aliases = generate_competitor_aliases(name)
+        # Always include the raw lowercased name as a fallback
+        all_terms = list(dict.fromkeys([name_lower] + aliases))
+
+        # A competitor matches if ANY of its terms appear in the text
+        found = False
+        for term in all_terms:
+            if term and term in lower_text:
+                matched.append(name_lower)
+                found = True
+                break
+        if not found:
             unmatched.append(name_lower)
     score = 1.0 if matched else 0.0
     return score, matched, unmatched
@@ -946,8 +1115,19 @@ def score_content_items(
             parts.append(item.raw_text[:1000])
         items_texts.append(" ".join(parts))
 
+    # Decompose priority themes into sub-terms for BM25 scoring so that
+    # comma-separated themes like "Star Wars, Marvel" produce individual
+    # BM25 query terms instead of a single long string.
+    decomposed_priority_themes: list[str] = []
+    _seen_theme_terms: set[str] = set()
+    for theme in priority_themes:
+        for sub_term in decompose_theme(theme):
+            if sub_term not in _seen_theme_terms:
+                _seen_theme_terms.add(sub_term)
+                decomposed_priority_themes.append(sub_term)
+
     batch_idf: dict[str, float] = compute_document_frequencies(
-        items_texts, priority_themes
+        items_texts, decomposed_priority_themes
     )
 
     # ------------------------------------------------------------------
@@ -980,7 +1160,9 @@ def score_content_items(
                 _extract_domain(item.url),
                 trusted_domains,
             ),
-            "bm25": compute_bm25_score(item_text, priority_themes, idf=batch_idf),
+            "bm25": compute_bm25_score(
+                item_text, decomposed_priority_themes, idf=batch_idf
+            ),
             "content_type_prior": compute_content_type_prior_score(
                 item.content_type,
                 weights=content_type_weights,
@@ -1021,6 +1203,9 @@ def score_content_items(
             "matched": themes_matched,
             "unmatched": themes_unmatched,
             "normalized_themes": [t.lower() for t in priority_themes],
+            "decomposed_themes": {
+                t.lower(): decompose_theme(t) for t in priority_themes
+            },
         }
 
         # Include competitor match metadata for diagnostic observability
@@ -1028,6 +1213,9 @@ def score_content_items(
             "matched": competitors_matched,
             "unmatched": competitors_unmatched,
             "normalized_competitors": [c.lower() for c in competitors],
+            "competitor_aliases": {
+                c.lower(): generate_competitor_aliases(c) for c in competitors
+            },
         }
 
         # ------------------------------------------------------------------

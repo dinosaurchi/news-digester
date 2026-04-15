@@ -18,6 +18,10 @@ from app.services.scoring import (
     compute_keyword_score,
     compute_keyword_score_detailed,
     compute_source_authority_score,
+    decompose_theme,
+    generate_competitor_aliases,
+    normalize_competitor_name,
+    normalize_theme,
     score_content_items,
 )
 
@@ -1978,3 +1982,287 @@ class TestComputeCompetitorMentionScoreDetailed:
         assert score == pytest.approx(0.0)
         assert matched == []
         assert unmatched == []
+
+
+# ---------------------------------------------------------------------------
+# Pass 3 — Normalize profile themes and competitor aliases before scoring
+# ---------------------------------------------------------------------------
+
+
+class TestCompetitorNormalization:
+    """Competitor name normalization strips noise and generates aliases."""
+
+    def test_normalize_competitor_removes_parenthetical_noise(self):
+        """Parenthetical annotations are stripped from competitor aliases."""
+        raw = "Tenyo Metallic Nano (Japanese licensee, same factory)"
+        aliases = generate_competitor_aliases(raw)
+        # The base alias should have the parenthetical stripped
+        assert "tenyo metallic nano" in aliases
+        # No alias should contain the raw parenthetical content
+        for alias in aliases:
+            assert "(" not in alias
+            assert "japanese licensee" not in alias
+
+    def test_normalize_competitor_generates_expected_aliases(self):
+        """generate_competitor_aliases produces meaningful matching aliases."""
+        # Tenyo: full name, suffix (drop first word), first word
+        aliases = generate_competitor_aliases(
+            "Tenyo Metallic Nano (Japanese licensee, same factory)"
+        )
+        assert "tenyo metallic nano" in aliases
+        assert "metallic nano" in aliases
+        assert "tenyo" in aliases
+
+        # Piececool: single word, no meaningful parenthetical phrase
+        aliases = generate_competitor_aliases("Piececool (Chinese 3D metal puzzles)")
+        assert "piececool" in aliases
+
+        # UGEARS: single uppercase word
+        aliases = generate_competitor_aliases(
+            "UGEARS (Ukrainian wooden mechanical models)"
+        )
+        assert "ugears" in aliases
+
+        # Fascinations: single word with a meaningful parenthetical phrase
+        aliases = generate_competitor_aliases(
+            "Fascinations (Metal Earth parent company)"
+        )
+        assert "fascinations" in aliases
+        assert "metal earth" in aliases
+
+    def test_aliases_are_deterministic(self):
+        """Calling generate_competitor_aliases twice returns the same result."""
+        name = "Tenyo Metallic Nano (Japanese licensee, same factory)"
+        first = generate_competitor_aliases(name)
+        second = generate_competitor_aliases(name)
+        assert first == second
+
+    def test_empty_input_returns_empty(self):
+        assert normalize_competitor_name("") == ""
+        assert normalize_competitor_name(None) == ""  # type: ignore[arg-type]
+        assert generate_competitor_aliases("") == []
+        assert generate_competitor_aliases(None) == []  # type: ignore[arg-type]
+
+    def test_no_parenthetical_generates_base_and_word_aliases(self):
+        """Competitor without parenthetical still generates suffix/first-word aliases."""
+        aliases = generate_competitor_aliases("Metal Earth Models")
+        assert "metal earth models" in aliases
+        assert "earth models" in aliases
+        assert "metal" in aliases
+
+    def test_normalize_competitor_name_lowercases(self):
+        assert normalize_competitor_name("OpenAI") == "openai"
+        assert normalize_competitor_name("  SPACE  ") == "space"
+
+
+class TestThemeDecomposition:
+    """Theme decomposition splits complex theme strings into sub-terms."""
+
+    def test_priority_theme_decomposition_generates_subterms(self):
+        """decompose_theme splits comma-separated and and-separated themes."""
+        # Comma-separated themes
+        result = decompose_theme("Star Wars, Marvel, Disney franchise developments")
+        assert "star wars" in result
+        assert "marvel" in result
+
+        # "and" split
+        result = decompose_theme("licensed merchandise and IP deals")
+        assert "licensed merchandise" in result
+        assert "ip deals" in result
+
+    def test_decomposition_generates_bigrams_for_long_phrases(self):
+        """3+ word phrases produce bigram sub-terms."""
+        result = decompose_theme("hobby retail channel and specialty store trends")
+        assert "hobby retail channel" in result
+        assert "specialty store trends" in result
+        assert "hobby retail" in result
+        assert "retail channel" in result
+        assert "specialty store" in result
+
+    def test_decomposition_is_deterministic(self):
+        """decompose_theme always returns the same result for the same input."""
+        theme = "Star Wars, Marvel, Disney franchise developments"
+        assert decompose_theme(theme) == decompose_theme(theme)
+
+    def test_empty_input_returns_empty(self):
+        assert decompose_theme("") == []
+        assert decompose_theme(None) == []  # type: ignore[arg-type]
+
+    def test_single_word_theme_unchanged(self):
+        assert decompose_theme("ai") == ["ai"]
+        assert decompose_theme("hobby") == ["hobby"]
+
+    def test_two_word_theme_unchanged(self):
+        assert decompose_theme("star wars") == ["star wars"]
+
+    def test_normalize_theme_lowercases(self):
+        assert normalize_theme("Star Wars") == "star wars"
+        assert normalize_theme("  SPACE  ") == "space"
+
+
+class TestKeywordScoreWithNormalizedThemes:
+    """Keyword scoring matches on decomposed sub-terms, not just raw strings."""
+
+    def test_keyword_score_uses_normalized_theme_terms(self):
+        """A comma-separated theme matches when any sub-term appears in text."""
+        # The full raw string "Star Wars, Marvel" is NOT a substring of the
+        # text, but "marvel" IS — so the keyword should still match.
+        text = "New marvel movie announced this week"
+        score = compute_keyword_score(text, ["Star Wars, Marvel"])
+        assert score == pytest.approx(1.0)
+
+    def test_keyword_score_detailed_with_decomposed_theme(self):
+        """Detailed variant reports the theme as matched via sub-term."""
+        text = "New marvel movie announced this week"
+        score, matched, unmatched = compute_keyword_score_detailed(
+            text, ["Star Wars, Marvel"]
+        )
+        assert score == pytest.approx(1.0)
+        # The raw lowercased keyword is reported as matched
+        assert "star wars, marvel" in matched
+
+    def test_keyword_score_and_split_matches(self):
+        """'and'-separated theme phrases are decomposed for matching."""
+        text = "New IP deals announced in the licensing sector"
+        score = compute_keyword_score(text, ["licensed merchandise and IP deals"])
+        assert score == pytest.approx(1.0)
+
+    def test_keyword_score_simple_themes_unaffected(self):
+        """Simple single-word themes are unaffected by decomposition."""
+        score = compute_keyword_score("AI is here", ["ai"])
+        assert score == pytest.approx(1.0)
+        score = compute_keyword_score("Weather today", ["ai"])
+        assert score == pytest.approx(0.0)
+
+
+class TestCompetitorMentionScoreWithAliases:
+    """Competitor mention scoring matches on generated aliases."""
+
+    def test_competitor_mention_score_uses_aliases_not_only_raw_strings(self):
+        """Competitor with parenthetical matches on its base name via alias."""
+        text = "Tenyo releases new metallic nano model kit"
+        score = compute_competitor_mention_score(
+            text,
+            ["Tenyo Metallic Nano (Japanese licensee, same factory)"],
+        )
+        assert score == pytest.approx(1.0)
+
+    def test_competitor_mention_matches_on_first_word_alias(self):
+        """A competitor should match when only its first-word alias appears."""
+        text = "Tenyo announced a new product line today"
+        score = compute_competitor_mention_score(
+            text,
+            ["Tenyo Metallic Nano (Japanese licensee, same factory)"],
+        )
+        assert score == pytest.approx(1.0)
+
+    def test_competitor_mention_matches_on_parenthetical_phrase(self):
+        """A competitor should match via a capitalized phrase in parenthetical."""
+        text = "Metal Earth is expanding its product range"
+        score = compute_competitor_mention_score(
+            text,
+            ["Fascinations (Metal Earth parent company)"],
+        )
+        assert score == pytest.approx(1.0)
+
+    def test_competitor_mention_detailed_with_aliases(self):
+        """Detailed variant reports the competitor as matched via alias."""
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "Tenyo announces new product",
+            ["Tenyo Metallic Nano (Japanese licensee, same factory)"],
+        )
+        assert score == pytest.approx(1.0)
+        assert len(matched) == 1
+        assert "tenyo metallic nano (japanese licensee, same factory)" in matched
+
+    def test_competitor_mention_simple_names_unaffected(self):
+        """Simple competitor names without parentheticals are unaffected."""
+        score = compute_competitor_mention_score(
+            "OpenAI announced a new model", ["OpenAI"]
+        )
+        assert score == pytest.approx(1.0)
+
+
+class TestBM25WithNormalizedThemes:
+    """BM25 scoring in the pipeline uses decomposed theme terms."""
+
+    def test_bm25_uses_normalized_theme_terms(self, db_session):
+        """BM25 score is non-zero when a decomposed sub-term matches."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["Star Wars, Marvel"],
+        )
+        # Item containing "marvel" but not the full raw theme string
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="New Marvel superhero movie announced",
+            content_type="news",
+        )
+        # Several non-matching items so IDF for "marvel" is non-zero
+        # (IDF = log(N/(1+df)); with N=4, df=1 → log(4/2) = log(2) > 0)
+        other_items = [
+            _make_item(db_session, ws.id, title=title, content_type="news")
+            for title in [
+                "Weather forecast for this weekend",
+                "Sports results and football scores",
+                "Local politics update from city hall",
+            ]
+        ]
+
+        score_content_items(db_session, [item] + other_items, ws)
+
+        assert item.score_breakdown_json is not None
+        assert item.score_breakdown_json["scores"]["bm25"] > 0
+
+    def test_bm25_breakdown_includes_decomposed_themes(self, db_session):
+        """Score breakdown includes decomposed_themes metadata."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["Star Wars, Marvel, Disney franchise developments"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Some article",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "theme_match" in breakdown
+        assert "decomposed_themes" in breakdown["theme_match"]
+        decomposed = breakdown["theme_match"]["decomposed_themes"]
+        assert "star wars, marvel, disney franchise developments" in decomposed
+        assert (
+            "star wars"
+            in decomposed["star wars, marvel, disney franchise developments"]
+        )
+        assert (
+            "marvel" in decomposed["star wars, marvel, disney franchise developments"]
+        )
+
+    def test_competitor_aliases_in_breakdown(self, db_session):
+        """Score breakdown includes competitor_aliases metadata."""
+        ws = _make_workspace(
+            db_session,
+            competitors=["Fascinations (Metal Earth parent company)"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Some article",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "competitor_match" in breakdown
+        assert "competitor_aliases" in breakdown["competitor_match"]
+        aliases = breakdown["competitor_match"]["competitor_aliases"]
+        raw_key = "fascinations (metal earth parent company)"
+        assert raw_key in aliases
+        assert "fascinations" in aliases[raw_key]
+        assert "metal earth" in aliases[raw_key]
