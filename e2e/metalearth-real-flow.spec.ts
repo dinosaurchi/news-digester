@@ -79,29 +79,35 @@ const PROFILE = {
 };
 
 const FEEDS: { name: string; url: string }[] = [
+  // Feed 1: Direct brand/product mentions — high-signal for Metal Earth itself
   {
     name: 'Metal Earth & Fascinations brand mentions',
     url: 'https://news.google.com/rss/search?q=%22metal+earth%22+OR+%22Fascinations+Inc%22+OR+%223D+metal+model+kit%22',
   },
+  // Feed 2: Licensed franchise collectibles — tracks IP that Metal Earth licenses
   {
     name: 'Star Wars & Marvel toys and collectibles licensing',
     url: 'https://news.google.com/rss/search?q=Star+Wars+OR+Marvel+toys+collectibles+licensing',
   },
+  // Feed 3: Toy & hobby industry trends — retail channel, trade shows, market shifts
   {
     name: 'Toy industry & hobby retail trends',
     url: 'https://news.google.com/rss/search?q=%22toy+industry%22+OR+%22hobby+retail%22+OR+%22toy+fair%22+collectibles',
   },
+  // Feed 4: Competitor watch — uses exact phrases to avoid junk from broad "Tenyo" or "model kit brand"
   {
-    name: 'Competitor watch — Piececool, UGEARS, Tenyo metal models',
-    url: 'https://news.google.com/rss/search?q=Piececool+OR+UGEARS+OR+Tenyo+OR+%22metal+puzzle%22+OR+%22model+kit+brand%22',
+    name: 'Competitor watch — Piececool, UGEARS, Tenyo Metallic Nano, 3D metal puzzles',
+    url: 'https://news.google.com/rss/search?q=%22Piececool+metal+model%22+OR+%22UGEARS+model+kit%22+OR+%22Tenyo+Metallic+Nano%22+OR+%223D+metal+puzzle%22',
   },
+  // Feed 5: Collectible hobby/model market — biased toward hobby collectibles, not generic DIY
   {
-    name: 'DIY model kits & scale modelling hobby',
-    url: 'https://news.google.com/rss/search?q=%22model+kit%22+OR+%22scale+model%22+OR+%22DIY+kit%22+hobby+new+release',
+    name: 'Collectible model kits & hobby industry',
+    url: 'https://news.google.com/rss/search?q=%22collectible+model+kit%22+OR+%22scale+model%22+hobby+OR+%22metal+model+puzzle%22+collectible',
   },
+  // Feed 6: Toy & franchise licensing — scoped to toy/consumer-products to avoid pharma, tech licensing
   {
-    name: 'Entertainment franchise IP — new movies, series & licensing deals',
-    url: 'https://news.google.com/rss/search?q=%22licensing+deal%22+OR+%22franchise+merchandise%22+OR+%22Disney+consumer+products%22+OR+%22Hasbro+licensing%22',
+    name: 'Toy & franchise licensing deals',
+    url: 'https://news.google.com/rss/search?q=%22toy+licensing%22+OR+%22consumer+products+licensing%22+OR+%22collectibles+licensing%22+OR+%22franchise+merchandise+toys%22',
   },
 ];
 
@@ -344,9 +350,11 @@ test.describe.serial('Metal Earth Real Flow — Manual QA', () => {
     const res = await page.request.put(`/api/workspaces/${wsId}/settings`, {
       data: {
         reportStyle: 'detailed',
+        // Standard QA thresholds — not debug mode. Filters obvious junk
+        // while keeping borderline items for scoring verification.
         thresholds: {
-          minRelevanceScore: 0.0,
-          minFinalScore: 0.0,
+          minRelevanceScore: 0.15,
+          minFinalScore: 0.15,
           maxArticlesPerReport: 10,
         },
         schedule: {
@@ -359,7 +367,7 @@ test.describe.serial('Metal Earth Real Flow — Manual QA', () => {
     });
     expect(res.status()).toBe(200);
 
-    console.log('✓ Settings updated (low thresholds, schedule disabled)');
+    console.log('✓ Settings updated (QA thresholds 0.15, schedule disabled)');
   });
 
   /* ------------------------------------------------------------------ */

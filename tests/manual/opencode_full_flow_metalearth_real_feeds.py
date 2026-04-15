@@ -37,14 +37,12 @@ BASE_URL = os.environ.get("SME_BASE_URL", "http://127.0.0.1:8000/api").rstrip("/
 USERNAME = os.environ.get("SME_USERNAME", "admin")
 PASSWORD = os.environ.get("SME_PASSWORD", "admin")
 
-# Google News RSS feeds tightly aligned with Metal Earth / Fascinations' business:
-# 1. Direct brand & product mentions
-# 2. Licensed franchise collectibles (Star Wars, Marvel, etc.)
-# 3. Toy & hobby industry trends (retail, licensing deals)
-# 4. Competitor landscape (Piececool, UGEARS, Tenyo)
-# 5. DIY / model-kit hobby community signals
-# 6. Key franchise IP news that could drive new product lines
+# Google News RSS feeds tightly aligned with Metal Earth / Fascinations' business.
+# Each feed is scoped to avoid junk-producing broad terms (e.g. bare "Tenyo" pulls
+# motorcycle death articles; bare "licensing deal" pulls pharma; bare "model kit brand"
+# is too generic). Use exact-phrase queries or hobby-specific qualifiers instead.
 REAL_FEEDS: list[dict[str, str]] = [
+    # Feed 1: Direct brand/product mentions — high-signal for Metal Earth itself
     {
         "name": "Metal Earth & Fascinations brand mentions",
         "url": (
@@ -54,6 +52,7 @@ REAL_FEEDS: list[dict[str, str]] = [
         "type": "rss",
         "cadence": "daily",
     },
+    # Feed 2: Licensed franchise collectibles — tracks IP that Metal Earth licenses
     {
         "name": "Star Wars & Marvel toys and collectibles licensing",
         "url": (
@@ -63,6 +62,7 @@ REAL_FEEDS: list[dict[str, str]] = [
         "type": "rss",
         "cadence": "daily",
     },
+    # Feed 3: Toy & hobby industry trends — retail channel, trade shows, market shifts
     {
         "name": "Toy industry & hobby retail trends",
         "url": (
@@ -72,30 +72,35 @@ REAL_FEEDS: list[dict[str, str]] = [
         "type": "rss",
         "cadence": "daily",
     },
+    # Feed 4: Competitor watch — exact phrases to avoid junk from broad "Tenyo" or "model kit brand"
     {
-        "name": "Competitor watch — Piececool, UGEARS, Tenyo metal models",
+        "name": "Competitor watch — Piececool, UGEARS, Tenyo Metallic Nano, 3D metal puzzles",
         "url": (
             "https://news.google.com/rss/search?"
-            "q=Piececool+OR+UGEARS+OR+Tenyo+OR+%22metal+puzzle%22+OR+%22model+kit+brand%22"
+            "q=%22Piececool+metal+model%22+OR+%22UGEARS+model+kit%22"
+            "+OR+%22Tenyo+Metallic+Nano%22+OR+%223D+metal+puzzle%22"
         ),
         "type": "rss",
         "cadence": "daily",
     },
+    # Feed 5: Collectible hobby/model market — biased toward hobby collectibles, not generic DIY
     {
-        "name": "DIY model kits & scale modelling hobby",
+        "name": "Collectible model kits & hobby industry",
         "url": (
             "https://news.google.com/rss/search?"
-            "q=%22model+kit%22+OR+%22scale+model%22+OR+%22DIY+kit%22+hobby+new+release"
+            "q=%22collectible+model+kit%22+OR+%22scale+model%22+hobby"
+            "+OR+%22metal+model+puzzle%22+collectible"
         ),
         "type": "rss",
         "cadence": "daily",
     },
+    # Feed 6: Toy & franchise licensing — scoped to toy/consumer-products to avoid pharma, tech licensing
     {
-        "name": "Entertainment franchise IP — new movies, series & licensing deals",
+        "name": "Toy & franchise licensing deals",
         "url": (
             "https://news.google.com/rss/search?"
-            "q=%22licensing+deal%22+OR+%22franchise+merchandise%22"
-            "+OR+%22Disney+consumer+products%22+OR+%22Hasbro+licensing%22"
+            "q=%22toy+licensing%22+OR+%22consumer+products+licensing%22"
+            "+OR+%22collectibles+licensing%22+OR+%22franchise+merchandise+toys%22"
         ),
         "type": "rss",
         "cadence": "daily",
@@ -251,9 +256,11 @@ def main() -> int:
     # ── Step 4: Update settings ─────────────────────────────────────────
     settings = {
         "reportStyle": "detailed",
+        # Standard QA thresholds — not debug mode. Filters obvious junk
+        # while keeping borderline items for scoring verification.
         "thresholds": {
-            "minRelevanceScore": 0.0,
-            "minFinalScore": 0.0,
+            "minRelevanceScore": 0.15,
+            "minFinalScore": 0.15,
             "maxArticlesPerReport": 10,
         },
         "schedule": {
