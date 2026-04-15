@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -281,7 +282,9 @@ def compute_bm25_score(
     if not text or not query_terms:
         return 0.0
 
-    tokens = text.lower().split()
+    # Tokenise document: strip punctuation so "wars," matches "wars"
+    tokens = [re.sub(r"[^\w]", "", t) for t in text.lower().split()]
+    tokens = [t for t in tokens if t]
     if not tokens:
         return 0.0
 
@@ -290,15 +293,38 @@ def compute_bm25_score(
     for token in tokens:
         tf[token] = tf.get(token, 0) + 1
 
-    # Sum log(1 + tf) * idf (when provided) for each query term present
+    # Sum log(1 + tf) * idf (when provided) for each query term present.
+    # Multi-word query terms give partial credit: each component word that
+    # appears contributes proportionally to coverage (matched / total words).
     raw_score = 0.0
     for term in query_terms:
         term_lower = term.lower()
-        if term_lower in tf:
-            tf_score = math.log(1 + tf[term_lower])
-            if idf is not None and term_lower in idf:
-                tf_score *= idf[term_lower]
-            raw_score += tf_score
+        # Strip punctuation from theme words too so commas don't break matching
+        words = [re.sub(r"[^\w]", "", w) for w in term_lower.split()]
+        words = [w for w in words if w]
+
+        if not words:
+            continue
+
+        if len(words) == 1:
+            # Single-word term: original behaviour — direct TF lookup
+            if words[0] in tf:
+                tf_score = math.log(1 + tf[words[0]])
+                if idf is not None and term_lower in idf:
+                    tf_score *= idf[term_lower]
+                raw_score += tf_score
+        else:
+            # Multi-word term: partial credit — each matched word contributes.
+            # Coverage ratio (matched/total) scales the score so fully-matching
+            # themes score higher than partially-matching ones.
+            matched = [w for w in words if w in tf]
+            if matched:
+                coverage = len(matched) / len(words)
+                avg_tf = sum(math.log(1 + tf[w]) for w in matched) / len(matched)
+                tf_score = coverage * avg_tf
+                if idf is not None and term_lower in idf:
+                    tf_score *= idf[term_lower]
+                raw_score += tf_score
 
     # Normalise by number of query terms so the score reflects match density
     normalised = raw_score / len(query_terms)
@@ -606,6 +632,35 @@ def _load_feedback_signals(
     return topic_prefs, source_prefs, feedback_event_count
 
 
+def _topic_matches_text(topic_key: str, text: str) -> bool:
+    """Check whether a topic preference key matches item text.
+
+    Matching rules:
+    - Multi-word topics: all individual words must appear in the text (AND
+      logic), each matched with word-boundary regex so that short component
+      words like "AI" do not produce false positives from words such as
+      "MAIL" or "EMAIL".  The words do not need to appear contiguously or
+      in order.
+    - Single-word topics: the word is matched using word-boundary regex
+      (``\\bword\\b``) to avoid false positives such as "AI" matching
+      "MAIL" or "PAIR".
+    - Empty or whitespace-only topics never match.
+    - Matching is case-insensitive for both topic and text.
+    """
+    if not topic_key or not topic_key.strip():
+        return False
+
+    lower_text = text.lower()
+    words = topic_key.lower().split()
+
+    # Both single- and multi-word topics use word-boundary matching so that
+    # short words like "ai" don't match inside longer words.
+    return all(
+        re.search(r"\b" + re.escape(word) + r"\b", lower_text) is not None
+        for word in words
+    )
+
+
 def _compute_feedback_adjustment(
     item_text: str,
     source_name: str | None,
@@ -634,7 +689,7 @@ def _compute_feedback_adjustment(
     # Topic preference adjustments (with time decay)
     for pref in topic_prefs:
         topic_key = pref["key"]
-        if topic_key in lower_text:
+        if _topic_matches_text(topic_key, lower_text):
             original_weight = pref["weight"]
             decay_factor = _compute_decay_factor(pref["updated_at"])
             decayed_weight = original_weight * decay_factor

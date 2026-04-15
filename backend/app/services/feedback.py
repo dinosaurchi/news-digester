@@ -46,7 +46,9 @@ def get_feedback_summary(db: Session, workspace_id: str) -> dict:
             {
                 "topic": tp.topic,
                 "weight": tp.weight,
-                "sentiment": "positive" if tp.weight >= 1.0 else "neutral",
+                "sentiment": "positive"
+                if tp.weight > 0
+                else ("negative" if tp.weight < 0 else "neutral"),
             }
             for tp in topic_prefs_from_table
         ]
@@ -80,7 +82,9 @@ def get_feedback_summary(db: Session, workspace_id: str) -> dict:
             {
                 "source": sp.source_name,
                 "weight": sp.weight,
-                "sentiment": "positive" if sp.weight >= 1.0 else "neutral",
+                "sentiment": "positive"
+                if sp.weight > 0
+                else ("negative" if sp.weight < 0 else "neutral"),
             }
             for sp in source_prefs_from_table
         ]
@@ -113,6 +117,61 @@ def get_feedback_summary(db: Session, workspace_id: str) -> dict:
     }
 
 
+_FEEDBACK_WEIGHT_CAP = 5.0
+_FEEDBACK_WEIGHT_DELTA = 1.0
+
+
+def _upsert_preference_from_feedback(
+    db: Session,
+    *,
+    workspace_id: str,
+    model: type,
+    lookup_field: str,
+    lookup_value: str,
+    sentiment: str | None,
+) -> None:
+    """Upsert a preference record from a feedback event using accumulative weight.
+
+    - positive sentiment → add +1.0 to existing weight (or set 1.0 if new)
+    - negative sentiment → add -1.0 to existing weight (or set -1.0 if new)
+    - neutral / missing  → reset weight to 0.0
+
+    Weight is capped at ±_FEEDBACK_WEIGHT_CAP.
+    """
+    existing = (
+        db.query(model)
+        .filter(
+            model.workspace_id == workspace_id,
+            getattr(model, lookup_field) == lookup_value,
+        )
+        .one_or_none()
+    )
+
+    if sentiment == "positive":
+        delta = _FEEDBACK_WEIGHT_DELTA
+    elif sentiment == "negative":
+        delta = -_FEEDBACK_WEIGHT_DELTA
+    else:
+        delta = 0.0  # neutral or missing → reset
+
+    if existing is not None:
+        if delta == 0.0:
+            existing.weight = 0.0
+        else:
+            existing.weight = max(
+                -_FEEDBACK_WEIGHT_CAP,
+                min(_FEEDBACK_WEIGHT_CAP, existing.weight + delta),
+            )
+    else:
+        new_weight = delta if abs(delta) > 0 else 0.0
+        existing = model(
+            workspace_id=workspace_id,
+            **{lookup_field: lookup_value},
+            weight=new_weight,
+        )
+        db.add(existing)
+
+
 def create_feedback_event(
     db: Session,
     *,
@@ -123,7 +182,12 @@ def create_feedback_event(
     thread_id: str | None = None,
     message_id: str | None = None,
 ) -> FeedbackEvent:
-    """Create and persist a new feedback event."""
+    """Create and persist a new feedback event.
+
+    For ``topic_preference`` and ``source_preference`` events the
+    corresponding preference record is also created / updated so that the
+    scoring pipeline can read it.
+    """
     event = FeedbackEvent(
         workspace_id=workspace_id,
         feedback_type=feedback_type,
@@ -134,4 +198,25 @@ def create_feedback_event(
     )
     db.add(event)
     db.flush()
+
+    # ── Convert feedback events into preference records ───────────────
+    if feedback_type == "topic_preference" and value:
+        _upsert_preference_from_feedback(
+            db,
+            workspace_id=workspace_id,
+            model=TopicPreference,
+            lookup_field="topic",
+            lookup_value=value,
+            sentiment=sentiment,
+        )
+    elif feedback_type == "source_preference" and value:
+        _upsert_preference_from_feedback(
+            db,
+            workspace_id=workspace_id,
+            model=SourcePreference,
+            lookup_field="source_name",
+            lookup_value=value,
+            sentiment=sentiment,
+        )
+
     return event

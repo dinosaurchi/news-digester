@@ -6,6 +6,7 @@ import WorkspaceOverviewPage from '@/pages/WorkspaceOverviewPage';
 import ProfilePage from '@/pages/ProfilePage';
 import FeedsPage from '@/pages/FeedsPage';
 import ContentPage from '@/pages/ContentPage';
+import ContentDetailPage from '@/pages/ContentDetailPage';
 import ReportsPage from '@/pages/ReportsPage';
 import ReportThreadPage from '@/pages/ReportThreadPage';
 import RunsPage from '@/pages/RunsPage';
@@ -44,6 +45,10 @@ export const router = createBrowserRouter([
       {
         path: 'workspaces/:workspaceId/content',
         element: <ContentPage />,
+      },
+      {
+        path: 'workspaces/:workspaceId/content/:contentId',
+        element: <ContentDetailPage />,
       },
       {
         path: 'workspaces/:workspaceId/reports',

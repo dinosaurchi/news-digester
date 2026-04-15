@@ -1537,3 +1537,103 @@ class TestFeedHealthInPipelineScoring:
 
         breakdown = item.score_breakdown_json
         assert breakdown["feed_health_weight"] == pytest.approx(0.25)
+
+
+# ---------------------------------------------------------------------------
+# BM25 multi-word priority theme repair (Pass 2b)
+# ---------------------------------------------------------------------------
+
+
+class TestBM25MultiWordTerms:
+    """BM25 scoring handles multi-word priority themes correctly."""
+
+    def test_bm25_multiword_term_matches_when_component_words_present(self):
+        """A multi-word term like 'edge computing' scores > 0 when both
+        component words appear in the text."""
+        text = "Enterprise edge platforms are reshaping computing infrastructure"
+        score = compute_bm25_score(text, ["edge computing"])
+        assert score > 0.0
+
+    def test_bm25_multiword_term_partial_match_scores_less_than_full_match(self):
+        """A multi-word term gives partial credit when only some component words
+        are present — scores > 0 but strictly less than when all words match."""
+        partial_text = "The cutting edge of modern design"  # only "edge"
+        full_text = "Enterprise edge platforms reshaping computing infrastructure"
+        partial_score = compute_bm25_score(partial_text, ["edge computing"])
+        full_score = compute_bm25_score(full_text, ["edge computing"])
+        assert partial_score > 0.0
+        assert full_score > partial_score
+
+    def test_bm25_mixed_single_and_multiword_terms(self):
+        """Both single-word and multi-word query terms contribute in the
+        same score calculation."""
+        text = "New ai breakthroughs improve cloud security measures"
+        score = compute_bm25_score(text, ["ai", "cloud security"])
+        assert score > 0.0
+
+        # Verify each term individually also contributes
+        score_ai_only = compute_bm25_score(text, ["cloud security"])
+        score_cloud_only = compute_bm25_score(text, ["ai"])
+        assert score_ai_only > 0.0
+        assert score_cloud_only > 0.0
+
+    def test_bm25_multiword_matching_case_insensitive(self):
+        """Multi-word matching is case-insensitive."""
+        text = "EDGE COMPUTING trends are accelerating"
+        score = compute_bm25_score(text, ["edge computing"])
+        assert score > 0.0
+
+    def test_bm25_multiword_regression_with_batch_idf(self):
+        """Multi-word terms produce non-zero BM25 when IDF is computed
+        across a document batch."""
+        items_texts = [
+            "Enterprise edge platforms are reshaping computing infrastructure",
+            "New fintech regulations announced today",
+            "Sports results: football and basketball scores",
+        ]
+        query_terms = ["edge computing"]
+        idf = compute_document_frequencies(items_texts, query_terms)
+
+        # The first document should get a non-zero BM25 score
+        score = compute_bm25_score(items_texts[0], query_terms, idf=idf)
+        assert score > 0.0
+
+        # Documents without matching words should score 0
+        score_no_match = compute_bm25_score(items_texts[2], query_terms, idf=idf)
+        assert score_no_match == pytest.approx(0.0)
+
+    def test_score_content_items_multiword_priority_themes_contribute_bm25(
+        self, db_session
+    ):
+        """Workspace with multi-word priority themes produces non-zero BM25
+        in score breakdowns for matching content."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["edge computing", "cloud security"],
+        )
+        # Matching item — contains both "edge computing" and "cloud security"
+        match_item = _make_item(
+            db_session,
+            ws.id,
+            title="Enterprise edge platforms reshape computing infrastructure",
+            summary_snippet="New advances in edge computing and cloud security "
+            "are transforming the industry landscape.",
+        )
+        # Non-matching items — needed so IDF is non-zero for matching terms
+        other_item1 = _make_item(
+            db_session,
+            ws.id,
+            title="Local sports results from this weekend",
+            summary_snippet="Football and basketball scores updated.",
+        )
+        other_item2 = _make_item(
+            db_session,
+            ws.id,
+            title="Celebrity gossip and entertainment news",
+            summary_snippet="Latest celebrity gossip and movie reviews.",
+        )
+
+        score_content_items(db_session, [match_item, other_item1, other_item2], ws)
+
+        assert match_item.score_breakdown_json is not None
+        assert match_item.score_breakdown_json["scores"]["bm25"] > 0

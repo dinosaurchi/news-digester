@@ -69,16 +69,39 @@ def build_score_breakdown(item: ContentItem) -> dict:
     breakdown = item.score_breakdown_json
     if breakdown and "scores" in breakdown:
         scores = breakdown["scores"]
-        return {
-            "relevance": round(float(scores.get("keyword", 0)), 4),
-            "llm": round(float(scores.get("bm25", 0)), 4),
+        weights = breakdown.get("weights", {})
+        # Combine keyword and BM25 as the displayed "relevance" signal,
+        # weighted by their respective scoring weights so the number reflects
+        # their actual contribution to the final score.
+        kw = float(scores.get("keyword", 0))
+        bm25 = float(scores.get("bm25", 0))
+        kw_w = float(weights.get("keyword", 0.25))
+        bm25_w = float(weights.get("bm25", 0.20))
+        total_w = kw_w + bm25_w
+        relevance = (kw * kw_w + bm25 * bm25_w) / total_w if total_w > 0 else max(kw, bm25)
+        result = {
+            "relevance": round(relevance, 4),
+            "bm25": round(float(scores.get("bm25", scores.get("llm", 0))), 4),
             "freshness": round(float(scores.get("freshness", 0)), 4),
             "sourceAuthority": round(float(scores.get("source_authority", 0)), 4),
         }
+        # Expose feedback adjustment data when present
+        if breakdown.get("feedback_adjustment") is not None:
+            result["feedbackAdjustment"] = round(
+                float(breakdown["feedback_adjustment"]), 4
+            )
+        if "feedback" in breakdown:
+            fb = breakdown["feedback"]
+            result["feedback"] = {
+                "topicsMatched": fb.get("topics_matched", []),
+                "sourcesMatched": fb.get("sources_matched", []),
+                "eventCount": fb.get("event_count", 0),
+            }
+        return result
     # Fallback for items not yet scored by the new pipeline
     return {
         "relevance": item.local_relevance_score or 0,
-        "llm": item.llm_score or 0,
+        "bm25": item.llm_score or 0,
         "freshness": 0,
         "sourceAuthority": 0,
     }

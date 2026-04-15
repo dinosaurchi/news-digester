@@ -919,12 +919,12 @@ class TestRunNowScoring:
         assert "scoreBreakdown" in data
         sb = data["scoreBreakdown"]
         assert "relevance" in sb
-        assert "llm" in sb
+        assert "bm25" in sb
         assert "freshness" in sb
         assert "sourceAuthority" in sb
 
         # Values should be non-negative floats
-        for key in ("relevance", "llm", "freshness", "sourceAuthority"):
+        for key in ("relevance", "bm25", "freshness", "sourceAuthority"):
             assert isinstance(sb[key], (int, float))
             assert sb[key] >= 0.0
 

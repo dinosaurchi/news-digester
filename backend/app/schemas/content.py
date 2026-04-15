@@ -14,7 +14,7 @@ class ContentItemOut(BaseModel):
     published_at: Optional[str] = Field(default=None, alias="publishedAt")
     type: str
     relevance_score: Optional[float] = Field(default=None, alias="relevanceScore")
-    llm_score: Optional[float] = Field(default=None, alias="llmScore")
+    bm25_score: Optional[float] = Field(default=None, alias="bm25Score")
     final_score: Optional[float] = Field(default=None, alias="finalScore")
     status: str
     cluster_id: Optional[str] = Field(default=None, alias="clusterId")
@@ -31,7 +31,7 @@ class ContentItemOut(BaseModel):
 
 class ScoreBreakdown(BaseModel):
     relevance: float
-    llm: float
+    bm25: float
     freshness: float
     source_authority: float
 
@@ -50,6 +50,15 @@ def _content_item_to_out(item) -> dict:
     if item.report_id:
         linked_report_ids.append(item.report_id)
 
+    bm25_score = item.llm_score
+    breakdown = item.score_breakdown_json or {}
+    if bm25_score is None and isinstance(breakdown, dict):
+        scores = breakdown.get("scores")
+        if isinstance(scores, dict):
+            bm25_score = scores.get("bm25", scores.get("llm"))
+            if isinstance(bm25_score, (int, float)):
+                bm25_score = float(bm25_score)
+
     return {
         "id": item.id,
         "workspaceId": item.workspace_id,
@@ -59,7 +68,7 @@ def _content_item_to_out(item) -> dict:
         "publishedAt": item.published_at.isoformat() if item.published_at else None,
         "type": item.content_type,
         "relevanceScore": item.local_relevance_score,
-        "llmScore": item.llm_score,
+        "bm25Score": bm25_score,
         "finalScore": item.final_score,
         "status": item.status,
         "clusterId": item.cluster_id,

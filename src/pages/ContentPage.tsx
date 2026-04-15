@@ -1,9 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import {
   Search, ExternalLink, ChevronUp, ChevronDown, Info, FileText, FilterX,
-  Calendar, Link2, Tag, Hash, ArrowUpDown, Trash2, AlertCircle, Loader2,
+  ArrowUpDown, Trash2, AlertCircle, Loader2,
 } from 'lucide-react';
 import { formatDateOnly, cn } from '@/lib/utils';
 import { useState, useMemo } from 'react';
@@ -11,10 +11,9 @@ import { toast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/ui/page-header';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { EmptyState } from '@/components/ui/empty-state';
-import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/loading-skeleton';
 import { ScoreBar } from '@/components/ui/score-bar';
-import type { ContentStatus, ContentType, ContentItemDetail } from '@/lib/types';
+import type { ContentStatus, ContentType } from '@/lib/types';
 import type { ContentFilters } from '@/types';
 
 /* ------------------------------------------------------------------ */
@@ -31,7 +30,7 @@ type SortKey =
   | 'publishedAt'
   | 'type'
   | 'relevanceScore'
-  | 'llmScore'
+  | 'bm25Score'
   | 'finalScore'
   | 'status';
 type SortDir = 'asc' | 'desc';
@@ -181,6 +180,7 @@ export default function ContentPage() {
   const params = useParams();
   const workspaceId = params.workspaceId as string;
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   /* ---- filter state ---- */
   const [source, setSource] = useState('');
@@ -195,9 +195,6 @@ export default function ContentPage() {
 
   /* ---- pagination ---- */
   const [page, setPage] = useState(1);
-
-  /* ---- detail drawer ---- */
-  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   /* ---- delete confirmation ---- */
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -232,20 +229,11 @@ export default function ContentPage() {
     queryFn: () => api.content.list(workspaceId, filters),
   });
 
-  const { data: detail, isLoading: detailLoading } = useQuery({
-    queryKey: ['content-detail', selectedId],
-    queryFn: () => api.content.getDetail(workspaceId, selectedId!),
-    enabled: !!selectedId,
-  });
-
   /* ---- delete mutation ---- */
   const deleteMutation = useMutation({
     mutationFn: (itemId: string) => api.content.delete(itemId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['content'] });
-      if (deleteConfirmId === selectedId) {
-        setSelectedId(null);
-      }
       setDeleteConfirmId(null);
       toast.success('Content item deleted.');
     },
@@ -411,11 +399,10 @@ export default function ContentPage() {
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200">
                   <SortableTh label="Title" column="title" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[200px]" />
-                  <SortableTh label="Source" column="source" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[100px]" />
                   <SortableTh label="Published" column="publishedAt" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                   <SortableTh label="Type" column="type" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                   <SortableTh label="Relevance" column="relevanceScore" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[90px]" />
-                  <SortableTh label="LLM" column="llmScore" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[70px]" />
+                  <SortableTh label="BM25" column="bm25Score" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[70px]" />
                   <SortableTh label="Final" column="finalScore" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[80px]" />
                   <SortableTh label="Status" column="status" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                   <th className="px-3 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">Cluster</th>
@@ -427,17 +414,13 @@ export default function ContentPage() {
                   <tr
                     key={item.id}
                     className="hover:bg-slate-50/70 transition-colors cursor-pointer group"
-                    onClick={() => setSelectedId(item.id)}
+                    onClick={() => navigate(`/workspaces/${workspaceId}/content/${item.id}`)}
                   >
                     {/* Title */}
                     <td className="px-3 py-2.5 max-w-[220px]">
                       <p className="text-sm font-medium text-slate-900 line-clamp-1 group-hover:text-indigo-600 transition-colors">
                         {item.title}
                       </p>
-                    </td>
-                    {/* Source */}
-                    <td className="px-3 py-2.5">
-                      <span className="text-xs font-medium text-slate-600">{item.source}</span>
                     </td>
                     {/* Published */}
                     <td className="px-3 py-2.5">
@@ -453,7 +436,7 @@ export default function ContentPage() {
                     </td>
                     {/* LLM Score */}
                     <td className="px-3 py-2.5">
-                      <ScoreBar score={item.llmScore * 100} size="sm" showBar={false} />
+                      <ScoreBar score={item.bm25Score * 100} size="sm" showBar={false} />
                     </td>
                     {/* Final Score */}
                     <td className="px-3 py-2.5">
@@ -486,7 +469,7 @@ export default function ContentPage() {
                           <ExternalLink className="w-3.5 h-3.5" />
                         </a>
                         <button
-                          onClick={e => { e.stopPropagation(); setSelectedId(item.id); }}
+                          onClick={e => { e.stopPropagation(); navigate(`/workspaces/${workspaceId}/content/${item.id}`); }}
                           className="p-1 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 rounded transition-colors"
                         >
                           <Info className="w-3.5 h-3.5" />
@@ -533,14 +516,6 @@ export default function ContentPage() {
         </div>
       )}
 
-      {/* ---- Detail Drawer ---- */}
-      <ContentDetailSheet
-        open={!!selectedId}
-        onClose={() => setSelectedId(null)}
-        detail={detail}
-        loading={detailLoading}
-      />
-
       {/* ---- Delete Confirmation Dialog ---- */}
       {deleteConfirmId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -572,174 +547,6 @@ export default function ContentPage() {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-/* ================================================================== */
-/*  Content Detail Sheet                                                */
-/* ================================================================== */
-
-function ContentDetailSheet({
-  open,
-  onClose,
-  detail,
-  loading,
-}: {
-  open: boolean;
-  onClose: () => void;
-  detail?: ContentItemDetail;
-  loading: boolean;
-}) {
-  if (!open) return null;
-
-  return (
-    <Sheet
-      open={open}
-      onOpenChange={onClose}
-      title={detail?.title ?? 'Content Detail'}
-      description={detail ? `${detail.source} · ${formatDateOnly(detail.publishedAt)}` : undefined}
-    >
-      {loading || !detail ? (
-        <div className="space-y-5">
-          <Skeleton className="h-5 w-3/4" />
-          <Skeleton className="h-4 w-1/2" />
-          <Skeleton className="h-20 w-full" />
-          <Skeleton className="h-32 w-full" />
-        </div>
-      ) : (
-        <div className="space-y-6">
-          {/* Header badges */}
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={detail.status} size="md" />
-            <ContentTypeBadge type={detail.type} />
-          </div>
-
-          {/* Metadata */}
-          <section className="space-y-2.5">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Metadata</h3>
-            <div className="grid grid-cols-1 gap-2 text-sm">
-              <MetaRow icon={Tag} label="Source" value={detail.source} />
-              <MetaRow icon={Calendar} label="Published" value={formatDateOnly(detail.publishedAt)} />
-              <MetaRow
-                icon={Link2}
-                label="URL"
-                value={
-                  <a href={detail.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline truncate block">
-                    {detail.sourceUrl}
-                  </a>
-                }
-              />
-              {detail.clusterId && (
-                <MetaRow icon={Hash} label="Cluster" value={detail.clusterId} />
-              )}
-            </div>
-          </section>
-
-          {/* Score Breakdown */}
-          <section className="space-y-2.5">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Score Breakdown</h3>
-            <div className="bg-slate-50 rounded-lg p-4 space-y-3">
-              <ScoreRow label="Relevance" score={detail.scoreBreakdown.relevance * 100} />
-              <ScoreRow label="LLM" score={detail.scoreBreakdown.llm * 100} />
-              <ScoreRow label="Freshness" score={detail.scoreBreakdown.freshness * 100} />
-              <ScoreRow label="Source Authority" score={detail.scoreBreakdown.sourceAuthority * 100} />
-              <div className="pt-2 mt-2 border-t border-slate-200">
-                <ScoreRow label="Final" score={detail.finalScore * 100} bold />
-              </div>
-            </div>
-          </section>
-
-          {/* Body / Snippet */}
-          <section className="space-y-2">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Content</h3>
-            <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-line">
-              {detail.body || detail.snippet}
-            </p>
-          </section>
-
-          {/* Inclusion / Exclusion Reason */}
-          {detail.inclusionReason && (
-            <section className="space-y-2">
-              <h3 className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Inclusion Reason</h3>
-              <p className="text-sm text-slate-700 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
-                {detail.inclusionReason}
-              </p>
-            </section>
-          )}
-          {detail.exclusionReason && (
-            <section className="space-y-2">
-              <h3 className="text-xs font-bold text-red-600 uppercase tracking-wider">Exclusion Reason</h3>
-              <p className="text-sm text-slate-700 bg-red-50 border border-red-200 rounded-lg p-3">
-                {detail.exclusionReason}
-              </p>
-            </section>
-          )}
-
-          {/* Cluster Relations */}
-          {detail.clusterItems && detail.clusterItems.length > 0 && (
-            <section className="space-y-2">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                Cluster Relations ({detail.clusterItems.length})
-              </h3>
-              <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
-                {detail.clusterItems.map(ci => (
-                  <div key={ci.id} className="px-3 py-2.5 hover:bg-slate-50 transition-colors">
-                    <p className="text-xs font-medium text-slate-800 line-clamp-1">{ci.title}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-[10px] text-slate-500">{ci.source}</span>
-                      <ScoreBar score={ci.finalScore * 100} size="sm" showBar={false} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* Linked Reports */}
-          {detail.linkedReportIds && detail.linkedReportIds.length > 0 && (
-            <section className="space-y-2">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Linked Reports</h3>
-              <div className="flex flex-wrap gap-2">
-                {detail.linkedReportIds.map(id => (
-                  <span
-                    key={id}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-md px-2.5 py-1"
-                  >
-                    <FileText className="w-3 h-3" />
-                    {id}
-                  </span>
-                ))}
-              </div>
-            </section>
-          )}
-        </div>
-      )}
-    </Sheet>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Tiny helper components                                              */
-/* ------------------------------------------------------------------ */
-
-function MetaRow({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex items-start gap-2">
-      <Icon className="w-3.5 h-3.5 text-slate-400 mt-0.5 shrink-0" />
-      <span className="text-xs font-medium text-slate-400 w-24 shrink-0">{label}</span>
-      <span className="text-sm text-slate-700 min-w-0">{value}</span>
-    </div>
-  );
-}
-
-function ScoreRow({ label, score, bold }: { label: string; score: number; bold?: boolean }) {
-  return (
-    <div className="flex items-center gap-3">
-      <span className="text-xs font-medium text-slate-500 w-28 shrink-0">{label}</span>
-      <div className="flex-1">
-        <ScoreBar score={score} bold={bold} />
-      </div>
     </div>
   );
 }
