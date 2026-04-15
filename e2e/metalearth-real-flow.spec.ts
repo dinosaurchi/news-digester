@@ -439,6 +439,10 @@ test.describe.serial('Metal Earth Real Flow — Manual QA', () => {
 
   /* ------------------------------------------------------------------ */
   /*  Step 8: Verify content via UI                                     */
+  /*  NOTE: Content scoring is deterministic/lexical only (keyword, BM25,*/
+  /*  freshness, source authority).  LLM is NOT used for base content    */
+  /*  scoring — it is used only for shortlist reranking and report       */
+  /*  generation.                                                        */
   /* ------------------------------------------------------------------ */
 
   test('Step 8: Verify content via UI', async ({ page }) => {

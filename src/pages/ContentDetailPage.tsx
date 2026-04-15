@@ -164,7 +164,9 @@ export default function ContentDetailPage() {
             </div>
           </section>
 
-          {/* Score Breakdown */}
+          {/* Score Breakdown — all scores are deterministic/lexical (keyword, BM25, freshness, source authority).
+              No LLM or semantic model is used for content scoring. LLM is used only for
+              shortlist reranking and report generation. */}
           <section className="space-y-2.5">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Score Breakdown</h3>
             <div className="bg-slate-50 rounded-lg p-4 space-y-3">

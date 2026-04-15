@@ -1,4 +1,37 @@
-"""Pure utility functions for cheap relevance scoring of content items."""
+"""Pure utility functions for cheap relevance scoring of content items.
+
+**Scoring Architecture — Deterministic / Lexical Only**
+
+Content scoring is **deterministic and lexical**.  No LLM or semantic model
+is used to compute base relevance scores.  The scoring signals are:
+
+- **Keyword matching** — case-insensitive substring / sub-term matching
+  against workspace priority themes
+- **Competitor mention detection** — substring matching against competitor
+  names and their generated aliases
+- **BM25** — simplified BM25-style term-frequency scoring with optional
+  inverse-document-frequency (IDF) weighting across a content batch
+- **Freshness / recency** — linear time-decay based on publish date
+- **Source authority** — domain trust look-up against a configurable
+  allow-list
+- **Content type prior** — configurable prior weights per content type
+  (news, blog, press_release, etc.)
+- **Multi-signal boost** — small additive bonus when multiple distinct
+  priority themes match in the same article
+- **Feedback adjustment** — lightweight score delta from user preference
+  signals with exponential time decay
+
+**Where LLM IS Used (outside this module)**
+
+- ``shortlist.py`` — LLM-based reranking of a shortlisted article set
+  before report generation
+- ``report_generator.py`` — LLM-based intelligence report generation and
+  conversational follow-ups
+
+If you are considering adding semantic / LLM-based scoring to this module,
+consult the team first — the current deterministic approach was chosen
+deliberately after evaluating scoring quality across multiple passes.
+"""
 
 from __future__ import annotations
 

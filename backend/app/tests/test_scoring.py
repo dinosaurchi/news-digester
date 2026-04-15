@@ -2598,3 +2598,86 @@ class TestPass4ScoringQuality:
         # Strong should also beat generic and competitor
         assert scores["strong"] > scores["generic"]
         assert scores["competitor"] > scores["weak"]
+
+
+# ---------------------------------------------------------------------------
+# Pass 5 — Semantic/LLM scoring decision: Option A (stay deterministic)
+# ---------------------------------------------------------------------------
+
+
+class TestNoSemanticScoringComponent:
+    """Guard-rail tests ensuring no semantic/LLM component sneaks into scoring.
+
+    Content scoring is intentionally deterministic/lexical only (keyword,
+    competitor, BM25, freshness, source authority).  LLM is used exclusively
+    in ``shortlist.py`` (reranking) and ``report_generator.py`` (reports).
+
+    These tests will break if someone accidentally adds a ``semantic_relevance``
+    or ``llm_score`` key to the score breakdown, catching the introduction of
+    undocumented LLM-based scoring.
+    """
+
+    def test_score_breakdown_does_not_contain_semantic_component(self, db_session):
+        """Score breakdown must NOT contain a 'semantic_relevance' key."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai", "machine learning"],
+            competitors=["OpenAI"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI and machine learning breakthrough by OpenAI",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "semantic_relevance" not in breakdown
+        assert "semantic_relevance" not in breakdown.get("scores", {})
+
+    def test_score_breakdown_does_not_contain_llm_score_key(self, db_session):
+        """Score breakdown must NOT contain an 'llm_score' key in the scores section.
+
+        NOTE: The ORM model has a legacy ``llm_score`` column (repurposed to
+        store BM25), but the score breakdown dict produced by this module must
+        not introduce a new ``llm_score`` scoring component.
+        """
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+        item = _make_item(db_session, ws.id, title="AI news", content_type="news")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "llm_score" not in breakdown
+        assert "llm_score" not in breakdown.get("scores", {})
+
+    def test_combined_score_breakdown_has_only_known_components(self, db_session):
+        """The combined score breakdown only contains known deterministic components."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+        item = _make_item(db_session, ws.id, title="AI article", content_type="news")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        scores = breakdown.get("scores", {})
+
+        # All known deterministic scoring components
+        known_keys = {
+            "keyword",
+            "competitor_mention",
+            "freshness",
+            "source_authority",
+            "bm25",
+            "content_type_prior",
+            "feed_health",
+        }
+
+        # Any key in scores that is not in known_keys is a potential
+        # accidental introduction of a new scoring signal
+        unknown_keys = set(scores.keys()) - known_keys
+        assert unknown_keys == set(), (
+            f"Unexpected scoring components found: {unknown_keys}. "
+            "Content scoring should only use deterministic/lexical signals."
+        )
