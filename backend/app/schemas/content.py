@@ -11,6 +11,8 @@ class ContentItemOut(BaseModel):
     title: str
     source: Optional[str] = None
     source_url: Optional[str] = Field(default=None, alias="sourceUrl")
+    publisher_name: Optional[str] = Field(default=None, alias="publisherName")
+    publisher_domain: Optional[str] = Field(default=None, alias="publisherDomain")
     published_at: Optional[str] = Field(default=None, alias="publishedAt")
     type: str
     relevance_score: Optional[float] = Field(default=None, alias="relevanceScore")
@@ -112,6 +114,8 @@ def _content_item_to_out(item) -> dict:
         "title": item.title,
         "source": item.source_name,
         "sourceUrl": item.url,
+        "publisherName": getattr(item, "publisher_name", None),
+        "publisherDomain": getattr(item, "publisher_domain", None),
         "publishedAt": item.published_at.isoformat() if item.published_at else None,
         "type": item.content_type,
         "relevanceScore": item.local_relevance_score,

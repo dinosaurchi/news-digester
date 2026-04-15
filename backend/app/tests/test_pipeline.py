@@ -841,6 +841,30 @@ class TestResolveNewsUrl:
 
         assert result == "https://example.com/canonical"
 
+    def test_resolve_google_news_stays_on_google_falls_back(self):
+        """When the resolved URL is still a Google News URL, return original."""
+        url = self.GOOGLE_RSS_URL
+        # Simulate Google redirecting to locale-param variant (still Google)
+        resolved_still_google = (
+            "https://news.google.com/rss/articles/CBMiigFBVV95cUxQYU1MaDRVZXpaeEdY"
+            "?hl=en-US&gl=US&ceid=US:en&oc=5"
+        )
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.url = resolved_still_google
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.head.return_value = mock_response
+
+        with patch(
+            "app.services.pipeline_steps.httpx.Client", return_value=mock_client
+        ):
+            result = resolve_news_url(url)
+
+        assert result == url
+
 
 class TestPickBestUrl:
     """_pick_best_url selects the best URL from feedparser entries."""
@@ -963,3 +987,203 @@ class TestExtractUrlResolvesGoogleNews:
 
         assert "utm_source" not in result
         assert result == "https://example.com/article"
+
+
+# ---------------------------------------------------------------------------
+# Publisher info extraction tests
+# ---------------------------------------------------------------------------
+
+
+class TestFetchFeedPublisherExtraction:
+    """fetch_feed extracts per-entry publisher info from entry.source."""
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_extracts_publisher_name_from_entry_source(self, mock_get):
+        """entry.source.title is used as publisher_name and effective source_name."""
+        mock_response = MagicMock()
+        mock_response.text = """
+        <rss version="2.0">
+          <channel>
+            <title>Google News</title>
+            <item>
+              <title>Test Article</title>
+              <link>https://news.google.com/rss/articles/test123</link>
+              <source url="https://ruhrkanal.news">ruhrkanal.news</source>
+              <pubDate>Wed, 20 Mar 2024 08:00:00 +0000</pubDate>
+            </item>
+          </channel>
+        </rss>
+        """
+        mock_get.return_value = mock_response
+
+        class FakeFeed:
+            id = "feed-test"
+            url = "https://news.google.com/rss?hl=en"
+            name = "Test Feed"
+            type = "rss"
+
+        result = fetch_feed(FakeFeed())
+        assert result.success is True
+        assert len(result.entries) == 1
+
+        entry = result.entries[0]
+        assert entry["publisher_name"] == "ruhrkanal.news"
+        assert entry["publisher_domain"] == "ruhrkanal.news"
+        assert entry["source_name"] == "ruhrkanal.news"  # publisher takes priority
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_extracts_publisher_domain_from_href(self, mock_get):
+        """entry.source.href provides the publisher domain."""
+        mock_response = MagicMock()
+        mock_response.text = """
+        <rss version="2.0">
+          <channel>
+            <title>Google News</title>
+            <item>
+              <title>Toy Industry News</title>
+              <link>https://news.google.com/rss/articles/toy123</link>
+              <source>
+                <title>The Toy Book</title>
+                <link>https://toybook.com</link>
+              </source>
+              <pubDate>Wed, 20 Mar 2024 08:00:00 +0000</pubDate>
+            </item>
+          </channel>
+        </rss>
+        """
+        mock_get.return_value = mock_response
+
+        class FakeFeed:
+            id = "feed-test"
+            url = "https://news.google.com/rss?hl=en"
+            name = "Test Feed"
+            type = "rss"
+
+        result = fetch_feed(FakeFeed())
+        assert result.success is True
+        entry = result.entries[0]
+        assert entry["publisher_name"] == "The Toy Book"
+        assert entry["publisher_domain"] == "toybook.com"
+        assert entry["source_name"] == "The Toy Book"
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_fallback_when_entry_source_missing(self, mock_get):
+        """When entry.source is missing, falls back to feed-level title."""
+        mock_response = MagicMock()
+        mock_response.text = """
+        <rss version="2.0">
+          <channel>
+            <title>Some RSS Feed</title>
+            <item>
+              <title>Test Article</title>
+              <link>https://example.com/article1</link>
+              <pubDate>Wed, 20 Mar 2024 08:00:00 +0000</pubDate>
+            </item>
+          </channel>
+        </rss>
+        """
+        mock_get.return_value = mock_response
+
+        class FakeFeed:
+            id = "feed-test"
+            url = "https://example.com/feed.xml"
+            name = "Test Feed"
+            type = "rss"
+
+        result = fetch_feed(FakeFeed())
+        assert result.success is True
+        entry = result.entries[0]
+        assert entry["publisher_name"] is None
+        assert entry["publisher_domain"] is None
+        assert entry["source_name"] == "Some RSS Feed"  # feed-level title
+
+    @patch("app.services.pipeline_steps.httpx.get")
+    def test_publisher_name_none_when_source_has_no_title(self, mock_get):
+        """When entry.source exists but has no title, publisher_name is None."""
+        mock_response = MagicMock()
+        mock_response.text = """
+        <rss version="2.0">
+          <channel>
+            <title>Google News</title>
+            <item>
+              <title>Test Article</title>
+              <link>https://example.com/article1</link>
+              <source>
+                <link>https://somedomain.com</link>
+              </source>
+              <pubDate>Wed, 20 Mar 2024 08:00:00 +0000</pubDate>
+            </item>
+          </channel>
+        </rss>
+        """
+        mock_get.return_value = mock_response
+
+        class FakeFeed:
+            id = "feed-test"
+            url = "https://news.google.com/rss"
+            name = "Test Feed"
+            type = "rss"
+
+        result = fetch_feed(FakeFeed())
+        assert result.success is True
+        entry = result.entries[0]
+        assert entry["publisher_name"] is None
+        assert entry["publisher_domain"] == "somedomain.com"
+        # Falls back to feed-level title when publisher_name is None
+        assert entry["source_name"] == "Google News"
+
+
+class TestNormalizeContentPublisherFields:
+    """normalize_content passes publisher_name and publisher_domain to ContentItem."""
+
+    def test_publisher_fields_stored_on_content_item(self):
+        """publisher_name and publisher_domain are stored on ContentItem."""
+
+        class FakeFeed:
+            id = "feed-test"
+            type = "rss"
+            name = "Test Feed"
+
+        raw_items = [
+            {
+                "title": "Article One",
+                "url": "https://example.com/1",
+                "source_name": "Publisher Name",
+                "publisher_name": "Publisher Name",
+                "publisher_domain": "publisher.com",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Full content here",
+            },
+        ]
+
+        items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
+        assert len(items) == 1
+        assert items[0].publisher_name == "Publisher Name"
+        assert items[0].publisher_domain == "publisher.com"
+
+    def test_publisher_fields_none_when_missing(self):
+        """Missing publisher fields result in None on ContentItem."""
+
+        class FakeFeed:
+            id = "feed-test"
+            type = "rss"
+            name = "Test Feed"
+
+        raw_items = [
+            {
+                "title": "Article One",
+                "url": "https://example.com/1",
+                "source_name": "Feed Title",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Full content here",
+            },
+        ]
+
+        items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
+        assert len(items) == 1
+        assert items[0].publisher_name is None
+        assert items[0].publisher_domain is None

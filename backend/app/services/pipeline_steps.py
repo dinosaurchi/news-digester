@@ -86,11 +86,19 @@ def resolve_news_url(url: str, timeout: int = 10) -> str:
             response = client.head(url, headers={"User-Agent": "SmeNewsAdminBot/1.0"})
             response.raise_for_status()
             resolved = str(response.url)
-            if resolved and resolved != url:
+            # Only accept the resolved URL if it actually escaped Google News.
+            # Google News often redirects /rss/articles/ to a locale-param
+            # variant of the same Google URL (adding hl/gl/ceid) rather than
+            # the publisher's canonical URL.  Treat that as a failed resolve.
+            if resolved and resolved != url and not _GOOGLE_NEWS_URL_RE.match(resolved):
                 logger.info(
                     "Resolved Google News URL %s -> %s", url[:80], resolved[:80]
                 )
                 return resolved
+            logger.info(
+                "Google News URL did not resolve to canonical publisher URL: %s",
+                url[:80],
+            )
     except Exception as exc:
         logger.warning("Failed to resolve Google News URL %s: %s", url[:80], exc)
 
@@ -332,11 +340,38 @@ def fetch_feed(feed: FeedSource) -> FeedFetchResult:
     # --- Extract entries ---
     items: list[dict] = []
     for entry in parsed.entries[:20]:
+        # Extract per-entry publisher info from feedparser's entry.source.
+        # Google News RSS feeds provide entry.source.title (publisher name)
+        # and entry.source.href (publisher domain root).
+        publisher_name: str | None = None
+        publisher_domain: str | None = None
+        entry_source = entry.get("source")
+        if isinstance(entry_source, dict):
+            publisher_name = entry_source.get("title")
+            # feedparser stores publisher URL in "href" (RSS 2.0 source url=)
+            # or "link" (Atom source element). Check both.
+            publisher_href = entry_source.get("href") or entry_source.get("link")
+            if publisher_href:
+                # Extract hostname from the publisher href
+                try:
+                    from urllib.parse import urlparse
+
+                    parsed_href = urlparse(publisher_href)
+                    publisher_domain = parsed_href.hostname or publisher_href
+                except Exception:
+                    publisher_domain = publisher_href
+
+        # Use publisher_name as source_name when available, fall back to
+        # the feed-level title.
+        effective_source = publisher_name or source_title
+
         items.append(
             {
                 "title": entry.get("title", "Untitled"),
                 "url": _extract_url(entry),
-                "source_name": source_title,
+                "source_name": effective_source,
+                "publisher_name": publisher_name,
+                "publisher_domain": publisher_domain,
                 "published_at": _extract_published_at(entry),
                 "author": _extract_author(entry),
                 "summary": _extract_summary(entry),
@@ -444,6 +479,8 @@ def normalize_content(
             title=raw["title"][:1000],
             url=raw["url"][:2048],
             source_name=raw["source_name"],
+            publisher_name=raw.get("publisher_name"),
+            publisher_domain=raw.get("publisher_domain"),
             content_type="news" if feed.type == "rss" else "blog",
             published_at=raw.get("published_at"),
             author=raw.get("author"),

@@ -1237,7 +1237,7 @@ def score_content_items(
                 else None,
             ),
             "source_authority": compute_source_authority_score(
-                _extract_domain(item.url),
+                item.publisher_domain or _extract_domain(item.url),
                 trusted_domains,
             ),
             "bm25": compute_bm25_score(

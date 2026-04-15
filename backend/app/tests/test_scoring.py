@@ -2455,6 +2455,44 @@ class TestPass4ScoringQuality:
         assert untrusted_auth == pytest.approx(0.3)
         assert trusted_item.final_score > untrusted_item.final_score
 
+    def test_publisher_domain_used_for_source_authority(self, db_session):
+        """publisher_domain is preferred over URL domain for source authority."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["model kit"],
+            trusted_domains=["toybook.com"],
+        )
+        # Item with Google News URL but publisher_domain set to trusted domain
+        trusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="New model kit announced",
+            url="https://news.google.com/rss/articles/test123",
+            publisher_domain="toybook.com",
+            content_type="news",
+        )
+        # Item with Google News URL and no publisher_domain (untrusted)
+        untrusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="New model kit announced",
+            url="https://news.google.com/rss/articles/test456",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [trusted_item, untrusted_item], ws)
+
+        trusted_auth = trusted_item.score_breakdown_json["scores"]["source_authority"]
+        untrusted_auth = untrusted_item.score_breakdown_json["scores"][
+            "source_authority"
+        ]
+        assert trusted_auth == pytest.approx(1.0), (
+            f"publisher_domain 'toybook.com' should be trusted, got {trusted_auth}"
+        )
+        assert untrusted_auth == pytest.approx(0.3), (
+            f"Google News domain without publisher_domain should be untrusted, got {untrusted_auth}"
+        )
+
     def test_multi_signal_article_scores_higher_than_single_signal_article(
         self, db_session
     ):

@@ -7,6 +7,8 @@ export interface ContentItem {
   title: string;
   source: string;
   sourceUrl: string;
+  publisherName?: string;
+  publisherDomain?: string;
   publishedAt: string;
   type: ContentType;
   relevanceScore: number;

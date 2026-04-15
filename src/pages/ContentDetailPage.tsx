@@ -3,7 +3,7 @@ import { api } from '@/lib/api';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ChevronLeft, FileText, Tag, Calendar, Link2, Hash,
-  CheckCircle, XCircle, Info, Sparkles,
+  CheckCircle, XCircle, Info, Sparkles, AlertTriangle, Globe,
 } from 'lucide-react';
 import { formatDateOnly, cn } from '@/lib/utils';
 import { PageHeader } from '@/components/ui/page-header';
@@ -15,6 +15,8 @@ import type { ContentType, ThemeMatch, CompetitorMatch, MultiSignalBoost } from 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
+
+const GOOGLE_NEWS_URL_RE = /^https?:\/\/news\.google\.com\//i;
 
 const contentTypeLabels: Record<ContentType, string> = {
   news: 'News',
@@ -263,14 +265,41 @@ export default function ContentDetailPage() {
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Metadata</h3>
             <div className="grid grid-cols-1 gap-2 text-sm">
               <MetaRow icon={Tag} label="Source" value={detail.source} />
+              {detail.publisherName && detail.publisherName !== detail.source && (
+                <MetaRow icon={Globe} label="Publisher" value={detail.publisherName} />
+              )}
+              {detail.publisherDomain && (
+                <MetaRow
+                  icon={Globe}
+                  label="Domain"
+                  value={
+                    <a
+                      href={`https://${detail.publisherDomain}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-indigo-600 hover:underline"
+                    >
+                      {detail.publisherDomain}
+                    </a>
+                  }
+                />
+              )}
               <MetaRow icon={Calendar} label="Published" value={formatDateOnly(detail.publishedAt)} />
               <MetaRow
                 icon={Link2}
                 label="URL"
                 value={
-                  <a href={detail.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline truncate block">
-                    {detail.sourceUrl}
-                  </a>
+                  <div className="space-y-1">
+                    <a href={detail.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline truncate block">
+                      {detail.sourceUrl}
+                    </a>
+                    {GOOGLE_NEWS_URL_RE.test(detail.sourceUrl) && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200 rounded">
+                        <AlertTriangle className="w-3 h-3" />
+                        Google News link — may expire
+                      </span>
+                    )}
+                  </div>
                 }
               />
               {detail.clusterId && (
