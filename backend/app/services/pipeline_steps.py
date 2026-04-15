@@ -55,10 +55,89 @@ def _struct_time_to_dt(
         return None
 
 
+_GOOGLE_NEWS_URL_RE = re.compile(
+    r"https?://news\.google\.com/(rss/)?articles/",
+    re.IGNORECASE,
+)
+
+
+def resolve_news_url(url: str, timeout: int = 10) -> str:
+    """Resolve Google News redirect URLs to their canonical article URLs.
+
+    Google News RSS feeds return ephemeral redirect URLs in each entry's
+    ``<link>`` element.  These contain session tokens that expire quickly.
+    This function follows the HTTP redirect chain to obtain the final,
+    canonical article URL.
+
+    For non-Google-News URLs the original value is returned unchanged.
+
+    Args:
+        url: The URL to potentially resolve.
+        timeout: Maximum seconds to wait for the HTTP redirect chain.
+
+    Returns:
+        The canonical URL if resolution succeeds, otherwise the original URL.
+    """
+    if not url or not _GOOGLE_NEWS_URL_RE.match(url):
+        return url
+
+    try:
+        with httpx.Client(follow_redirects=True, timeout=timeout) as client:
+            response = client.head(url, headers={"User-Agent": "SmeNewsAdminBot/1.0"})
+            response.raise_for_status()
+            resolved = str(response.url)
+            if resolved and resolved != url:
+                logger.info(
+                    "Resolved Google News URL %s -> %s", url[:80], resolved[:80]
+                )
+                return resolved
+    except Exception as exc:
+        logger.warning("Failed to resolve Google News URL %s: %s", url[:80], exc)
+
+    return url
+
+
+def _pick_best_url(entry) -> str:
+    """Pick the best URL from a feedparser entry.
+
+    Prefers non-Google-News ``rel="alternate"`` links over the primary
+    ``link`` when the primary link is a Google News redirect URL.
+    """
+    primary = entry.get("link") or entry.get("id") or ""
+
+    # If the primary link is not a Google News redirect, use it directly.
+    if primary and not _GOOGLE_NEWS_URL_RE.match(primary):
+        return primary
+
+    # Search entry.links for a non-Google-News alternate link.
+    links = entry.get("links")
+    if isinstance(links, (list, tuple)):
+        for link_item in links:
+            href = (
+                link_item.get("href")
+                if isinstance(link_item, dict)
+                else getattr(link_item, "href", None)
+            )
+            rel = (
+                link_item.get("rel")
+                if isinstance(link_item, dict)
+                else getattr(link_item, "rel", None)
+            )
+            if (
+                href
+                and rel in ("alternate", None)
+                and not _GOOGLE_NEWS_URL_RE.match(href)
+            ):
+                return href
+
+    return primary
+
+
 def _extract_url(entry) -> str:
     """Extract and normalise the canonical URL from a feedparser entry."""
-    raw_url = entry.get("link") or entry.get("id") or ""
-    return normalize_url(raw_url)
+    raw_url = _pick_best_url(entry)
+    resolved_url = resolve_news_url(raw_url)
+    return normalize_url(resolved_url)
 
 
 def _extract_author(entry) -> str | None:
