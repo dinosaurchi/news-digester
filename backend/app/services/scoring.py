@@ -87,12 +87,36 @@ def compute_keyword_score(text: str, keywords: list[str]) -> float:
     The score is the fraction of *keywords* found (case-insensitive) in *text*.
     Returns 0.0 when either *text* or *keywords* is empty.
     """
+    score, _matched, _unmatched = compute_keyword_score_detailed(text, keywords)
+    return score
+
+
+def compute_keyword_score_detailed(
+    text: str, keywords: list[str]
+) -> tuple[float, list[str], list[str]]:
+    """Return keyword match score along with matched/unmatched keyword lists.
+
+    Returns
+    -------
+    (score, matched_keywords, unmatched_keywords) where:
+    - ``score`` is the normalised 0.0–1.0 match ratio (same as compute_keyword_score)
+    - ``matched_keywords`` is a list of keywords found in text (lowercased)
+    - ``unmatched_keywords`` is a list of keywords NOT found in text (lowercased)
+    """
     if not text or not keywords:
-        return 0.0
+        return 0.0, [], list(keywords)
 
     lower_text = text.lower()
-    matched = sum(1 for kw in keywords if kw.lower() in lower_text)
-    return matched / len(keywords)
+    matched: list[str] = []
+    unmatched: list[str] = []
+    for kw in keywords:
+        kw_lower = kw.lower()
+        if kw_lower in lower_text:
+            matched.append(kw_lower)
+        else:
+            unmatched.append(kw_lower)
+    score = len(matched) / len(keywords) if keywords else 0.0
+    return score, matched, unmatched
 
 
 # ---------------------------------------------------------------------------
@@ -108,14 +132,39 @@ def compute_competitor_mention_score(
 
     Matching is case-insensitive and partial-word (substring).
     """
+    score, _matched, _unmatched = compute_competitor_mention_score_detailed(
+        text, competitors
+    )
+    return score
+
+
+def compute_competitor_mention_score_detailed(
+    text: str,
+    competitors: list[str],
+) -> tuple[float, list[str], list[str]]:
+    """Return competitor mention score along with matched/unmatched lists.
+
+    Returns
+    -------
+    (score, matched_competitors, unmatched_competitors) where:
+    - ``score`` is 1.0 if any competitor matched, else 0.0
+    - ``matched_competitors`` is a list of competitor names found in text (lowercased)
+    - ``unmatched_competitors`` is a list of competitor names NOT found in text (lowercased)
+    """
     if not text or not competitors:
-        return 0.0
+        return 0.0, [], [c.lower() for c in competitors]
 
     lower_text = text.lower()
+    matched: list[str] = []
+    unmatched: list[str] = []
     for name in competitors:
-        if name.lower() in lower_text:
-            return 1.0
-    return 0.0
+        name_lower = name.lower()
+        if name_lower in lower_text:
+            matched.append(name_lower)
+        else:
+            unmatched.append(name_lower)
+    score = 1.0 if matched else 0.0
+    return score, matched, unmatched
 
 
 # ---------------------------------------------------------------------------
@@ -911,12 +960,17 @@ def score_content_items(
     for idx, item in enumerate(items):
         item_text = items_texts[idx]
 
-        # Compute individual scores
+        # Compute individual scores with detailed match metadata
+        kw_score, themes_matched, themes_unmatched = compute_keyword_score_detailed(
+            item_text, priority_themes
+        )
+        comp_score, competitors_matched, competitors_unmatched = (
+            compute_competitor_mention_score_detailed(item_text, competitors)
+        )
+
         individual_scores: dict[str, float] = {
-            "keyword": compute_keyword_score(item_text, priority_themes),
-            "competitor_mention": compute_competitor_mention_score(
-                item_text, competitors
-            ),
+            "keyword": kw_score,
+            "competitor_mention": comp_score,
             "freshness": compute_freshness_score(
                 item.published_at  # type: ignore[arg-type]
                 if not isinstance(item.published_at, str)
@@ -961,6 +1015,20 @@ def score_content_items(
 
         # Include content type in breakdown for debugging
         breakdown["content_type"] = item.content_type
+
+        # Include theme match metadata for diagnostic observability
+        breakdown["theme_match"] = {
+            "matched": themes_matched,
+            "unmatched": themes_unmatched,
+            "normalized_themes": [t.lower() for t in priority_themes],
+        }
+
+        # Include competitor match metadata for diagnostic observability
+        breakdown["competitor_match"] = {
+            "matched": competitors_matched,
+            "unmatched": competitors_unmatched,
+            "normalized_competitors": [c.lower() for c in competitors],
+        }
 
         # ------------------------------------------------------------------
         # 2b. Apply feedback adjustment

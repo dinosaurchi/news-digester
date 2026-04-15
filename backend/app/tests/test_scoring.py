@@ -8,13 +8,15 @@ from app.services.scoring import (
     _compute_decay_factor,
     compute_bm25_score,
     compute_combined_score,
+    compute_competitor_mention_score,
+    compute_competitor_mention_score_detailed,
     compute_content_type_prior_score,
     compute_document_frequencies,
-    compute_competitor_mention_score,
     compute_excluded_topic_score,
     compute_freshness_score,
     compute_feed_health_score,
     compute_keyword_score,
+    compute_keyword_score_detailed,
     compute_source_authority_score,
     score_content_items,
 )
@@ -1637,3 +1639,342 @@ class TestBM25MultiWordTerms:
 
         assert match_item.score_breakdown_json is not None
         assert match_item.score_breakdown_json["scores"]["bm25"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Pass 1 — Baseline diagnostics and scoring observability
+# ---------------------------------------------------------------------------
+
+
+class TestScoreBreakdownConsistency:
+    """Score breakdown dict always contains all expected component keys."""
+
+    def test_score_breakdown_contains_component_scores_consistently(self, db_session):
+        """Verify the score breakdown dict always contains all expected component keys.
+
+        This test ensures backward compatibility: all existing component keys
+        must be present in the breakdown regardless of workspace configuration.
+        """
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai", "machine learning", "robotics"],
+            competitors=["OpenAI", "Anthropic"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="OpenAI announces AI and machine learning breakthrough",
+            url="https://reuters.com/tech/ai-breakthrough",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert breakdown is not None
+
+        # Core component scores must always be present
+        expected_score_keys = [
+            "keyword",
+            "competitor_mention",
+            "freshness",
+            "source_authority",
+            "bm25",
+            "content_type_prior",
+        ]
+        for key in expected_score_keys:
+            assert key in breakdown["scores"], f"Missing score component: {key}"
+
+        # Metadata keys must always be present
+        expected_metadata_keys = [
+            "weights",
+            "combined_score",
+            "excluded_topic_score",
+            "filter_reason",
+            "content_type",
+            "theme_match",
+            "competitor_match",
+        ]
+        for key in expected_metadata_keys:
+            assert key in breakdown, f"Missing metadata key: {key}"
+
+    def test_score_breakdown_consistent_with_no_themes(self, db_session):
+        """Breakdown is consistent even with empty priority themes."""
+        ws = _make_workspace(db_session, priority_themes=[], competitors=[])
+        item = _make_item(db_session, ws.id, title="Some article")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "theme_match" in breakdown
+        assert "matched" in breakdown["theme_match"]
+        assert "unmatched" in breakdown["theme_match"]
+        assert "normalized_themes" in breakdown["theme_match"]
+        assert "competitor_match" in breakdown
+
+
+class TestThemeMatchMetadata:
+    """Score breakdown exposes theme match details for diagnostics."""
+
+    def test_score_breakdown_can_expose_theme_match_metadata(self, db_session):
+        """Theme match metadata shows which themes matched and which didn't."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=[
+                "ai",
+                "machine learning",
+                "quantum computing",
+                "blockchain",
+            ],
+        )
+
+        # Item matches "ai" and "machine learning" but not the others
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI breakthrough in machine learning announced today",
+            summary_snippet="New advances in artificial intelligence.",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "theme_match" in breakdown
+
+        theme_match = breakdown["theme_match"]
+        assert "matched" in theme_match
+        assert "unmatched" in theme_match
+        assert "normalized_themes" in theme_match
+
+        # "ai" and "machine learning" should be matched
+        assert "ai" in theme_match["matched"]
+        assert "machine learning" in theme_match["matched"]
+
+        # "quantum computing" and "blockchain" should be unmatched
+        assert "quantum computing" in theme_match["unmatched"]
+        assert "blockchain" in theme_match["unmatched"]
+
+        # Normalized themes should contain all themes (lowercased)
+        assert set(theme_match["normalized_themes"]) == {
+            "ai",
+            "machine learning",
+            "quantum computing",
+            "blockchain",
+        }
+
+    def test_theme_match_all_matched(self, db_session):
+        """When all themes match, unmatched list is empty."""
+        ws = _make_workspace(db_session, priority_themes=["ai", "technology"])
+        item = _make_item(db_session, ws.id, title="AI and technology news")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert len(breakdown["theme_match"]["matched"]) == 2
+        assert len(breakdown["theme_match"]["unmatched"]) == 0
+
+    def test_theme_match_none_matched(self, db_session):
+        """When no themes match, matched list is empty."""
+        ws = _make_workspace(db_session, priority_themes=["quantum", "blockchain"])
+        item = _make_item(db_session, ws.id, title="Weather forecast today")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert len(breakdown["theme_match"]["matched"]) == 0
+        assert len(breakdown["theme_match"]["unmatched"]) == 2
+
+    def test_theme_match_case_insensitive(self, db_session):
+        """Theme matching is case-insensitive in metadata."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["AI", "Machine Learning", "QUANTUM"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="ai and machine learning advances",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        # Normalized themes should be lowercased
+        assert "ai" in breakdown["theme_match"]["normalized_themes"]
+        assert "machine learning" in breakdown["theme_match"]["normalized_themes"]
+        assert "quantum" in breakdown["theme_match"]["normalized_themes"]
+
+
+class TestCompetitorMatchMetadata:
+    """Score breakdown exposes competitor match details for diagnostics."""
+
+    def test_score_breakdown_can_expose_competitor_match_metadata(self, db_session):
+        """Competitor match metadata shows which competitors matched and which didn't."""
+        ws = _make_workspace(
+            db_session,
+            competitors=["OpenAI", "Anthropic", "Google DeepMind"],
+        )
+
+        # Item mentions OpenAI but not the others
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="OpenAI releases new GPT model",
+            summary_snippet="OpenAI announced breakthrough capabilities.",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "competitor_match" in breakdown
+
+        comp_match = breakdown["competitor_match"]
+        assert "matched" in comp_match
+        assert "unmatched" in comp_match
+        assert "normalized_competitors" in comp_match
+
+        # "openai" should be matched
+        assert "openai" in comp_match["matched"]
+
+        # Others should be unmatched
+        assert "anthropic" in comp_match["unmatched"]
+        assert "google deepmind" in comp_match["unmatched"]
+
+        # Normalized competitors should contain all competitors (lowercased)
+        assert set(comp_match["normalized_competitors"]) == {
+            "openai",
+            "anthropic",
+            "google deepmind",
+        }
+
+    def test_competitor_match_all_matched(self, db_session):
+        """When all competitors are mentioned, unmatched list is empty."""
+        ws = _make_workspace(db_session, competitors=["OpenAI", "Anthropic"])
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="OpenAI and Anthropic collaborate on AI safety",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert len(breakdown["competitor_match"]["matched"]) == 2
+        assert len(breakdown["competitor_match"]["unmatched"]) == 0
+
+    def test_competitor_match_none_matched(self, db_session):
+        """When no competitors are mentioned, matched list is empty."""
+        ws = _make_workspace(db_session, competitors=["OpenAI", "Anthropic"])
+        item = _make_item(db_session, ws.id, title="Weather forecast today")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert len(breakdown["competitor_match"]["matched"]) == 0
+        assert len(breakdown["competitor_match"]["unmatched"]) == 2
+
+    def test_competitor_match_case_insensitive(self, db_session):
+        """Competitor matching is case-insensitive in metadata."""
+        ws = _make_workspace(db_session, competitors=["OpenAI", "ANTHROPIC"])
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="openai is growing fast",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        # Normalized competitors should be lowercased
+        assert "openai" in breakdown["competitor_match"]["normalized_competitors"]
+        assert "anthropic" in breakdown["competitor_match"]["normalized_competitors"]
+
+
+class TestComputeKeywordScoreDetailed:
+    """compute_keyword_score_detailed returns score with match details."""
+
+    def test_returns_tuple_with_matched_and_unmatched(self):
+        score, matched, unmatched = compute_keyword_score_detailed(
+            "AI and machine learning are growing",
+            ["ai", "machine learning", "blockchain"],
+        )
+        assert score == pytest.approx(2 / 3)
+        assert set(matched) == {"ai", "machine learning"}
+        assert set(unmatched) == {"blockchain"}
+
+    def test_all_matched(self):
+        score, matched, unmatched = compute_keyword_score_detailed(
+            "ai machine learning",
+            ["ai", "machine learning"],
+        )
+        assert score == pytest.approx(1.0)
+        assert len(matched) == 2
+        assert len(unmatched) == 0
+
+    def test_none_matched(self):
+        score, matched, unmatched = compute_keyword_score_detailed(
+            "weather forecast",
+            ["ai", "crypto"],
+        )
+        assert score == pytest.approx(0.0)
+        assert len(matched) == 0
+        assert len(unmatched) == 2
+
+    def test_empty_text_returns_zero_with_all_unmatched(self):
+        score, matched, unmatched = compute_keyword_score_detailed("", ["ai"])
+        assert score == pytest.approx(0.0)
+        assert matched == []
+        assert unmatched == ["ai"]
+
+    def test_empty_keywords_returns_zero_with_empty_lists(self):
+        score, matched, unmatched = compute_keyword_score_detailed("some text", [])
+        assert score == pytest.approx(0.0)
+        assert matched == []
+        assert unmatched == []
+
+
+class TestComputeCompetitorMentionScoreDetailed:
+    """compute_competitor_mention_score_detailed returns score with match details."""
+
+    def test_returns_tuple_with_matched_and_unmatched(self):
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "OpenAI announced a new model",
+            ["OpenAI", "Anthropic", "Google"],
+        )
+        assert score == pytest.approx(1.0)
+        assert set(matched) == {"openai"}
+        assert set(unmatched) == {"anthropic", "google"}
+
+    def test_all_matched(self):
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "OpenAI and Anthropic collaborate",
+            ["OpenAI", "Anthropic"],
+        )
+        assert score == pytest.approx(1.0)
+        assert len(matched) == 2
+        assert len(unmatched) == 0
+
+    def test_none_matched(self):
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "Weather forecast today",
+            ["OpenAI", "Anthropic"],
+        )
+        assert score == pytest.approx(0.0)
+        assert len(matched) == 0
+        assert len(unmatched) == 2
+
+    def test_empty_text_returns_zero_with_all_unmatched(self):
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "", ["OpenAI"]
+        )
+        assert score == pytest.approx(0.0)
+        assert matched == []
+        assert unmatched == ["openai"]
+
+    def test_empty_competitors_returns_zero_with_empty_lists(self):
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "some text", []
+        )
+        assert score == pytest.approx(0.0)
+        assert matched == []
+        assert unmatched == []
