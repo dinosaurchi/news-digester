@@ -550,14 +550,61 @@ def compute_bm25_score(
 
 
 # ---------------------------------------------------------------------------
+# Multi-signal boosting
+# ---------------------------------------------------------------------------
+
+# Bonus applied when 2+ distinct parent themes match in the same article.
+# Rewards articles that hit multiple aspects of the workspace profile.
+_MULTI_SIGNAL_BONUS: float = 0.05
+
+# Minimum number of distinct matched parent themes to trigger the boost.
+_MULTI_SIGNAL_MIN_THEMES: int = 2
+
+
+def compute_multi_signal_boost(
+    matched_themes: list[str],
+    bonus: float = _MULTI_SIGNAL_BONUS,
+    min_distinct_themes: int = _MULTI_SIGNAL_MIN_THEMES,
+) -> tuple[float, int]:
+    """Compute a small bonus when multiple distinct parent themes match.
+
+    This rewards articles that hit multiple aspects of the workspace profile
+    (e.g., both "star wars" AND "licensing" from different parent themes).
+
+    Parameters
+    ----------
+    matched_themes:
+        List of lowercased parent theme strings that matched in the article
+        (as returned by :func:`compute_keyword_score_detailed`).
+    bonus:
+        Score bonus to apply when the threshold is met.  Default 0.05.
+    min_distinct_themes:
+        Minimum number of distinct matched parent themes required to trigger
+        the boost.  Default 2.
+
+    Returns
+    -------
+    (boost, distinct_count) where:
+    - ``boost`` is the additive score bonus (0.0 or ``bonus``).
+    - ``distinct_count`` is the number of distinct matched parent themes.
+    """
+    distinct_count = len(matched_themes)
+    if distinct_count >= min_distinct_themes:
+        return bonus, distinct_count
+    return 0.0, distinct_count
+
+
+# ---------------------------------------------------------------------------
 # Combined scoring
 # ---------------------------------------------------------------------------
 
 # Default weights for the combined relevance score.
+# keyword bumped up (most meaningful signal); freshness reduced (most articles
+# are recent anyway).  Weights sum to 1.0.
 _WEIGHTS: dict[str, float] = {
-    "keyword": 0.25,
+    "keyword": 0.30,
     "competitor_mention": 0.20,
-    "freshness": 0.20,
+    "freshness": 0.15,
     "source_authority": 0.15,
     "bm25": 0.20,
     "content_type_prior": 0.0,  # disabled by default; enable via workspace settings
@@ -1219,7 +1266,20 @@ def score_content_items(
         }
 
         # ------------------------------------------------------------------
-        # 2b. Apply feedback adjustment
+        # 2b. Apply multi-signal boost
+        # ------------------------------------------------------------------
+        multi_signal_boost, distinct_theme_count = compute_multi_signal_boost(
+            themes_matched
+        )
+        if multi_signal_boost > 0:
+            combined_score = max(0.0, min(1.0, combined_score + multi_signal_boost))
+            breakdown["multi_signal_boost"] = {
+                "bonus": multi_signal_boost,
+                "distinct_matched_themes": distinct_theme_count,
+            }
+
+        # ------------------------------------------------------------------
+        # 2c. Apply feedback adjustment
         # ------------------------------------------------------------------
         feedback_adj, topics_matched, sources_matched = _compute_feedback_adjustment(
             item_text, item.source_name, topic_prefs, source_prefs
@@ -1229,7 +1289,7 @@ def score_content_items(
             breakdown["feedback_adjustment"] = feedback_adj
 
         # ------------------------------------------------------------------
-        # 2c. Apply feed health weight (multiplicative)
+        # 2d. Apply feed health weight (multiplicative)
         # ------------------------------------------------------------------
         if feed_info is not None and feed_health_score < 1.0:
             combined_score = max(0.0, min(1.0, combined_score * feed_health_score))

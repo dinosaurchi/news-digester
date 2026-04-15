@@ -17,6 +17,7 @@ from app.services.scoring import (
     compute_feed_health_score,
     compute_keyword_score,
     compute_keyword_score_detailed,
+    compute_multi_signal_boost,
     compute_source_authority_score,
     decompose_theme,
     generate_competitor_aliases,
@@ -348,9 +349,9 @@ class TestComputeCombinedScore:
     def test_breakdown_contains_weights(self):
         _, breakdown = compute_combined_score({})
         assert "weights" in breakdown
-        assert breakdown["weights"]["keyword"] == pytest.approx(0.25)
+        assert breakdown["weights"]["keyword"] == pytest.approx(0.30)
         assert breakdown["weights"]["competitor_mention"] == pytest.approx(0.20)
-        assert breakdown["weights"]["freshness"] == pytest.approx(0.20)
+        assert breakdown["weights"]["freshness"] == pytest.approx(0.15)
         assert breakdown["weights"]["source_authority"] == pytest.approx(0.15)
         assert breakdown["weights"]["bm25"] == pytest.approx(0.20)
 
@@ -705,7 +706,7 @@ class TestWeightOverrides:
         assert breakdown["weights"]["bm25"] == pytest.approx(0.25)
         # Unchanged keys keep their defaults
         assert breakdown["weights"]["competitor_mention"] == pytest.approx(0.20)
-        assert breakdown["weights"]["freshness"] == pytest.approx(0.20)
+        assert breakdown["weights"]["freshness"] == pytest.approx(0.15)
         assert breakdown["weights"]["source_authority"] == pytest.approx(0.15)
 
     def test_unknown_weight_keys_are_ignored(self):
@@ -722,9 +723,9 @@ class TestWeightOverrides:
         scores = {"keyword": 1.0}
         _, breakdown = compute_combined_score(scores, weight_overrides=None)
 
-        assert breakdown["weights"]["keyword"] == pytest.approx(0.25)
+        assert breakdown["weights"]["keyword"] == pytest.approx(0.30)
         assert breakdown["weights"]["competitor_mention"] == pytest.approx(0.20)
-        assert breakdown["weights"]["freshness"] == pytest.approx(0.20)
+        assert breakdown["weights"]["freshness"] == pytest.approx(0.15)
         assert breakdown["weights"]["source_authority"] == pytest.approx(0.15)
         assert breakdown["weights"]["bm25"] == pytest.approx(0.20)
 
@@ -2266,3 +2267,334 @@ class TestBM25WithNormalizedThemes:
         assert raw_key in aliases
         assert "fascinations" in aliases[raw_key]
         assert "metal earth" in aliases[raw_key]
+
+
+# ---------------------------------------------------------------------------
+# Pass 4 — Scoring quality and weighting improvements
+# ---------------------------------------------------------------------------
+
+
+class TestComputeMultiSignalBoost:
+    """compute_multi_signal_boost rewards articles matching multiple themes."""
+
+    def test_single_theme_match_no_boost(self):
+        boost, count = compute_multi_signal_boost(["star wars"])
+        assert boost == pytest.approx(0.0)
+        assert count == 1
+
+    def test_two_theme_matches_gets_boost(self):
+        boost, count = compute_multi_signal_boost(["star wars", "licensing"])
+        assert boost == pytest.approx(0.05)
+        assert count == 2
+
+    def test_three_theme_matches_gets_boost(self):
+        boost, count = compute_multi_signal_boost(
+            ["star wars", "licensing", "toy industry"]
+        )
+        assert boost == pytest.approx(0.05)
+        assert count == 3
+
+    def test_empty_matched_themes_no_boost(self):
+        boost, count = compute_multi_signal_boost([])
+        assert boost == pytest.approx(0.0)
+        assert count == 0
+
+    def test_custom_bonus_and_threshold(self):
+        boost, count = compute_multi_signal_boost(
+            ["a", "b"], bonus=0.10, min_distinct_themes=2
+        )
+        assert boost == pytest.approx(0.10)
+
+    def test_below_custom_threshold_no_boost(self):
+        boost, count = compute_multi_signal_boost(
+            ["a"], bonus=0.10, min_distinct_themes=3
+        )
+        assert boost == pytest.approx(0.0)
+
+
+class TestPass4ScoringQuality:
+    """Pass 4 scoring quality tests: realistic toy/licensing scenario."""
+
+    def test_realistic_toy_licensing_article_scores_above_threshold(self, db_session):
+        """A realistic toy/franchise/licensing article should score above 0.15."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=[
+                "licensed franchise",
+                "collectibles",
+                "toy industry",
+                "Star Wars",
+                "model kit",
+            ],
+            competitors=["Fascinations", "Piececool"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Hasbro announces new Star Wars licensed collectible toy line",
+            summary_snippet=(
+                "Hasbro has signed a new licensing deal for Star Wars collectibles, "
+                "expanding their toy industry portfolio with premium model kits."
+            ),
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        assert item.final_score is not None
+        assert item.final_score > 0.15, (
+            f"Expected strong toy/licensing article to score > 0.15, got {item.final_score}"
+        )
+
+    def test_irrelevant_generic_licensing_article_scores_lower_than_toy_licensing_article(
+        self, db_session
+    ):
+        """A generic licensing article should score lower than a toy-specific one."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=[
+                "licensed franchise",
+                "collectibles",
+                "toy industry",
+                "Star Wars",
+                "model kit",
+            ],
+        )
+        # Strong toy-specific article
+        strong_item = _make_item(
+            db_session,
+            ws.id,
+            title="Hasbro announces new Star Wars licensed collectible toy line",
+            summary_snippet=(
+                "Hasbro has signed a new licensing deal for Star Wars collectibles, "
+                "expanding their toy industry portfolio with premium model kits."
+            ),
+            content_type="news",
+        )
+        # Generic licensing article (matches "licensed franchise" but not toy themes)
+        generic_item = _make_item(
+            db_session,
+            ws.id,
+            title="New software licensing deal announced for enterprise cloud",
+            summary_snippet=(
+                "TechCorp has entered a licensing agreement for enterprise software, "
+                "expanding their intellectual property portfolio."
+            ),
+            content_type="news",
+        )
+
+        score_content_items(db_session, [strong_item, generic_item], ws)
+
+        assert strong_item.final_score is not None
+        assert generic_item.final_score is not None
+        assert strong_item.final_score > generic_item.final_score, (
+            f"Expected strong article ({strong_item.final_score}) > "
+            f"generic article ({generic_item.final_score})"
+        )
+
+    def test_competitor_article_scores_above_generic_noise_article(self, db_session):
+        """An article mentioning a competitor should score above noise."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["model kit", "collectibles"],
+            competitors=["Fascinations", "Piececool"],
+        )
+        competitor_item = _make_item(
+            db_session,
+            ws.id,
+            title="Piececool releases new metal puzzle collection",
+            summary_snippet="Piececool's new 3D metal puzzle series is now available.",
+            content_type="news",
+        )
+        noise_item = _make_item(
+            db_session,
+            ws.id,
+            title="Local weather forecast for the weekend",
+            summary_snippet="Sunny skies expected throughout the weekend.",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [competitor_item, noise_item], ws)
+
+        assert competitor_item.final_score is not None
+        assert noise_item.final_score is not None
+        assert competitor_item.final_score > noise_item.final_score, (
+            f"Expected competitor article ({competitor_item.final_score}) > "
+            f"noise article ({noise_item.final_score})"
+        )
+
+    def test_trusted_domain_boost_improves_source_authority(self, db_session):
+        """Articles from trusted domains should get higher source authority."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["model kit"],
+            trusted_domains=["toybook.com", "licenseglobal.com", "hasbro.com"],
+        )
+        trusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="New model kit announced",
+            url="https://toybook.com/new-model-kit",
+            content_type="news",
+        )
+        untrusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="New model kit announced",
+            url="https://random-blog.xyz/new-model-kit",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [trusted_item, untrusted_item], ws)
+
+        trusted_auth = trusted_item.score_breakdown_json["scores"]["source_authority"]
+        untrusted_auth = untrusted_item.score_breakdown_json["scores"][
+            "source_authority"
+        ]
+        assert trusted_auth == pytest.approx(1.0)
+        assert untrusted_auth == pytest.approx(0.3)
+        assert trusted_item.final_score > untrusted_item.final_score
+
+    def test_multi_signal_article_scores_higher_than_single_signal_article(
+        self, db_session
+    ):
+        """An article matching multiple themes should score higher than single-theme."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=[
+                "Star Wars",
+                "model kit",
+                "collectibles",
+                "toy industry",
+            ],
+        )
+        # Multi-signal: matches Star Wars, model kit, collectibles
+        multi_item = _make_item(
+            db_session,
+            ws.id,
+            title="New Star Wars model kit collectible announced",
+            summary_snippet="A new Star Wars collectible model kit is coming soon.",
+            content_type="news",
+        )
+        # Single-signal: only matches model kit
+        single_item = _make_item(
+            db_session,
+            ws.id,
+            title="New model kit available for purchase",
+            summary_snippet="A new model kit is now available.",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [multi_item, single_item], ws)
+
+        assert multi_item.final_score is not None
+        assert single_item.final_score is not None
+        assert multi_item.final_score > single_item.final_score, (
+            f"Expected multi-signal article ({multi_item.final_score}) > "
+            f"single-signal article ({single_item.final_score})"
+        )
+
+        # Verify the multi-signal boost appears in the breakdown
+        breakdown = multi_item.score_breakdown_json
+        assert "multi_signal_boost" in breakdown
+        assert breakdown["multi_signal_boost"]["bonus"] == pytest.approx(0.05)
+
+    def test_metalearth_regression_distribution_not_compressed_to_trivial_range(
+        self, db_session
+    ):
+        """Strong articles should score significantly higher than weak ones.
+
+        Uses a synthetic corpus (no network) with four archetypes:
+        - Strong toy/franchise/licensing article
+        - Generic licensing article
+        - Competitor article
+        - Weak/noisy article
+        """
+        ws = _make_workspace(
+            db_session,
+            priority_themes=[
+                "metal earth",
+                "model kit",
+                "collectibles",
+                "Star Wars",
+                "toy industry",
+                "licensed franchise",
+            ],
+            competitors=["Fascinations", "Piececool", "UGEARS"],
+        )
+
+        # Strong article: hits multiple priority themes
+        strong = _make_item(
+            db_session,
+            ws.id,
+            title=(
+                "Hasbro and Disney announce new Star Wars licensed franchise "
+                "collectible model kit series"
+            ),
+            summary_snippet=(
+                "The new Star Wars collectible model kit series from Hasbro and Disney "
+                "brings iconic spacecraft to the toy industry. These premium licensed "
+                "franchise collectibles expand the metal earth market."
+            ),
+            content_type="news",
+        )
+
+        # Generic licensing: only partially relevant
+        generic = _make_item(
+            db_session,
+            ws.id,
+            title="New software licensing agreement for enterprise cloud platform",
+            summary_snippet=(
+                "TechCorp announced a new licensing deal for cloud computing, "
+                "expanding their intellectual property portfolio in enterprise."
+            ),
+            content_type="news",
+        )
+
+        # Competitor article
+        competitor = _make_item(
+            db_session,
+            ws.id,
+            title="Piececool releases new 3D metal puzzle architecture series",
+            summary_snippet="Piececool's new architecture model kit collection is available.",
+            content_type="news",
+        )
+
+        # Weak/noisy article
+        weak = _make_item(
+            db_session,
+            ws.id,
+            title="Local sports results: football and basketball scores updated",
+            summary_snippet="Weekend sports roundup with all the latest scores.",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [strong, generic, competitor, weak], ws)
+
+        scores = {
+            "strong": strong.final_score,
+            "generic": generic.final_score,
+            "competitor": competitor.final_score,
+            "weak": weak.final_score,
+        }
+
+        # All scores should be non-None
+        for name, score in scores.items():
+            assert score is not None, f"{name} score should not be None"
+
+        # Strong should be significantly higher than weak
+        assert scores["strong"] > scores["weak"], (
+            f"Strong ({scores['strong']}) should exceed weak ({scores['weak']})"
+        )
+
+        # The score range should not be compressed to a trivial band.
+        # We check that the gap between strong and weak is at least 0.1.
+        gap = scores["strong"] - scores["weak"]
+        assert gap >= 0.1, (
+            f"Score gap between strong ({scores['strong']}) and weak "
+            f"({scores['weak']}) is {gap:.4f}, expected >= 0.1"
+        )
+
+        # Strong should also beat generic and competitor
+        assert scores["strong"] > scores["generic"]
+        assert scores["competitor"] > scores["weak"]

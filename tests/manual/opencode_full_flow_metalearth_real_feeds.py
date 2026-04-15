@@ -262,6 +262,17 @@ def main() -> int:
             "minRelevanceScore": 0.15,
             "minFinalScore": 0.15,
             "maxArticlesPerReport": 10,
+            "trusted_domains": [
+                "toybook.com",
+                "licenseglobal.com",
+                "thepopinsider.com",
+                "hasbro.com",
+                "mattel.com",
+                "disney.com",
+                "starwars.com",
+                "marvel.com",
+                "anbmedia.com",
+            ],
         },
         "schedule": {
             "enabled": False,

@@ -356,6 +356,17 @@ test.describe.serial('Metal Earth Real Flow — Manual QA', () => {
           minRelevanceScore: 0.15,
           minFinalScore: 0.15,
           maxArticlesPerReport: 10,
+          trustedDomains: [
+            'toybook.com',
+            'licenseglobal.com',
+            'thepopinsider.com',
+            'hasbro.com',
+            'mattel.com',
+            'disney.com',
+            'starwars.com',
+            'marvel.com',
+            'anbmedia.com',
+          ],
         },
         schedule: {
           enabled: false,
@@ -367,7 +378,7 @@ test.describe.serial('Metal Earth Real Flow — Manual QA', () => {
     });
     expect(res.status()).toBe(200);
 
-    console.log('✓ Settings updated (QA thresholds 0.15, schedule disabled)');
+    console.log('✓ Settings updated (QA thresholds 0.15, schedule disabled, trusted domains configured)');
   });
 
   /* ------------------------------------------------------------------ */
