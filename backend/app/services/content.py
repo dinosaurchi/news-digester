@@ -65,6 +65,14 @@ def build_score_breakdown(item: ContentItem) -> dict:
     pipeline.  Falls back to ``local_relevance_score`` / ``llm_score`` for
     items that have not yet been scored by the new pipeline, and returns zeros
     for components that have no persisted value.
+
+    The returned dict includes all scoring component scores plus optional
+    metadata fields for transparency:
+    - theme_match: which priority themes matched/unmatched
+    - competitor_match: which competitors matched/unmatched
+    - multi_signal_boost: bonus for matching multiple themes
+    - filter_reason: why the item was included/excluded
+    - min_relevance_threshold: threshold used for filtering (when excluded)
     """
     breakdown = item.score_breakdown_json
     if breakdown and "scores" in breakdown:
@@ -78,7 +86,9 @@ def build_score_breakdown(item: ContentItem) -> dict:
         kw_w = float(weights.get("keyword", 0.25))
         bm25_w = float(weights.get("bm25", 0.20))
         total_w = kw_w + bm25_w
-        relevance = (kw * kw_w + bm25 * bm25_w) / total_w if total_w > 0 else max(kw, bm25)
+        relevance = (
+            (kw * kw_w + bm25 * bm25_w) / total_w if total_w > 0 else max(kw, bm25)
+        )
         result = {
             "relevance": round(relevance, 4),
             "bm25": round(float(scores.get("bm25", scores.get("llm", 0))), 4),
@@ -97,6 +107,22 @@ def build_score_breakdown(item: ContentItem) -> dict:
                 "sourcesMatched": fb.get("sources_matched", []),
                 "eventCount": fb.get("event_count", 0),
             }
+        # Expose theme match metadata when present (Pass 1/3 enrichment)
+        if "theme_match" in breakdown:
+            result["themeMatch"] = breakdown["theme_match"]
+        # Expose competitor match metadata when present (Pass 1/3 enrichment)
+        if "competitor_match" in breakdown:
+            result["competitorMatch"] = breakdown["competitor_match"]
+        # Expose multi-signal boost when present (Pass 4 enrichment)
+        if "multi_signal_boost" in breakdown:
+            result["multiSignalBoost"] = breakdown["multi_signal_boost"]
+        # Expose filter reason and threshold for transparency
+        if "filter_reason" in breakdown:
+            result["filterReason"] = breakdown["filter_reason"]
+        if "min_relevance_threshold" in breakdown:
+            result["minRelevanceThreshold"] = round(
+                float(breakdown["min_relevance_threshold"]), 4
+            )
         return result
     # Fallback for items not yet scored by the new pipeline
     return {

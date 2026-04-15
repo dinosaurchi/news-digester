@@ -3,13 +3,14 @@ import { api } from '@/lib/api';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ChevronLeft, FileText, Tag, Calendar, Link2, Hash,
+  CheckCircle, XCircle, Info, Sparkles,
 } from 'lucide-react';
 import { formatDateOnly, cn } from '@/lib/utils';
 import { PageHeader } from '@/components/ui/page-header';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { Skeleton } from '@/components/ui/loading-skeleton';
 import { ScoreBar } from '@/components/ui/score-bar';
-import type { ContentType } from '@/lib/types';
+import type { ContentType, ThemeMatch, CompetitorMatch, MultiSignalBoost } from '@/lib/types';
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -60,12 +61,126 @@ function MetaRow({ icon: Icon, label, value }: { icon: React.ElementType; label:
   );
 }
 
-function ScoreRow({ label, score, bold }: { label: string; score: number; bold?: boolean }) {
+function ScoreRow({ label, score, bold, tooltip }: { label: string; score: number; bold?: boolean; tooltip?: string }) {
   return (
     <div className="flex items-center gap-3">
-      <span className="text-xs font-medium text-slate-500 w-28 shrink-0">{label}</span>
+      <div className="flex items-center gap-1.5 min-w-[140px]">
+        <span className="text-xs font-medium text-slate-500">{label}</span>
+        {tooltip && (
+          <span className="group relative">
+            <Info className="w-3 h-3 text-slate-400 cursor-help" />
+            <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 text-[10px] text-white bg-slate-800 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap max-w-[200px] text-center z-10">
+              {tooltip}
+            </span>
+          </span>
+        )}
+      </div>
       <div className="flex-1">
         <ScoreBar score={score} bold={bold} />
+      </div>
+    </div>
+  );
+}
+
+function ThemeMatchSection({ themeMatch }: { themeMatch: ThemeMatch }) {
+  if (!themeMatch) return null;
+  return (
+    <div className="pt-2 mt-2 border-t border-slate-200">
+      <h4 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Theme Match Details</h4>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="flex items-center gap-1 mb-1">
+            <CheckCircle className="w-3 h-3 text-emerald-500" />
+            <span className="text-[10px] font-medium text-slate-500">Matched ({themeMatch.matched.length})</span>
+          </div>
+          {themeMatch.matched.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {themeMatch.matched.map((theme, i) => (
+                <span key={i} className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 rounded">
+                  {theme}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className="text-[10px] text-slate-400 italic">No themes matched</span>
+          )}
+        </div>
+        <div>
+          <div className="flex items-center gap-1 mb-1">
+            <XCircle className="w-3 h-3 text-slate-400" />
+            <span className="text-[10px] font-medium text-slate-500">Unmatched ({themeMatch.unmatched.length})</span>
+          </div>
+          {themeMatch.unmatched.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {themeMatch.unmatched.map((theme, i) => (
+                <span key={i} className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium bg-slate-50 text-slate-500 border border-slate-200 rounded">
+                  {theme}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className="text-[10px] text-slate-400 italic">All themes matched</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CompetitorMatchSection({ competitorMatch }: { competitorMatch: CompetitorMatch }) {
+  if (!competitorMatch) return null;
+  return (
+    <div className="pt-2 mt-2 border-t border-slate-200">
+      <h4 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Competitor Match Details</h4>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="flex items-center gap-1 mb-1">
+            <CheckCircle className="w-3 h-3 text-emerald-500" />
+            <span className="text-[10px] font-medium text-slate-500">Matched ({competitorMatch.matched.length})</span>
+          </div>
+          {competitorMatch.matched.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {competitorMatch.matched.map((comp, i) => (
+                <span key={i} className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium bg-orange-50 text-orange-700 border border-orange-200 rounded">
+                  {comp}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className="text-[10px] text-slate-400 italic">No competitors mentioned</span>
+          )}
+        </div>
+        <div>
+          <div className="flex items-center gap-1 mb-1">
+            <XCircle className="w-3 h-3 text-slate-400" />
+            <span className="text-[10px] font-medium text-slate-500">Not Found ({competitorMatch.unmatched.length})</span>
+          </div>
+          {competitorMatch.unmatched.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {competitorMatch.unmatched.map((comp, i) => (
+                <span key={i} className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium bg-slate-50 text-slate-500 border border-slate-200 rounded">
+                  {comp}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className="text-[10px] text-slate-400 italic">All competitors mentioned</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MultiSignalBoostBadge({ boost }: { boost: MultiSignalBoost }) {
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
+      <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+      <div>
+        <span className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider">Multi-Signal Boost</span>
+        <p className="text-[10px] text-amber-600">
+          +{(boost.bonus * 100).toFixed(1)}% bonus for matching {boost.distinct_matched_themes} distinct theme{boost.distinct_matched_themes !== 1 ? 's' : ''}
+        </p>
       </div>
     </div>
   );
@@ -168,14 +283,39 @@ export default function ContentDetailPage() {
               No LLM or semantic model is used for content scoring. LLM is used only for
               shortlist reranking and report generation. */}
           <section className="space-y-2.5">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Score Breakdown</h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Score Breakdown</h3>
+              <span className="text-[9px] font-medium text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
+                Deterministic scoring · No LLM
+              </span>
+            </div>
             <div className="bg-slate-50 rounded-lg p-4 space-y-3">
-              <ScoreRow label="Relevance" score={detail.scoreBreakdown.relevance * 100} />
-              <ScoreRow label="BM25" score={detail.scoreBreakdown.bm25 * 100} />
-              <ScoreRow label="Freshness" score={detail.scoreBreakdown.freshness * 100} />
-              <ScoreRow label="Source Authority" score={detail.scoreBreakdown.sourceAuthority * 100} />
+              <ScoreRow
+                label="Relevance"
+                score={detail.scoreBreakdown.relevance * 100}
+                tooltip="Weighted combination of keyword matching against priority themes"
+              />
+              <ScoreRow
+                label="BM25 (Lexical)"
+                score={detail.scoreBreakdown.bm25 * 100}
+                tooltip="Lexical relevance score based on term frequency matching. NOT an LLM/semantic score."
+              />
+              <ScoreRow
+                label="Freshness"
+                score={detail.scoreBreakdown.freshness * 100}
+                tooltip="Time-decay score based on publish date. Recent content scores higher."
+              />
+              <ScoreRow
+                label="Source Authority"
+                score={detail.scoreBreakdown.sourceAuthority * 100}
+                tooltip="Domain trust score. Trusted domains (e.g., reuters.com) score higher."
+              />
               {detail.scoreBreakdown.feedbackAdjustment != null && (
-                <ScoreRow label="Feedback Adj." score={detail.scoreBreakdown.feedbackAdjustment * 100} />
+                <ScoreRow
+                  label="Feedback Adj."
+                  score={detail.scoreBreakdown.feedbackAdjustment * 100}
+                  tooltip="Score adjustment from user preference signals"
+                />
               )}
               {detail.scoreBreakdown.feedback && (
                 <div className="text-xs text-slate-500 space-y-0.5 pl-[140px]">
@@ -190,6 +330,42 @@ export default function ContentDetailPage() {
                   )}
                 </div>
               )}
+              
+              {/* Multi-signal boost indicator */}
+              {detail.scoreBreakdown.multiSignalBoost && (
+                <MultiSignalBoostBadge boost={detail.scoreBreakdown.multiSignalBoost} />
+              )}
+              
+              {/* Theme match details */}
+              {detail.scoreBreakdown.themeMatch && (
+                <ThemeMatchSection themeMatch={detail.scoreBreakdown.themeMatch} />
+              )}
+              
+              {/* Competitor match details */}
+              {detail.scoreBreakdown.competitorMatch && (
+                <CompetitorMatchSection competitorMatch={detail.scoreBreakdown.competitorMatch} />
+              )}
+              
+              {/* Filter reason info */}
+              {detail.scoreBreakdown.filterReason && (
+                <div className="pt-2 mt-2 border-t border-slate-200">
+                  <div className="flex items-center gap-2">
+                    <Info className="w-3 h-3 text-slate-400" />
+                    <span className="text-[10px] text-slate-500">
+                      Filter: <span className={cn(
+                        "font-medium",
+                        detail.scoreBreakdown.filterReason === 'included' ? "text-emerald-600" : "text-red-600"
+                      )}>{detail.scoreBreakdown.filterReason === 'included' ? 'Included' : detail.scoreBreakdown.filterReason.replace(/_/g, ' ')}</span>
+                      {detail.scoreBreakdown.minRelevanceThreshold != null && (
+                        <span className="text-slate-400">
+                          {' '}(threshold: {(detail.scoreBreakdown.minRelevanceThreshold * 100).toFixed(0)}%)
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              )}
+              
               <div className="pt-2 mt-2 border-t border-slate-200">
                 <ScoreRow label="Final" score={detail.finalScore * 100} bold />
               </div>
