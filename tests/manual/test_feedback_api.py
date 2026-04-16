@@ -5,8 +5,8 @@ Tests the deployed stack end-to-end to verify that Passes 1-3 fixes work
 correctly through the HTTP API layer.
 
 Usage:
-    python tests/integration/test_feedback_api.py
-    BASE_URL=http://172.17.0.1:3000 python tests/integration/test_feedback_api.py
+    python tests/manual/test_feedback_api.py
+    BASE_URL=http://172.17.0.1:3000 python tests/manual/test_feedback_api.py
 
 Environment variables:
     BASE_URL       - API base URL (default: http://localhost:3000)
