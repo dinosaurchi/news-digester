@@ -272,3 +272,113 @@ class TestPutSettings:
             json={"reportStyle": "concise"},
         )
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Canonical threshold key normalisation (Pass 1)
+# ---------------------------------------------------------------------------
+
+
+class TestThresholdKeyCanonicalisation:
+    """PUT stores snake_case in DB; GET returns camelCase to the client."""
+
+    def test_put_settings_normalizes_camelcase_threshold_keys(self, client):
+        """PUT with camelCase keys stores snake_case in DB."""
+        ws_id = _create_workspace(client)
+
+        payload = {
+            "thresholds": {
+                "minRelevanceScore": 0.80,
+                "minFinalScore": 0.85,
+                "maxArticlesPerReport": 5,
+            },
+        }
+        resp = client.put(f"/api/workspaces/{ws_id}/settings", json=payload)
+        assert resp.status_code == 200
+
+        # Verify DB has snake_case keys (round-trip via GET)
+        resp2 = client.get(f"/api/workspaces/{ws_id}/settings")
+        assert resp2.status_code == 200
+
+        # The API response must still use camelCase
+        thresholds = resp2.json()["thresholds"]
+        assert thresholds["minRelevanceScore"] == 0.80
+        assert thresholds["minFinalScore"] == 0.85
+        assert thresholds["maxArticlesPerReport"] == 5
+
+    def test_put_settings_normalizes_trusted_domains_alias(self, client):
+        """PUT with trustedDomains stores as trusted_domains in DB."""
+        ws_id = _create_workspace(client)
+
+        payload = {
+            "thresholds": {
+                "trustedDomains": ["reuters.com", "bbc.com"],
+            },
+        }
+        resp = client.put(f"/api/workspaces/{ws_id}/settings", json=payload)
+        assert resp.status_code == 200
+
+        # API response must return camelCase alias
+        thresholds = resp.json()["thresholds"]
+        assert thresholds["trustedDomains"] == ["reuters.com", "bbc.com"]
+
+    def test_settings_round_trip_exposes_expected_threshold_keys(self, client):
+        """GET returns camelCase; DB stores snake_case (verified via scorer path)."""
+        ws_id = _create_workspace(client)
+
+        # PUT with a full set of threshold keys
+        payload = {
+            "thresholds": {
+                "minRelevanceScore": 0.55,
+                "minFinalScore": 0.60,
+                "maxArticlesPerReport": 10,
+                "trustedDomains": ["example.com"],
+                "scoringWeights": {"keyword": 0.50, "bm25": 0.25},
+                "contentTypeWeights": {"news": 1.0, "blog": 0.3},
+            },
+        }
+        resp = client.put(f"/api/workspaces/{ws_id}/settings", json=payload)
+        assert resp.status_code == 200
+
+        # GET must return all keys in camelCase
+        thresholds = resp.json()["thresholds"]
+        assert thresholds["minRelevanceScore"] == 0.55
+        assert thresholds["minFinalScore"] == 0.60
+        assert thresholds["maxArticlesPerReport"] == 10
+        assert thresholds["trustedDomains"] == ["example.com"]
+        assert thresholds["scoringWeights"]["keyword"] == 0.50
+        assert thresholds["contentTypeWeights"]["news"] == 1.0
+
+    def test_put_settings_accepts_snake_case_input(self, client):
+        """PUT with snake_case field names also works (populate_by_name)."""
+        ws_id = _create_workspace(client)
+
+        payload = {
+            "thresholds": {
+                "min_relevance_score": 0.90,
+                "min_final_score": 0.95,
+                "max_articles_per_report": 3,
+                "trusted_domains": ["trusted.org"],
+            },
+        }
+        resp = client.put(f"/api/workspaces/{ws_id}/settings", json=payload)
+        assert resp.status_code == 200
+
+        # API response should always be camelCase
+        thresholds = resp.json()["thresholds"]
+        assert thresholds["minRelevanceScore"] == 0.90
+        assert thresholds["minFinalScore"] == 0.95
+        assert thresholds["maxArticlesPerReport"] == 3
+        assert thresholds["trustedDomains"] == ["trusted.org"]
+
+    def test_default_settings_have_camel_case_threshold_keys(self, client):
+        """Freshly created default settings return camelCase threshold keys."""
+        ws_id = _create_workspace(client)
+
+        resp = client.get(f"/api/workspaces/{ws_id}/settings")
+        thresholds = resp.json()["thresholds"]
+
+        # All expected camelCase keys must be present
+        assert "minRelevanceScore" in thresholds
+        assert "minFinalScore" in thresholds
+        assert "maxArticlesPerReport" in thresholds

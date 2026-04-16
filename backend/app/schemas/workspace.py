@@ -19,15 +19,29 @@ class ThresholdsSchema(BaseModel):
     min_relevance_score: float = Field(0.65, alias="minRelevanceScore")
     min_final_score: float = Field(0.70, alias="minFinalScore")
     max_articles_per_report: int = Field(15, alias="maxArticlesPerReport")
-    scoring_weights: dict[str, float] | None = Field(None, alias="scoring_weights")
+    trusted_domains: list[str] | None = Field(None, alias="trustedDomains")
+    scoring_weights: dict[str, float] | None = Field(None, alias="scoringWeights")
+    content_type_weights: dict[str, float] | None = Field(
+        None, alias="contentTypeWeights"
+    )
     clustering_similarity_threshold: float | None = Field(
-        None, alias="clustering_similarity_threshold"
+        None, alias="clusteringSimilarityThreshold"
     )
     clustering_domain_title_threshold: float | None = Field(
-        None, alias="clustering_domain_title_threshold"
+        None, alias="clusteringDomainTitleThreshold"
     )
 
     model_config = {"populate_by_name": True, "from_attributes": True, "extra": "allow"}
+
+    def to_canonical_dict(self) -> dict:
+        """Return a snake_case dict suitable for persistence and scorer consumption.
+
+        The scorer reads ``min_relevance_score``, ``min_final_score``,
+        ``trusted_domains``, ``scoring_weights``, ``content_type_weights``,
+        etc.  This method ensures those keys are always present regardless of
+        whether the input used camelCase aliases or snake_case field names.
+        """
+        return self.model_dump(by_alias=False)
 
 
 class RetentionSchema(BaseModel):

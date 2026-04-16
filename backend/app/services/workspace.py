@@ -91,9 +91,9 @@ def get_or_create_settings(db: Session, workspace_id: str) -> WorkspaceSettings:
             },
             report_style="detailed",
             thresholds={
-                "minRelevanceScore": 0.65,
-                "minFinalScore": 0.70,
-                "maxArticlesPerReport": 15,
+                "min_relevance_score": 0.65,
+                "min_final_score": 0.70,
+                "max_articles_per_report": 15,
             },
             retention={
                 "contentDays": 90,

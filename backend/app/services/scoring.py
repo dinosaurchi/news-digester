@@ -1121,6 +1121,14 @@ def score_content_items(
     if settings and settings.thresholds:
         min_relevance_score = float(settings.thresholds.get("min_relevance_score", 0.1))
 
+    # Minimum final score — secondary filter applied after relevance check.
+    # If not set or 0, only min_relevance_score controls inclusion.
+    min_final_score: float | None = None
+    if settings and settings.thresholds:
+        raw_mfs = settings.thresholds.get("min_final_score")
+        if raw_mfs is not None:
+            min_final_score = float(raw_mfs)
+
     # Scoring weight overrides (default: None → use built-in defaults)
     scoring_weights: dict[str, float] | None = None
     if settings and settings.thresholds:
@@ -1355,6 +1363,17 @@ def score_content_items(
             item.inclusion_reason = None
             breakdown["filter_reason"] = "below_relevance_threshold"
             breakdown["min_relevance_threshold"] = min_relevance_score
+            excluded_count += 1
+        elif (
+            min_final_score is not None
+            and min_final_score > 0
+            and combined_score < min_final_score
+        ):
+            item.status = "excluded"
+            item.exclusion_reason = "below_final_score"
+            item.inclusion_reason = None
+            breakdown["filter_reason"] = "below_final_score"
+            breakdown["min_final_threshold"] = min_final_score
             excluded_count += 1
         else:
             item.status = "included"

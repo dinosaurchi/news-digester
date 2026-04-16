@@ -2719,3 +2719,193 @@ class TestNoSemanticScoringComponent:
             f"Unexpected scoring components found: {unknown_keys}. "
             "Content scoring should only use deterministic/lexical signals."
         )
+
+
+# ---------------------------------------------------------------------------
+# Pass 1 — Canonical threshold keys: scorer reads normalized keys
+# ---------------------------------------------------------------------------
+
+
+class TestScorerUsesNormalizedThresholdKeys:
+    """The scorer must read snake_case threshold keys stored by the API."""
+
+    def test_scorer_uses_normalized_min_relevance_score_from_workspace_settings(
+        self, db_session
+    ):
+        """Settings set via API (snake_case in DB) are read correctly by scorer."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            min_relevance_score=0.80,
+        )
+        # Article about AI should be relevant but score below 0.80
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Brief mention of ai",
+            summary_snippet="Something about ai.",
+        )
+
+        result = score_content_items(db_session, [item], ws)
+
+        # With min_relevance_score=0.80, the brief mention should be excluded
+        assert result["excluded_count"] == 1
+        assert item.status == "excluded"
+        assert item.exclusion_reason == "below_relevance_threshold"
+        assert item.score_breakdown_json["min_relevance_threshold"] == 0.80
+
+    def test_scorer_uses_normalized_trusted_domains_from_workspace_settings(
+        self, db_session
+    ):
+        """Trusted domains stored as trusted_domains (snake_case) are used."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            trusted_domains=["reuters.com", "bbc.com"],
+        )
+        trusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI news",
+            url="https://reuters.com/ai-article",
+        )
+        untrusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI news",
+            url="https://random-blog.xyz/ai-article",
+        )
+
+        score_content_items(db_session, [trusted_item, untrusted_item], ws)
+
+        trusted_auth = trusted_item.score_breakdown_json["scores"]["source_authority"]
+        untrusted_auth = untrusted_item.score_breakdown_json["scores"][
+            "source_authority"
+        ]
+        assert trusted_auth == pytest.approx(1.0)
+        assert untrusted_auth == pytest.approx(0.3)
+
+
+class TestMinFinalScoreInScoring:
+    """min_final_score acts as a secondary filter in the scoring pipeline."""
+
+    def test_min_final_score_filters_content_in_scoring(self, db_session):
+        """Items between min_relevance_score and min_final_score are excluded."""
+        from app.models.workspace import WorkspaceSettings
+
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai", "machine learning"],
+            min_relevance_score=0.10,
+        )
+
+        # Override settings to add min_final_score
+        existing_settings = (
+            db_session.query(WorkspaceSettings)
+            .filter(WorkspaceSettings.workspace_id == ws.id)
+            .first()
+        )
+        thresholds = existing_settings.thresholds or {}
+        thresholds["min_final_score"] = 0.90
+        existing_settings.thresholds = thresholds
+        db_session.flush()
+
+        # This article will have a decent score (matches ai) but almost certainly
+        # below 0.90 given the short text
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI and machine learning",
+            summary_snippet="News about ai.",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        # Item should be excluded by final score filter
+        assert item.status == "excluded"
+        assert item.exclusion_reason == "below_final_score"
+        assert item.score_breakdown_json["filter_reason"] == "below_final_score"
+        assert item.score_breakdown_json["min_final_threshold"] == 0.90
+
+    def test_min_final_score_zero_does_not_filter(self, db_session):
+        """When min_final_score is 0, only min_relevance_score applies."""
+        from app.models.workspace import WorkspaceSettings
+
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            min_relevance_score=0.05,
+        )
+
+        # Explicitly set min_final_score to 0
+        existing_settings = (
+            db_session.query(WorkspaceSettings)
+            .filter(WorkspaceSettings.workspace_id == ws.id)
+            .first()
+        )
+        thresholds = existing_settings.thresholds or {}
+        thresholds["min_final_score"] = 0.0
+        existing_settings.thresholds = thresholds
+        db_session.flush()
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI breakthrough announced",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        # With min_final_score=0, the item should not be excluded by final score
+        assert item.exclusion_reason != "below_final_score"
+
+    def test_min_final_score_none_does_not_filter(self, db_session):
+        """When min_final_score is absent, only min_relevance_score applies."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            min_relevance_score=0.05,
+        )
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI breakthrough announced",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        # With no min_final_score, the item should not be excluded by final score
+        assert item.exclusion_reason != "below_final_score"
+
+    def test_excluded_topic_takes_priority_over_final_score(self, db_session):
+        """Excluded topic filter runs before final score filter."""
+        from app.models.workspace import WorkspaceSettings
+
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            excluded_topics=["celebrity gossip"],
+            min_relevance_score=0.05,
+        )
+
+        existing_settings = (
+            db_session.query(WorkspaceSettings)
+            .filter(WorkspaceSettings.workspace_id == ws.id)
+            .first()
+        )
+        thresholds = existing_settings.thresholds or {}
+        thresholds["min_final_score"] = 0.90
+        existing_settings.thresholds = thresholds
+        db_session.flush()
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Celebrity gossip about ai",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        # Excluded topic takes priority over final score
+        assert item.exclusion_reason == "matched_excluded_topic"

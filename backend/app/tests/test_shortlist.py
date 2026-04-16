@@ -44,7 +44,7 @@ def _make_workspace(
 
     thresholds: dict = {}
     if max_articles is not None:
-        thresholds["maxArticlesPerReport"] = max_articles
+        thresholds["max_articles_per_report"] = max_articles
 
     settings = WorkspaceSettings(
         workspace_id=ws.id,
