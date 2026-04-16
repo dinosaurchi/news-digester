@@ -37,71 +37,49 @@ BASE_URL = os.environ.get("SME_BASE_URL", "http://127.0.0.1:8000/api").rstrip("/
 USERNAME = os.environ.get("SME_USERNAME", "admin")
 PASSWORD = os.environ.get("SME_PASSWORD", "admin")
 
-# Google News RSS feeds tightly aligned with Metal Earth / Fascinations' business.
-# Each feed is scoped to avoid junk-producing broad terms (e.g. bare "Tenyo" pulls
-# motorcycle death articles; bare "licensing deal" pulls pharma; bare "model kit brand"
-# is too generic). Use exact-phrase queries or hobby-specific qualifiers instead.
+# Direct RSS feeds tightly aligned with Metal Earth / Fascinations' business.
+# These are real public RSS feeds from toy industry, pop culture, and hobby publications.
+# No Google News — these are direct feeds from authoritative sources.
 REAL_FEEDS: list[dict[str, str]] = [
-    # Feed 1: Direct brand/product mentions — high-signal for Metal Earth itself
+    # Feed 1: The Toy Book — official trade publication for the North American toy industry
     {
-        "name": "Metal Earth & Fascinations brand mentions",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=%22metal+earth%22+OR+%22Fascinations+Inc%22+OR+%223D+metal+model+kit%22"
-        ),
+        "name": "The Toy Book — toy industry news",
+        "url": "https://toybook.com/feed/",
         "type": "rss",
         "cadence": "daily",
     },
-    # Feed 2: Licensed franchise collectibles — tracks IP that Metal Earth licenses
+    # Feed 2: The Pop Insider — pop culture, collectibles, licensing and merch news
     {
-        "name": "Star Wars & Marvel toys and collectibles licensing",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=Star+Wars+OR+Marvel+toys+collectibles+licensing"
-        ),
+        "name": "The Pop Insider — pop culture & collectibles",
+        "url": "https://thepopinsider.com/feed/",
         "type": "rss",
         "cadence": "daily",
     },
-    # Feed 3: Toy & hobby industry trends — retail channel, trade shows, market shifts
+    # Feed 3: aNb Media / TFE Magazine — toy & hobby industry coverage
     {
-        "name": "Toy industry & hobby retail trends",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=%22toy+industry%22+OR+%22hobby+retail%22+OR+%22toy+fair%22+collectibles"
-        ),
+        "name": "aNb Media / TFE Magazine — toy industry",
+        "url": "https://www.anbmedia.com/feed/",
         "type": "rss",
         "cadence": "daily",
     },
-    # Feed 4: Competitor watch — exact phrases to avoid junk from broad "Tenyo" or "model kit brand"
+    # Feed 4: Make: — maker/DIY projects, includes scale modeling and hobby content
     {
-        "name": "Competitor watch — Piececool, UGEARS, Tenyo Metallic Nano, 3D metal puzzles",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=%22Piececool+metal+model%22+OR+%22UGEARS+model+kit%22"
-            "+OR+%22Tenyo+Metallic+Nano%22+OR+%223D+metal+puzzle%22"
-        ),
+        "name": "Make: — maker projects & scale modeling",
+        "url": "https://makezine.com/feed/",
         "type": "rss",
         "cadence": "daily",
     },
-    # Feed 5: Collectible hobby/model market — biased toward hobby collectibles, not generic DIY
+    # Feed 5: The Mary Sue — pop culture news covering entertainment, comics, toys
     {
-        "name": "Collectible model kits & hobby industry",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=%22collectible+model+kit%22+OR+%22scale+model%22+hobby"
-            "+OR+%22metal+model+puzzle%22+collectible"
-        ),
+        "name": "The Mary Sue — pop culture & entertainment",
+        "url": "https://www.themarysue.com/feed/",
         "type": "rss",
         "cadence": "daily",
     },
-    # Feed 6: Toy & franchise licensing — scoped to toy/consumer-products to avoid pharma, tech licensing
+    # Feed 6: Collectibles.org — collectibles industry news and market trends
     {
-        "name": "Toy & franchise licensing deals",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=%22toy+licensing%22+OR+%22consumer+products+licensing%22"
-            "+OR+%22collectibles+licensing%22+OR+%22franchise+merchandise+toys%22"
-        ),
+        "name": "Collectibles.org — collectibles industry",
+        "url": "https://www.collectibles.org/feed/",
         "type": "rss",
         "cadence": "daily",
     },

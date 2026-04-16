@@ -997,24 +997,41 @@ class TestExtractUrlResolvesGoogleNews:
 class TestFetchFeedPublisherExtraction:
     """fetch_feed extracts per-entry publisher info from entry.source."""
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_extracts_publisher_name_from_entry_source(self, mock_get):
+    def _make_mock_parsed(self, feed_title, entries):
+        """Build a mock feedparser.parse return value."""
+        from feedparser import FeedParserDict
+        return FeedParserDict({
+            "bozo": False,
+            "feed": FeedParserDict({"title": feed_title}),
+            "entries": entries,
+        })
+
+    def _entry(self, title, link, feed_title="Google News", source_dict=None):
+        """Build a mock feed entry dict for use in mock feedparser results."""
+        from feedparser import FeedParserDict
+        entry = {
+            "title": title,
+            "link": link,
+            "published": "Wed, 20 Mar 2024 08:00:00 +0000",
+            "published_parsed": (2024, 3, 20, 8, 0, 0, 2, 80, 0),
+        }
+        if source_dict is not None:
+            entry["source"] = FeedParserDict(source_dict)
+        return FeedParserDict(entry)
+
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_extracts_publisher_name_from_entry_source(self, mock_parse):
         """entry.source.title is used as publisher_name and effective source_name."""
-        mock_response = MagicMock()
-        mock_response.text = """
-        <rss version="2.0">
-          <channel>
-            <title>Google News</title>
-            <item>
-              <title>Test Article</title>
-              <link>https://news.google.com/rss/articles/test123</link>
-              <source url="https://ruhrkanal.news">ruhrkanal.news</source>
-              <pubDate>Wed, 20 Mar 2024 08:00:00 +0000</pubDate>
-            </item>
-          </channel>
-        </rss>
-        """
-        mock_get.return_value = mock_response
+        mock_parse.return_value = self._make_mock_parsed(
+            "Google News",
+            [
+                self._entry(
+                    "Test Article",
+                    "https://news.google.com/rss/articles/test123",
+                    source_dict={"title": "ruhrkanal.news", "href": "https://ruhrkanal.news"},
+                )
+            ],
+        )
 
         class FakeFeed:
             id = "feed-test"
@@ -1031,27 +1048,19 @@ class TestFetchFeedPublisherExtraction:
         assert entry["publisher_domain"] == "ruhrkanal.news"
         assert entry["source_name"] == "ruhrkanal.news"  # publisher takes priority
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_extracts_publisher_domain_from_href(self, mock_get):
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_extracts_publisher_domain_from_href(self, mock_parse):
         """entry.source.href provides the publisher domain."""
-        mock_response = MagicMock()
-        mock_response.text = """
-        <rss version="2.0">
-          <channel>
-            <title>Google News</title>
-            <item>
-              <title>Toy Industry News</title>
-              <link>https://news.google.com/rss/articles/toy123</link>
-              <source>
-                <title>The Toy Book</title>
-                <link>https://toybook.com</link>
-              </source>
-              <pubDate>Wed, 20 Mar 2024 08:00:00 +0000</pubDate>
-            </item>
-          </channel>
-        </rss>
-        """
-        mock_get.return_value = mock_response
+        mock_parse.return_value = self._make_mock_parsed(
+            "Google News",
+            [
+                self._entry(
+                    "Toy Industry News",
+                    "https://news.google.com/rss/articles/toy123",
+                    source_dict={"title": "The Toy Book", "href": "https://toybook.com"},
+                )
+            ],
+        )
 
         class FakeFeed:
             id = "feed-test"
@@ -1066,23 +1075,13 @@ class TestFetchFeedPublisherExtraction:
         assert entry["publisher_domain"] == "toybook.com"
         assert entry["source_name"] == "The Toy Book"
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_fallback_when_entry_source_missing(self, mock_get):
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_fallback_when_entry_source_missing(self, mock_parse):
         """When entry.source is missing, falls back to feed-level title."""
-        mock_response = MagicMock()
-        mock_response.text = """
-        <rss version="2.0">
-          <channel>
-            <title>Some RSS Feed</title>
-            <item>
-              <title>Test Article</title>
-              <link>https://example.com/article1</link>
-              <pubDate>Wed, 20 Mar 2024 08:00:00 +0000</pubDate>
-            </item>
-          </channel>
-        </rss>
-        """
-        mock_get.return_value = mock_response
+        mock_parse.return_value = self._make_mock_parsed(
+            "Some RSS Feed",
+            [self._entry("Test Article", "https://example.com/article1")],
+        )
 
         class FakeFeed:
             id = "feed-test"
@@ -1097,26 +1096,19 @@ class TestFetchFeedPublisherExtraction:
         assert entry["publisher_domain"] is None
         assert entry["source_name"] == "Some RSS Feed"  # feed-level title
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_publisher_name_none_when_source_has_no_title(self, mock_get):
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_publisher_name_none_when_source_has_no_title(self, mock_parse):
         """When entry.source exists but has no title, publisher_name is None."""
-        mock_response = MagicMock()
-        mock_response.text = """
-        <rss version="2.0">
-          <channel>
-            <title>Google News</title>
-            <item>
-              <title>Test Article</title>
-              <link>https://example.com/article1</link>
-              <source>
-                <link>https://somedomain.com</link>
-              </source>
-              <pubDate>Wed, 20 Mar 2024 08:00:00 +0000</pubDate>
-            </item>
-          </channel>
-        </rss>
-        """
-        mock_get.return_value = mock_response
+        mock_parse.return_value = self._make_mock_parsed(
+            "Google News",
+            [
+                self._entry(
+                    "Test Article",
+                    "https://example.com/article1",
+                    source_dict={"href": "https://somedomain.com"},
+                )
+            ],
+        )
 
         class FakeFeed:
             id = "feed-test"

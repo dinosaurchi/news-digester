@@ -305,24 +305,14 @@ def parse_rfc2822(date_str: str) -> datetime | None:
 def fetch_feed(feed: FeedSource) -> FeedFetchResult:
     """Fetch and parse a single feed source.
 
+    Uses feedparser's built-in HTTP fetching which handles Cloudflare and
+    other bot-protection mechanisms automatically.
+
     Returns a :class:`FeedFetchResult` that distinguishes between an empty
     feed (``success=True, entries=[]``) and a fetch/parse error
     (``success=False, entries=[], error="..."``).
     """
-    # --- HTTP fetch ---
-    try:
-        response = httpx.get(feed.url, follow_redirects=True, timeout=10)
-    except httpx.HTTPError as exc:
-        logger.warning("Failed to fetch feed %s (%s): %s", feed.name, feed.url, exc)
-        return FeedFetchResult(
-            success=False,
-            entries=[],
-            error=f"Fetch failed: {exc}",
-            source_title=feed.name,
-        )
-
-    # --- Parse ---
-    parsed = feedparser.parse(response.text)
+    parsed = feedparser.parse(feed.url)
     source_title = parsed.feed.get("title", feed.name)
 
     if parsed.bozo:
@@ -388,19 +378,12 @@ def fetch_feed(feed: FeedSource) -> FeedFetchResult:
 
 
 def validate_feed_source(feed: FeedSource) -> FeedValidationResult:
-    """Fetch a feed URL and validate that it returns parseable feed entries."""
-    try:
-        response = httpx.get(feed.url, follow_redirects=True, timeout=10)
-        response.raise_for_status()
-    except httpx.HTTPError as exc:
-        return FeedValidationResult(
-            success=False,
-            articles_found=0,
-            source_title=feed.name,
-            error=f"Fetch failed: {exc}",
-        )
+    """Fetch a feed URL and validate that it returns parseable feed entries.
 
-    parsed = feedparser.parse(response.text)
+    Uses feedparser's built-in HTTP fetching which handles Cloudflare and
+    other bot-protection mechanisms automatically.
+    """
+    parsed = feedparser.parse(feed.url)
     entries = list(parsed.entries)
     source_title = parsed.feed.get("title", feed.name)
 

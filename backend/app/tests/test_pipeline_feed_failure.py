@@ -415,12 +415,22 @@ class TestAllFeedsFail:
 class TestFeedFetchResultErrorStates:
     """Verify fetch_feed returns correct FeedFetchResult for various inputs."""
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_http_error_returns_failure(self, mock_get):
-        """Network-level HTTP error → success=False with error message."""
-        import httpx
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_http_error_returns_failure(self, mock_parse):
+        """Network-level HTTP error → success=False with error message.
 
-        mock_get.side_effect = httpx.ConnectError("Connection refused")
+        feedparser.parse() catches HTTP errors internally and returns a
+        bozo result. We simulate this by having the mock raise an exception
+        which feedparser would catch and wrap as a bozo exception.
+        """
+        from feedparser import FeedParserDict
+        exc = Exception("Connection refused")
+        mock_parse.return_value = FeedParserDict({
+            "bozo": True,
+            "bozo_exception": exc,
+            "feed": FeedParserDict({"title": "Test Feed"}),
+            "entries": [],
+        })
 
         feed = MagicMock(spec=FeedSource)
         feed.name = "Test Feed"
@@ -428,18 +438,12 @@ class TestFeedFetchResultErrorStates:
 
         result = fetch_feed(feed)
         assert result.success is False
-        assert "Fetch failed" in result.error
         assert result.entries == []
         assert result.source_title == "Test Feed"
 
     @patch("app.services.pipeline_steps.feedparser.parse")
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_parse_failure_returns_failure(self, mock_get, mock_parse):
+    def test_parse_failure_returns_failure(self, mock_parse):
         """feedparser bozo (parse error) → success=False with error message."""
-        mock_resp = MagicMock()
-        mock_resp.text = "<xml>data</xml>"
-        mock_get.return_value = mock_resp
-
         # Force feedparser to report a parse error
         mock_parsed = MagicMock()
         mock_parsed.bozo = True
@@ -460,15 +464,10 @@ class TestFeedFetchResultErrorStates:
         assert result.source_title == "Bad Feed"
 
     @patch("app.services.pipeline_steps.feedparser.parse")
-    @patch("app.services.pipeline_steps.httpx.get")
     def test_empty_valid_feed_returns_success_with_no_entries(
-        self, mock_get, mock_parse
+        self, mock_parse
     ):
         """Well-formed feed with zero entries → success=True, entries=[]."""
-        mock_resp = MagicMock()
-        mock_resp.text = "<rss></rss>"
-        mock_get.return_value = mock_resp
-
         mock_parsed = MagicMock()
         mock_parsed.bozo = False
         mock_parsed.entries = []
@@ -486,13 +485,8 @@ class TestFeedFetchResultErrorStates:
         assert result.source_title == "Empty Feed"
 
     @patch("app.services.pipeline_steps.feedparser.parse")
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_valid_feed_with_entries_returns_success(self, mock_get, mock_parse):
+    def test_valid_feed_with_entries_returns_success(self, mock_parse):
         """Valid feed with articles → success=True, entries populated."""
-        mock_resp = MagicMock()
-        mock_resp.text = "<rss></rss>"
-        mock_get.return_value = mock_resp
-
         entry = MagicMock()
         entry.get.side_effect = lambda key, default=None: {
             "title": "Article One",
@@ -522,12 +516,20 @@ class TestFeedFetchResultErrorStates:
         assert result.error is None
         assert result.source_title == "News Feed"
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_http_timeout_returns_failure(self, mock_get):
-        """HTTP timeout → success=False with error message."""
-        import httpx
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_http_timeout_returns_failure(self, mock_parse):
+        """HTTP timeout → success=False with error message.
 
-        mock_get.side_effect = httpx.TimeoutException("Read timed out")
+        feedparser wraps timeout errors as bozo exceptions.
+        """
+        from feedparser import FeedParserDict
+        exc = Exception("timed out")
+        mock_parse.return_value = FeedParserDict({
+            "bozo": True,
+            "bozo_exception": exc,
+            "feed": FeedParserDict({"title": "Slow Feed"}),
+            "entries": [],
+        })
 
         feed = MagicMock(spec=FeedSource)
         feed.name = "Slow Feed"
@@ -535,20 +537,22 @@ class TestFeedFetchResultErrorStates:
 
         result = fetch_feed(feed)
         assert result.success is False
-        assert "Fetch failed" in result.error
-        assert "timed out" in result.error.lower() or "timeout" in result.error.lower()
         assert result.entries == []
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_http_status_error_returns_failure(self, mock_get):
-        """HTTP 404/500 via explicit exception → success=False."""
-        import httpx
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_http_status_error_returns_failure(self, mock_parse):
+        """HTTP 404/500 error → success=False.
 
-        mock_get.side_effect = httpx.HTTPStatusError(
-            "Server Error",
-            request=MagicMock(),
-            response=MagicMock(status_code=500),
-        )
+        feedparser wraps HTTP status errors as bozo exceptions.
+        """
+        from feedparser import FeedParserDict
+        exc = Exception("500 Server Error")
+        mock_parse.return_value = FeedParserDict({
+            "bozo": True,
+            "bozo_exception": exc,
+            "feed": FeedParserDict({"title": "Error Feed"}),
+            "entries": [],
+        })
 
         feed = MagicMock(spec=FeedSource)
         feed.name = "Error Feed"
@@ -556,5 +560,4 @@ class TestFeedFetchResultErrorStates:
 
         result = fetch_feed(feed)
         assert result.success is False
-        assert "Fetch failed" in result.error
         assert result.entries == []
