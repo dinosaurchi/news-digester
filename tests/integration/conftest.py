@@ -91,3 +91,75 @@ def db_session():
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine)
+
+
+# ── HTTP test fixtures ──────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="function")
+def clear_sessions():
+    """Clear Redis sessions before/after each test."""
+    from app.services import session as session_service
+
+    try:
+        session_service.clear_all_sessions()
+    except Exception:
+        pass
+    yield
+    try:
+        session_service.clear_all_sessions()
+    except Exception:
+        pass
+
+
+@pytest.fixture(scope="function")
+def seed_test_admin(db_session):
+    """Bootstrap admin user for authenticated tests."""
+    from app.services.session import bootstrap_admin_user
+
+    bootstrap_admin_user(db_session)
+    db_session.commit()
+
+
+@pytest.fixture(scope="function")
+def mock_opencode_client():
+    """Mock OpenCode client so tests don't make real HTTP calls."""
+    from unittest.mock import MagicMock, patch
+
+    mock_client = MagicMock()
+    mock_client.generate_shortlist.return_value = {"items": []}
+    mock_client.generate_report.return_value = {"report": ""}
+    with patch(
+        "app.services.opencode_client.get_opencode_client", return_value=mock_client
+    ):
+        yield mock_client
+
+
+@pytest.fixture(scope="function")
+def client(db_session):
+    """HTTP test client with test DB override."""
+    from app.main import app
+    from app.db.session import get_db
+    from starlette.testclient import TestClient
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture(scope="function")
+def auth_client(client, db_session, seed_test_admin, clear_sessions):
+    """Authenticated test client."""
+    resp = client.post(
+        "/api/session/login", json={"username": "admin", "password": "admin"}
+    )
+    assert resp.status_code == 200
+    return client
