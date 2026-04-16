@@ -59,7 +59,7 @@ class ApiClient:
         """Authenticate and store session cookie."""
         payload = json.dumps({"username": username, "password": password}).encode()
         req = urllib.request.Request(
-            f"{self.base_url}/auth/login",
+            f"{self.base_url}/session/login",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
