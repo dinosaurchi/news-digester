@@ -11,13 +11,15 @@ Environment variables:
 - ``SME_BASE_URL``: default ``http://127.0.0.1:8000/api``
 - ``SME_USERNAME``: default ``admin``
 - ``SME_PASSWORD``: default ``admin``
+- ``SME_MAX_DETAIL_FETCHES``: max items to fetch detail for (default ``500``)
 
 Output:
 - Content count summary
-- Per-feed score distribution
-- Component score distribution (keyword, bm25, freshness, source_authority, etc.)
+- Per-source score distribution
+- Component score distribution (relevance, bm25, freshness, sourceAuthority, feedbackAdjustment)
 - Top unmatched themes (themes that never match any content)
 - Top unmatched competitors (competitors that never appear in any content)
+- Filter reasons / threshold behavior
 """
 
 from __future__ import annotations
@@ -30,11 +32,13 @@ import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
 from http.cookiejar import CookieJar
+from typing import Any
 
 
 BASE_URL = os.environ.get("SME_BASE_URL", "http://127.0.0.1:8000/api").rstrip("/")
 USERNAME = os.environ.get("SME_USERNAME", "admin")
 PASSWORD = os.environ.get("SME_PASSWORD", "admin")
+MAX_DETAIL_FETCHES = int(os.environ.get("SME_MAX_DETAIL_FETCHES", "500"))
 
 
 class DiagnosticError(RuntimeError):
@@ -67,8 +71,8 @@ class ApiClient:
         except urllib.error.HTTPError as e:
             raise DiagnosticError(f"Login failed: {e.code} {e.reason}")
 
-    def get(self, path: str) -> dict:
-        """GET request returning JSON."""
+    def get(self, path: str) -> Any:
+        """GET request returning JSON (list or dict)."""
         req = urllib.request.Request(f"{self.base_url}{path}")
         try:
             resp = self._opener.open(req)
@@ -76,6 +80,41 @@ class ApiClient:
         except urllib.error.HTTPError as e:
             body = e.read().decode() if e.fp else ""
             raise DiagnosticError(f"GET {path} failed: {e.code} {e.reason} - {body}")
+
+
+def _fetch_score_breakdowns(
+    client: ApiClient, all_items: list[dict], max_fetches: int
+) -> tuple[list[dict], int]:
+    """Fetch scoreBreakdown for each item via the detail endpoint.
+
+    Returns (breakdowns, items_without_breakdown).
+    """
+    breakdowns: list[dict] = []
+    items_without_breakdown = 0
+    detail_count = 0
+
+    for item in all_items:
+        if detail_count >= max_fetches:
+            print(
+                f"\n⚠ Stopped fetching details after {max_fetches} items "
+                f"({len(all_items) - detail_count} remaining skipped)"
+            )
+            items_without_breakdown += len(all_items) - detail_count
+            break
+
+        try:
+            detail = client.get(f"/content/{item['id']}")
+            bd = detail.get("scoreBreakdown")
+            if bd and isinstance(bd, dict):
+                breakdowns.append(bd)
+            else:
+                items_without_breakdown += 1
+        except DiagnosticError as e:
+            print(f"\n⚠ Failed to fetch detail for {item['id']}: {e}")
+            items_without_breakdown += 1
+        detail_count += 1
+
+    return breakdowns, items_without_breakdown
 
 
 def analyze_workspace(client: ApiClient, workspace_id: str) -> None:
@@ -87,20 +126,8 @@ def analyze_workspace(client: ApiClient, workspace_id: str) -> None:
     print(f"WORKSPACE DIAGNOSTIC: {workspace.get('name', 'Unknown')}")
     print(f"{'=' * 70}")
 
-    # Fetch content items for this workspace
-    all_items: list[dict] = []
-    page = 1
-    while True:
-        result = client.get(
-            f"/workspaces/{workspace_id}/content?page={page}&per_page=100"
-        )
-        items = result.get("items", [])
-        if not items:
-            break
-        all_items.extend(items)
-        if len(items) < 100:
-            break
-        page += 1
+    # Fetch content items for this workspace (list endpoint returns plain list)
+    all_items: list[dict] = client.get(f"/workspaces/{workspace_id}/content")
 
     if not all_items:
         print("\nNo content items found for this workspace.")
@@ -117,25 +144,23 @@ def analyze_workspace(client: ApiClient, workspace_id: str) -> None:
     print(f"Excluded:    {len(excluded)}")
     print(f"Pending:     {len(pending)}")
 
-    # Collect breakdowns
-    breakdowns: list[dict] = []
-    items_without_breakdown = 0
-    for item in all_items:
-        bd = item.get("score_breakdown_json")
-        if bd and isinstance(bd, dict):
-            breakdowns.append(bd)
-        else:
-            items_without_breakdown += 1
+    # Fetch score breakdowns from detail endpoint (N+1 pattern)
+    print(f"\nFetching score breakdowns for up to {MAX_DETAIL_FETCHES} items...")
+    breakdowns, items_without_breakdown = _fetch_score_breakdowns(
+        client, all_items, MAX_DETAIL_FETCHES
+    )
 
     if items_without_breakdown:
-        print(f"\n⚠ Items without score breakdown: {items_without_breakdown}")
+        print(f"⚠ Items without score breakdown: {items_without_breakdown}")
 
     if not breakdowns:
         print("\nNo scored items found. Run the scoring pipeline first.")
         return
 
-    # Score distribution
-    scores = [bd.get("combined_score", 0) for bd in breakdowns]
+    print(f"Score breakdowns retrieved: {len(breakdowns)}")
+
+    # Score distribution — use combinedScore when available, fall back to relevance
+    scores = [bd.get("combinedScore", bd.get("relevance", 0)) for bd in breakdowns]
     print(f"\n--- Score Distribution ---")
     if scores:
         print(f"Min score:  {min(scores):.4f}")
@@ -145,24 +170,20 @@ def analyze_workspace(client: ApiClient, workspace_id: str) -> None:
             print(f"Median:     {statistics.median(scores):.4f}")
             print(f"Stdev:      {statistics.stdev(scores):.4f}")
 
-    # Component score distribution
+    # Component score distribution (flattened camelCase keys from build_score_breakdown)
     component_keys = [
-        "keyword",
-        "competitor_mention",
-        "freshness",
-        "source_authority",
+        "relevance",
         "bm25",
-        "content_type_prior",
+        "freshness",
+        "sourceAuthority",
+        "feedbackAdjustment",
     ]
     print(f"\n--- Component Score Distribution ---")
     print(f"{'Component':<22} {'Min':>8} {'Max':>8} {'Mean':>8} {'Non-zero':>10}")
     print("-" * 60)
 
     for key in component_keys:
-        values = []
-        for bd in breakdowns:
-            if "scores" in bd and key in bd["scores"]:
-                values.append(bd["scores"][key])
+        values = [bd.get(key, 0) for bd in breakdowns if bd.get(key) is not None]
 
         if values:
             non_zero = sum(1 for v in values if v > 0)
@@ -173,14 +194,15 @@ def analyze_workspace(client: ApiClient, workspace_id: str) -> None:
         else:
             print(f"{key:<22} {'N/A':>8} {'N/A':>8} {'N/A':>8} {'N/A':>10}")
 
-    # Per-feed score distribution
+    # Per-source score distribution (camelCase "source" field from list endpoint)
     feed_scores: dict[str, list[float]] = defaultdict(list)
     for item, bd in zip(all_items, breakdowns):
-        feed_name = item.get("source_name", "Unknown")
-        feed_scores[feed_name].append(bd.get("combined_score", 0))
+        feed_name = item.get("source", "Unknown")
+        score = bd.get("combinedScore", bd.get("relevance", 0))
+        feed_scores[feed_name].append(score)
 
-    print(f"\n--- Per-Feed Score Distribution ---")
-    print(f"{'Feed':<40} {'Count':>6} {'Mean':>8} {'Min':>8} {'Max':>8}")
+    print(f"\n--- Per-Source Score Distribution ---")
+    print(f"{'Source':<40} {'Count':>6} {'Mean':>8} {'Min':>8} {'Max':>8}")
     print("-" * 74)
 
     for feed_name, feed_vals in sorted(feed_scores.items(), key=lambda x: -len(x[1])):
@@ -190,13 +212,13 @@ def analyze_workspace(client: ApiClient, workspace_id: str) -> None:
                 f"{statistics.mean(feed_vals):>8.3f} {min(feed_vals):>8.3f} {max(feed_vals):>8.3f}"
             )
 
-    # Theme match analysis
+    # Theme match analysis (camelCase "themeMatch" key from scoreBreakdown)
     theme_matched_counts: Counter = Counter()
     theme_unmatched_counts: Counter = Counter()
     themes_analyzed = 0
 
     for bd in breakdowns:
-        theme_match = bd.get("theme_match")
+        theme_match = bd.get("themeMatch")
         if theme_match:
             themes_analyzed += 1
             for t in theme_match.get("matched", []):
@@ -221,13 +243,13 @@ def analyze_workspace(client: ApiClient, workspace_id: str) -> None:
                 f"  {theme:<30} unmatched in {count:>4} items ({match_rate:.1f}% match rate)"
             )
 
-    # Competitor match analysis
+    # Competitor match analysis (camelCase "competitorMatch" key from scoreBreakdown)
     comp_matched_counts: Counter = Counter()
     comp_unmatched_counts: Counter = Counter()
     comps_analyzed = 0
 
     for bd in breakdowns:
-        comp_match = bd.get("competitor_match")
+        comp_match = bd.get("competitorMatch")
         if comp_match:
             comps_analyzed += 1
             for c in comp_match.get("matched", []):
@@ -252,10 +274,10 @@ def analyze_workspace(client: ApiClient, workspace_id: str) -> None:
             else:
                 print(f"  {comp:<30} matched in {matched:>4} items ({count} unmatched)")
 
-    # Exclusion analysis
+    # Exclusion analysis (camelCase "exclusionReason" field from list endpoint)
     exclusion_reasons: Counter = Counter()
     for item in all_items:
-        reason = item.get("exclusion_reason")
+        reason = item.get("exclusionReason")
         if reason:
             exclusion_reasons[reason] += 1
 
@@ -263,6 +285,28 @@ def analyze_workspace(client: ApiClient, workspace_id: str) -> None:
         print(f"\n--- Exclusion Analysis ---")
         for reason, count in exclusion_reasons.most_common():
             print(f"  {reason:<35} {count:>4} items")
+
+    # Filter reason analysis (from scoreBreakdown "filterReason" key)
+    filter_reasons: Counter = Counter()
+    filter_thresholds: list[float] = []
+    for bd in breakdowns:
+        fr = bd.get("filterReason")
+        if fr:
+            filter_reasons[fr] += 1
+        thresh = bd.get("minRelevanceThreshold")
+        if thresh is not None:
+            filter_thresholds.append(thresh)
+
+    if filter_reasons:
+        print(f"\n--- Filter Reason Analysis (from scoreBreakdown) ---")
+        for reason, count in filter_reasons.most_common():
+            print(f"  {reason:<35} {count:>4} items")
+
+    if filter_thresholds:
+        unique_thresholds = sorted(set(filter_thresholds))
+        print(f"\n--- Relevance Thresholds ---")
+        for t in unique_thresholds:
+            print(f"  {t:.4f}")
 
     print(f"\n{'=' * 70}")
     print("DIAGNOSTIC COMPLETE")
@@ -274,6 +318,9 @@ def main() -> None:
         print("Usage: python diagnostic_workspace_scores.py <workspace_id>")
         print(
             "       SME_BASE_URL=http://... SME_USERNAME=... SME_PASSWORD=... python diagnostic_workspace_scores.py <workspace_id>"
+        )
+        print(
+            "       SME_MAX_DETAIL_FETCHES=1000 python diagnostic_workspace_scores.py <workspace_id>"
         )
         sys.exit(1)
 

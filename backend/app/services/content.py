@@ -95,6 +95,9 @@ def build_score_breakdown(item: ContentItem) -> dict:
             "freshness": round(float(scores.get("freshness", 0)), 4),
             "sourceAuthority": round(float(scores.get("source_authority", 0)), 4),
         }
+        # Expose combined score when present in the raw breakdown
+        if breakdown.get("combined_score") is not None:
+            result["combinedScore"] = round(float(breakdown["combined_score"]), 4)
         # Expose feedback adjustment data when present
         if breakdown.get("feedback_adjustment") is not None:
             result["feedbackAdjustment"] = round(

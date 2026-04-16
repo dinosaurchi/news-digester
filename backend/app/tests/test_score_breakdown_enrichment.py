@@ -561,3 +561,95 @@ class TestContentDetailExposesMultiSignalBoost:
         assert "multiSignalBoost" in sb
         assert sb["multiSignalBoost"]["bonus"] == 0.05
         assert sb["multiSignalBoost"]["distinct_matched_themes"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Pass 7 — combinedScore exposure for diagnostic tool
+# ---------------------------------------------------------------------------
+
+
+class TestBuildScoreBreakdownExposesCombinedScore:
+    """build_score_breakdown exposes combinedScore when present in raw breakdown."""
+
+    def test_build_score_breakdown_exposes_combined_score(self, client):
+        ws_id = _create_workspace(client)
+        breakdown_json = {
+            "scores": {
+                "keyword": 0.5,
+                "bm25": 0.3,
+                "freshness": 0.9,
+                "source_authority": 0.5,
+            },
+            "weights": {"keyword": 0.25, "bm25": 0.2},
+            "combined_score": 0.72,
+        }
+        item = _create_content_item_with_breakdown(
+            client, ws_id, score_breakdown_json=breakdown_json
+        )
+
+        result = build_score_breakdown(item)
+        assert "combinedScore" in result
+        assert result["combinedScore"] == 0.72
+
+    def test_build_score_breakdown_omits_combined_score_when_absent(self, client):
+        ws_id = _create_workspace(client)
+        breakdown_json = {
+            "scores": {
+                "keyword": 0.5,
+                "bm25": 0.3,
+                "freshness": 0.9,
+                "source_authority": 0.5,
+            },
+            "weights": {"keyword": 0.25, "bm25": 0.2},
+            # No combined_score key
+        }
+        item = _create_content_item_with_breakdown(
+            client, ws_id, score_breakdown_json=breakdown_json
+        )
+
+        result = build_score_breakdown(item)
+        assert "combinedScore" not in result
+
+    def test_build_score_breakdown_combined_score_rounded(self, client):
+        ws_id = _create_workspace(client)
+        breakdown_json = {
+            "scores": {
+                "keyword": 0.5,
+                "bm25": 0.3,
+                "freshness": 0.9,
+                "source_authority": 0.5,
+            },
+            "weights": {"keyword": 0.25, "bm25": 0.2},
+            "combined_score": 0.723456789,
+        }
+        item = _create_content_item_with_breakdown(
+            client, ws_id, score_breakdown_json=breakdown_json
+        )
+
+        result = build_score_breakdown(item)
+        assert result["combinedScore"] == 0.7235
+
+    def test_content_detail_api_exposes_combined_score(self, client):
+        """GET /api/content/{id} includes combinedScore in scoreBreakdown."""
+        ws_id = _create_workspace(client)
+        breakdown_json = {
+            "scores": {
+                "keyword": 0.5,
+                "bm25": 0.3,
+                "freshness": 0.9,
+                "source_authority": 0.5,
+            },
+            "weights": {"keyword": 0.25, "bm25": 0.2},
+            "combined_score": 0.72,
+        }
+        item = _create_content_item_with_breakdown(
+            client, ws_id, score_breakdown_json=breakdown_json
+        )
+
+        resp = client.get(f"/api/content/{item.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "scoreBreakdown" in data
+        sb = data["scoreBreakdown"]
+        assert "combinedScore" in sb
+        assert sb["combinedScore"] == 0.72
