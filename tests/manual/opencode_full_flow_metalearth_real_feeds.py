@@ -240,7 +240,7 @@ def main() -> int:
             "minRelevanceScore": 0.15,
             "minFinalScore": 0.15,
             "maxArticlesPerReport": 10,
-            "trusted_domains": [
+            "trustedDomains": [
                 "toybook.com",
                 "licenseglobal.com",
                 "thepopinsider.com",
@@ -267,6 +267,38 @@ def main() -> int:
     )
     require(status == 200, f"Settings update failed: {status} {settings_resp}")
     print("Settings updated OK")
+
+    # Verify settings round-trip
+    status, settings_check = client.request(
+        "GET",
+        f"/workspaces/{workspace_id}/settings",
+    )
+    require(status == 200, f"Settings GET failed: {status} {settings_check}")
+    thresholds = settings_check.get("thresholds", {})
+    require(
+        thresholds.get("minRelevanceScore") == 0.15,
+        f"Expected minRelevanceScore=0.15, got {thresholds.get('minRelevanceScore')}",
+    )
+    require(
+        thresholds.get("minFinalScore") == 0.15,
+        f"Expected minFinalScore=0.15, got {thresholds.get('minFinalScore')}",
+    )
+    require(
+        thresholds.get("maxArticlesPerReport") == 10,
+        f"Expected maxArticlesPerReport=10, got {thresholds.get('maxArticlesPerReport')}",
+    )
+    require(
+        len(thresholds.get("trustedDomains", [])) > 0,
+        "Expected at least one trusted domain in settings",
+    )
+    require(
+        thresholds.get("minRelevanceScore", 0) > 0,
+        "Standard QA should NOT use debug mode (threshold > 0)",
+    )
+    print(
+        f"Settings round-trip verified: minRelevanceScore={thresholds['minRelevanceScore']}, "
+        f"trustedDomains={len(thresholds.get('trustedDomains', []))} domains"
+    )
 
     # ── Step 5: Add & test feeds ────────────────────────────────────────
     successful_feeds: list[dict] = []
@@ -337,6 +369,31 @@ def main() -> int:
         f"Run did not reach success status (got '{run_status}') within {POLL_TIMEOUT}s",
     )
     print(f"Run completed successfully: {run_id}")
+
+    # ── Step 7b: Verify threshold application on content ──────────────────
+    status, excluded = client.request(
+        "GET",
+        f"/workspaces/{workspace_id}/content?status=excluded",
+    )
+    require(status == 200, f"Excluded content query failed: {status} {excluded}")
+    excluded_count = len(excluded) if isinstance(excluded, list) else 0
+    print(f"Excluded items: {excluded_count}")
+
+    status, included = client.request(
+        "GET",
+        f"/workspaces/{workspace_id}/content?status=included",
+    )
+    require(status == 200, f"Included content query failed: {status} {included}")
+    included_count = len(included) if isinstance(included, list) else 0
+    print(f"Included items: {included_count}")
+
+    if isinstance(included, list) and included:
+        top = max(included, key=lambda x: x.get("finalScore", 0) or 0)
+        print(f"Top item: '{top.get('title', 'N/A')}' score={top.get('finalScore', 0)}")
+        require(
+            (top.get("finalScore") or 0) > 0,
+            "Top included item should have positive score",
+        )
 
     # ── Step 7: Verify run metadata ─────────────────────────────────────
     status, detail = client.request("GET", f"/runs/{run_id}")

@@ -378,7 +378,19 @@ test.describe.serial('Metal Earth Real Flow — Manual QA', () => {
     });
     expect(res.status()).toBe(200);
 
+    // Verify settings round-trip — confirm non-debug thresholds are stored
+    const settingsResp = await page.request.get(`/api/workspaces/${wsId}/settings`);
+    expect(settingsResp.ok()).toBeTruthy();
+    const settingsData = await settingsResp.json();
+    expect(settingsData.thresholds.minRelevanceScore).toBe(0.15);
+    expect(settingsData.thresholds.minFinalScore).toBe(0.15);
+    expect(settingsData.thresholds.maxArticlesPerReport).toBe(10);
+    expect(settingsData.thresholds.trustedDomains.length).toBeGreaterThan(0);
+    // Confirm we are NOT in debug mode (debug would be threshold 0)
+    expect(settingsData.thresholds.minRelevanceScore).toBeGreaterThan(0);
+
     console.log('✓ Settings updated (QA thresholds 0.15, schedule disabled, trusted domains configured)');
+    console.log(`  Settings round-trip verified: minRelevanceScore=${settingsData.thresholds.minRelevanceScore}, trustedDomains=${settingsData.thresholds.trustedDomains.length} domains`);
   });
 
   /* ------------------------------------------------------------------ */
@@ -481,6 +493,31 @@ test.describe.serial('Metal Earth Real Flow — Manual QA', () => {
     const hasTable = await page.locator('table thead').isVisible().catch(() => false);
     const hasEmpty = await page.getByText('No content items').isVisible().catch(() => false);
     expect(hasTable || hasEmpty || rowCount > 0).toBeTruthy();
+
+    // Verify threshold is actually applied — check excluded items
+    const excludedResp = await page.request.get(`/api/workspaces/${wsId}/content?status=excluded`);
+    if (excludedResp.ok()) {
+      const excludedItems = await excludedResp.json();
+      if (Array.isArray(excludedItems) && excludedItems.length > 0) {
+        // At least one excluded item should have an exclusionReason
+        const withReason = excludedItems.filter((item: any) => item.exclusionReason);
+        // Soft assertion — log but don't fail if no excluded items (feeds may be all relevant)
+        console.log(`  Excluded items: ${excludedItems.length}, with reasons: ${withReason.length}`);
+      } else {
+        console.log('  No excluded items found (all feed content passed threshold)');
+      }
+    }
+
+    // Verify at least one top result has meaningful score
+    const includedResp = await page.request.get(`/api/workspaces/${wsId}/content?status=included`);
+    if (includedResp.ok()) {
+      const includedItems = await includedResp.json();
+      if (Array.isArray(includedItems) && includedItems.length > 0) {
+        const topItem = includedItems.sort((a: any, b: any) => (b.finalScore || 0) - (a.finalScore || 0))[0];
+        console.log(`  Top item: "${topItem.title}" score=${topItem.finalScore}`);
+        expect(topItem.finalScore).toBeGreaterThan(0);
+      }
+    }
 
     console.log('✓ Content page verified');
   });
