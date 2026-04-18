@@ -30,7 +30,7 @@ services:
       dockerfile: backend/Dockerfile
     container_name: sme-news-admin-backend
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8001}:8000"
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/sme_news
       REDIS_URL: redis://redis:6379/0
@@ -115,7 +115,7 @@ services:
       dockerfile: Dockerfile
     container_name: sme-news-admin
     ports:
-      - "${APP_PORT:-3000}:80"
+      - "${APP_PORT:-3001}:80"
     restart: unless-stopped
     environment:
       - NODE_ENV=production
