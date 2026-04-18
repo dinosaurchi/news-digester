@@ -10,6 +10,6 @@ export default defineConfig({
     alias: { '@': path.resolve(__dirname, 'src') },
   },
   test: {
-    exclude: ['node_modules', 'e2e'],
+    exclude: ['node_modules', 'e2e', '.ai'],
   },
 })
