@@ -55,10 +55,97 @@ def _struct_time_to_dt(
         return None
 
 
+_GOOGLE_NEWS_URL_RE = re.compile(
+    r"https?://news\.google\.com/(rss/)?articles/",
+    re.IGNORECASE,
+)
+
+
+def resolve_news_url(url: str, timeout: int = 10) -> str:
+    """Resolve Google News redirect URLs to their canonical article URLs.
+
+    Google News RSS feeds return ephemeral redirect URLs in each entry's
+    ``<link>`` element.  These contain session tokens that expire quickly.
+    This function follows the HTTP redirect chain to obtain the final,
+    canonical article URL.
+
+    For non-Google-News URLs the original value is returned unchanged.
+
+    Args:
+        url: The URL to potentially resolve.
+        timeout: Maximum seconds to wait for the HTTP redirect chain.
+
+    Returns:
+        The canonical URL if resolution succeeds, otherwise the original URL.
+    """
+    if not url or not _GOOGLE_NEWS_URL_RE.match(url):
+        return url
+
+    try:
+        with httpx.Client(follow_redirects=True, timeout=timeout) as client:
+            response = client.head(url, headers={"User-Agent": "SmeNewsAdminBot/1.0"})
+            response.raise_for_status()
+            resolved = str(response.url)
+            # Only accept the resolved URL if it actually escaped Google News.
+            # Google News often redirects /rss/articles/ to a locale-param
+            # variant of the same Google URL (adding hl/gl/ceid) rather than
+            # the publisher's canonical URL.  Treat that as a failed resolve.
+            if resolved and resolved != url and not _GOOGLE_NEWS_URL_RE.match(resolved):
+                logger.info(
+                    "Resolved Google News URL %s -> %s", url[:80], resolved[:80]
+                )
+                return resolved
+            logger.info(
+                "Google News URL did not resolve to canonical publisher URL: %s",
+                url[:80],
+            )
+    except Exception as exc:
+        logger.warning("Failed to resolve Google News URL %s: %s", url[:80], exc)
+
+    return url
+
+
+def _pick_best_url(entry) -> str:
+    """Pick the best URL from a feedparser entry.
+
+    Prefers non-Google-News ``rel="alternate"`` links over the primary
+    ``link`` when the primary link is a Google News redirect URL.
+    """
+    primary = entry.get("link") or entry.get("id") or ""
+
+    # If the primary link is not a Google News redirect, use it directly.
+    if primary and not _GOOGLE_NEWS_URL_RE.match(primary):
+        return primary
+
+    # Search entry.links for a non-Google-News alternate link.
+    links = entry.get("links")
+    if isinstance(links, (list, tuple)):
+        for link_item in links:
+            href = (
+                link_item.get("href")
+                if isinstance(link_item, dict)
+                else getattr(link_item, "href", None)
+            )
+            rel = (
+                link_item.get("rel")
+                if isinstance(link_item, dict)
+                else getattr(link_item, "rel", None)
+            )
+            if (
+                href
+                and rel in ("alternate", None)
+                and not _GOOGLE_NEWS_URL_RE.match(href)
+            ):
+                return href
+
+    return primary
+
+
 def _extract_url(entry) -> str:
     """Extract and normalise the canonical URL from a feedparser entry."""
-    raw_url = entry.get("link") or entry.get("id") or ""
-    return normalize_url(raw_url)
+    raw_url = _pick_best_url(entry)
+    resolved_url = resolve_news_url(raw_url)
+    return normalize_url(resolved_url)
 
 
 def _extract_author(entry) -> str | None:
@@ -218,24 +305,14 @@ def parse_rfc2822(date_str: str) -> datetime | None:
 def fetch_feed(feed: FeedSource) -> FeedFetchResult:
     """Fetch and parse a single feed source.
 
+    Uses feedparser's built-in HTTP fetching which handles Cloudflare and
+    other bot-protection mechanisms automatically.
+
     Returns a :class:`FeedFetchResult` that distinguishes between an empty
     feed (``success=True, entries=[]``) and a fetch/parse error
     (``success=False, entries=[], error="..."``).
     """
-    # --- HTTP fetch ---
-    try:
-        response = httpx.get(feed.url, follow_redirects=True, timeout=10)
-    except httpx.HTTPError as exc:
-        logger.warning("Failed to fetch feed %s (%s): %s", feed.name, feed.url, exc)
-        return FeedFetchResult(
-            success=False,
-            entries=[],
-            error=f"Fetch failed: {exc}",
-            source_title=feed.name,
-        )
-
-    # --- Parse ---
-    parsed = feedparser.parse(response.text)
+    parsed = feedparser.parse(feed.url)
     source_title = parsed.feed.get("title", feed.name)
 
     if parsed.bozo:
@@ -253,11 +330,38 @@ def fetch_feed(feed: FeedSource) -> FeedFetchResult:
     # --- Extract entries ---
     items: list[dict] = []
     for entry in parsed.entries[:20]:
+        # Extract per-entry publisher info from feedparser's entry.source.
+        # Google News RSS feeds provide entry.source.title (publisher name)
+        # and entry.source.href (publisher domain root).
+        publisher_name: str | None = None
+        publisher_domain: str | None = None
+        entry_source = entry.get("source")
+        if isinstance(entry_source, dict):
+            publisher_name = entry_source.get("title")
+            # feedparser stores publisher URL in "href" (RSS 2.0 source url=)
+            # or "link" (Atom source element). Check both.
+            publisher_href = entry_source.get("href") or entry_source.get("link")
+            if publisher_href:
+                # Extract hostname from the publisher href
+                try:
+                    from urllib.parse import urlparse
+
+                    parsed_href = urlparse(publisher_href)
+                    publisher_domain = parsed_href.hostname or publisher_href
+                except Exception:
+                    publisher_domain = publisher_href
+
+        # Use publisher_name as source_name when available, fall back to
+        # the feed-level title.
+        effective_source = publisher_name or source_title
+
         items.append(
             {
                 "title": entry.get("title", "Untitled"),
                 "url": _extract_url(entry),
-                "source_name": source_title,
+                "source_name": effective_source,
+                "publisher_name": publisher_name,
+                "publisher_domain": publisher_domain,
                 "published_at": _extract_published_at(entry),
                 "author": _extract_author(entry),
                 "summary": _extract_summary(entry),
@@ -274,19 +378,12 @@ def fetch_feed(feed: FeedSource) -> FeedFetchResult:
 
 
 def validate_feed_source(feed: FeedSource) -> FeedValidationResult:
-    """Fetch a feed URL and validate that it returns parseable feed entries."""
-    try:
-        response = httpx.get(feed.url, follow_redirects=True, timeout=10)
-        response.raise_for_status()
-    except httpx.HTTPError as exc:
-        return FeedValidationResult(
-            success=False,
-            articles_found=0,
-            source_title=feed.name,
-            error=f"Fetch failed: {exc}",
-        )
+    """Fetch a feed URL and validate that it returns parseable feed entries.
 
-    parsed = feedparser.parse(response.text)
+    Uses feedparser's built-in HTTP fetching which handles Cloudflare and
+    other bot-protection mechanisms automatically.
+    """
+    parsed = feedparser.parse(feed.url)
     entries = list(parsed.entries)
     source_title = parsed.feed.get("title", feed.name)
 
@@ -365,6 +462,8 @@ def normalize_content(
             title=raw["title"][:1000],
             url=raw["url"][:2048],
             source_name=raw["source_name"],
+            publisher_name=raw.get("publisher_name"),
+            publisher_domain=raw.get("publisher_domain"),
             content_type="news" if feed.type == "rss" else "blog",
             published_at=raw.get("published_at"),
             author=raw.get("author"),

@@ -68,7 +68,19 @@ def _profile_to_out(p) -> dict:
 
 
 def _settings_to_out(s) -> dict:
-    """Convert a WorkspaceSettings ORM object to camelCase dict."""
+    """Convert a WorkspaceSettings ORM object to camelCase dict.
+
+    Thresholds are stored in snake_case in the DB but must be returned in
+    camelCase to the API client.  We parse them through ``ThresholdsSchema``
+    so that known fields are properly aliased and extra fields pass through.
+    """
+    from app.schemas.workspace import ThresholdsSchema
+
+    # Convert thresholds from snake_case (DB) to camelCase (API response).
+    thresholds_raw = s.thresholds or {}
+    thresholds_schema = ThresholdsSchema.model_validate(thresholds_raw)
+    thresholds_out = thresholds_schema.model_dump(by_alias=True)
+
     return {
         "id": s.id,
         "workspaceId": s.workspace_id,
@@ -80,12 +92,7 @@ def _settings_to_out(s) -> dict:
             "timezone": "UTC",
         },
         "reportStyle": s.report_style,
-        "thresholds": s.thresholds
-        or {
-            "minRelevanceScore": 0.65,
-            "minFinalScore": 0.70,
-            "maxArticlesPerReport": 15,
-        },
+        "thresholds": thresholds_out,
         "retention": s.retention
         or {
             "contentDays": 90,
@@ -232,7 +239,7 @@ def put_settings(
     if body.report_style is not None:
         update_data["report_style"] = body.report_style
     if body.thresholds is not None:
-        update_data["thresholds"] = body.thresholds.model_dump(by_alias=True)
+        update_data["thresholds"] = body.thresholds.to_canonical_dict()
     if body.retention is not None:
         update_data["retention"] = body.retention.model_dump(by_alias=True)
     if body.email_delivery is not None:

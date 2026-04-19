@@ -215,9 +215,9 @@ SETTINGS = [
         },
         "report_style": "detailed",
         "thresholds": {
-            "minRelevanceScore": 0.65,
-            "minFinalScore": 0.70,
-            "maxArticlesPerReport": 15,
+            "min_relevance_score": 0.65,
+            "min_final_score": 0.70,
+            "max_articles_per_report": 15,
         },
         "retention": {
             "contentDays": 90,
@@ -246,9 +246,9 @@ SETTINGS = [
         },
         "report_style": "bulleted",
         "thresholds": {
-            "minRelevanceScore": 0.60,
-            "minFinalScore": 0.65,
-            "maxArticlesPerReport": 12,
+            "min_relevance_score": 0.60,
+            "min_final_score": 0.65,
+            "max_articles_per_report": 12,
         },
         "retention": {
             "contentDays": 60,
@@ -276,9 +276,9 @@ SETTINGS = [
         },
         "report_style": "concise",
         "thresholds": {
-            "minRelevanceScore": 0.55,
-            "minFinalScore": 0.60,
-            "maxArticlesPerReport": 20,
+            "min_relevance_score": 0.55,
+            "min_final_score": 0.60,
+            "max_articles_per_report": 20,
         },
         "retention": {
             "contentDays": 30,
@@ -303,9 +303,9 @@ SETTINGS = [
         },
         "report_style": "detailed",
         "thresholds": {
-            "minRelevanceScore": 0.70,
-            "minFinalScore": 0.75,
-            "maxArticlesPerReport": 10,
+            "min_relevance_score": 0.70,
+            "min_final_score": 0.75,
+            "max_articles_per_report": 10,
         },
         "retention": {
             "contentDays": 120,
@@ -330,9 +330,9 @@ SETTINGS = [
         },
         "report_style": "concise",
         "thresholds": {
-            "minRelevanceScore": 0.50,
-            "minFinalScore": 0.55,
-            "maxArticlesPerReport": 8,
+            "min_relevance_score": 0.50,
+            "min_final_score": 0.55,
+            "max_articles_per_report": 8,
         },
         "retention": {
             "contentDays": 30,

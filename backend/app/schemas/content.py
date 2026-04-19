@@ -1,6 +1,6 @@
 """Content Pydantic DTOs."""
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -11,6 +11,8 @@ class ContentItemOut(BaseModel):
     title: str
     source: Optional[str] = None
     source_url: Optional[str] = Field(default=None, alias="sourceUrl")
+    publisher_name: Optional[str] = Field(default=None, alias="publisherName")
+    publisher_domain: Optional[str] = Field(default=None, alias="publisherDomain")
     published_at: Optional[str] = Field(default=None, alias="publishedAt")
     type: str
     relevance_score: Optional[float] = Field(default=None, alias="relevanceScore")
@@ -29,16 +31,63 @@ class ContentItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
+class ThemeMatch(BaseModel):
+    """Theme match metadata showing which priority themes matched/unmatched."""
+
+    matched: list[str] = Field(default_factory=list)
+    unmatched: list[str] = Field(default_factory=list)
+    normalized_themes: Optional[list[str]] = Field(default=None)
+    decomposed_themes: Optional[dict[str, list[str]]] = Field(default=None)
+
+
+class CompetitorMatch(BaseModel):
+    """Competitor match metadata showing which competitors matched/unmatched."""
+
+    matched: list[str] = Field(default_factory=list)
+    unmatched: list[str] = Field(default_factory=list)
+    normalized_competitors: Optional[list[str]] = Field(default=None)
+    competitor_aliases: Optional[dict[str, list[str]]] = Field(default=None)
+
+
+class MultiSignalBoost(BaseModel):
+    """Multi-signal boost applied when multiple distinct themes match."""
+
+    bonus: float
+    distinct_matched_themes: int
+
+
+class FeedbackDetails(BaseModel):
+    """User feedback details that influenced the score."""
+
+    topicsMatched: list[str] = Field(default_factory=list)
+    sourcesMatched: list[str] = Field(default_factory=list)
+    eventCount: int = 0
+
+
 class ScoreBreakdown(BaseModel):
+    """Score breakdown showing individual scoring components.
+
+    All scoring is deterministic/lexical. No LLM or semantic model is used
+    for content scoring — LLM is only used for shortlist reranking and
+    report generation.
+    """
+
     relevance: float
     bm25: float
     freshness: float
     source_authority: float
+    feedbackAdjustment: Optional[float] = Field(default=None)
+    feedback: Optional[FeedbackDetails] = Field(default=None)
+    theme_match: Optional[ThemeMatch] = Field(default=None)
+    competitor_match: Optional[CompetitorMatch] = Field(default=None)
+    multi_signal_boost: Optional[MultiSignalBoost] = Field(default=None)
+    filter_reason: Optional[str] = Field(default=None)
+    min_relevance_threshold: Optional[float] = Field(default=None)
 
 
 class ContentDetailOut(ContentItemOut):
     body: str
-    score_breakdown: ScoreBreakdown = Field(alias="scoreBreakdown")
+    score_breakdown: dict[str, Any] = Field(alias="scoreBreakdown")
     cluster_items: Optional[list[dict]] = Field(default=None, alias="clusterItems")
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -65,6 +114,8 @@ def _content_item_to_out(item) -> dict:
         "title": item.title,
         "source": item.source_name,
         "sourceUrl": item.url,
+        "publisherName": getattr(item, "publisher_name", None),
+        "publisherDomain": getattr(item, "publisher_domain", None),
         "publishedAt": item.published_at.isoformat() if item.published_at else None,
         "type": item.content_type,
         "relevanceScore": item.local_relevance_score,

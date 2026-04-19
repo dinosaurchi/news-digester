@@ -37,66 +37,49 @@ BASE_URL = os.environ.get("SME_BASE_URL", "http://127.0.0.1:8000/api").rstrip("/
 USERNAME = os.environ.get("SME_USERNAME", "admin")
 PASSWORD = os.environ.get("SME_PASSWORD", "admin")
 
-# Google News RSS feeds tightly aligned with Metal Earth / Fascinations' business:
-# 1. Direct brand & product mentions
-# 2. Licensed franchise collectibles (Star Wars, Marvel, etc.)
-# 3. Toy & hobby industry trends (retail, licensing deals)
-# 4. Competitor landscape (Piececool, UGEARS, Tenyo)
-# 5. DIY / model-kit hobby community signals
-# 6. Key franchise IP news that could drive new product lines
+# Direct RSS feeds tightly aligned with Metal Earth / Fascinations' business.
+# These are real public RSS feeds from toy industry, pop culture, and hobby publications.
+# No Google News — these are direct feeds from authoritative sources.
 REAL_FEEDS: list[dict[str, str]] = [
+    # Feed 1: The Toy Book — official trade publication for the North American toy industry
     {
-        "name": "Metal Earth & Fascinations brand mentions",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=%22metal+earth%22+OR+%22Fascinations+Inc%22+OR+%223D+metal+model+kit%22"
-        ),
+        "name": "The Toy Book — toy industry news",
+        "url": "https://toybook.com/feed/",
         "type": "rss",
         "cadence": "daily",
     },
+    # Feed 2: The Pop Insider — pop culture, collectibles, licensing and merch news
     {
-        "name": "Star Wars & Marvel toys and collectibles licensing",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=Star+Wars+OR+Marvel+toys+collectibles+licensing"
-        ),
+        "name": "The Pop Insider — pop culture & collectibles",
+        "url": "https://thepopinsider.com/feed/",
         "type": "rss",
         "cadence": "daily",
     },
+    # Feed 3: aNb Media / TFE Magazine — toy & hobby industry coverage
     {
-        "name": "Toy industry & hobby retail trends",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=%22toy+industry%22+OR+%22hobby+retail%22+OR+%22toy+fair%22+collectibles"
-        ),
+        "name": "aNb Media / TFE Magazine — toy industry",
+        "url": "https://www.anbmedia.com/feed/",
         "type": "rss",
         "cadence": "daily",
     },
+    # Feed 4: Make: — maker/DIY projects, includes scale modeling and hobby content
     {
-        "name": "Competitor watch — Piececool, UGEARS, Tenyo metal models",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=Piececool+OR+UGEARS+OR+Tenyo+OR+%22metal+puzzle%22+OR+%22model+kit+brand%22"
-        ),
+        "name": "Make: — maker projects & scale modeling",
+        "url": "https://makezine.com/feed/",
         "type": "rss",
         "cadence": "daily",
     },
+    # Feed 5: The Mary Sue — pop culture news covering entertainment, comics, toys
     {
-        "name": "DIY model kits & scale modelling hobby",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=%22model+kit%22+OR+%22scale+model%22+OR+%22DIY+kit%22+hobby+new+release"
-        ),
+        "name": "The Mary Sue — pop culture & entertainment",
+        "url": "https://www.themarysue.com/feed/",
         "type": "rss",
         "cadence": "daily",
     },
+    # Feed 6: Collectibles.org — collectibles industry news and market trends
     {
-        "name": "Entertainment franchise IP — new movies, series & licensing deals",
-        "url": (
-            "https://news.google.com/rss/search?"
-            "q=%22licensing+deal%22+OR+%22franchise+merchandise%22"
-            "+OR+%22Disney+consumer+products%22+OR+%22Hasbro+licensing%22"
-        ),
+        "name": "Collectibles.org — collectibles industry",
+        "url": "https://www.collectibles.org/feed/",
         "type": "rss",
         "cadence": "daily",
     },
@@ -251,10 +234,23 @@ def main() -> int:
     # ── Step 4: Update settings ─────────────────────────────────────────
     settings = {
         "reportStyle": "detailed",
+        # Standard QA thresholds — not debug mode. Filters obvious junk
+        # while keeping borderline items for scoring verification.
         "thresholds": {
-            "minRelevanceScore": 0.0,
-            "minFinalScore": 0.0,
+            "minRelevanceScore": 0.15,
+            "minFinalScore": 0.15,
             "maxArticlesPerReport": 10,
+            "trustedDomains": [
+                "toybook.com",
+                "licenseglobal.com",
+                "thepopinsider.com",
+                "hasbro.com",
+                "mattel.com",
+                "disney.com",
+                "starwars.com",
+                "marvel.com",
+                "anbmedia.com",
+            ],
         },
         "schedule": {
             "enabled": False,
@@ -271,6 +267,38 @@ def main() -> int:
     )
     require(status == 200, f"Settings update failed: {status} {settings_resp}")
     print("Settings updated OK")
+
+    # Verify settings round-trip
+    status, settings_check = client.request(
+        "GET",
+        f"/workspaces/{workspace_id}/settings",
+    )
+    require(status == 200, f"Settings GET failed: {status} {settings_check}")
+    thresholds = settings_check.get("thresholds", {})
+    require(
+        thresholds.get("minRelevanceScore") == 0.15,
+        f"Expected minRelevanceScore=0.15, got {thresholds.get('minRelevanceScore')}",
+    )
+    require(
+        thresholds.get("minFinalScore") == 0.15,
+        f"Expected minFinalScore=0.15, got {thresholds.get('minFinalScore')}",
+    )
+    require(
+        thresholds.get("maxArticlesPerReport") == 10,
+        f"Expected maxArticlesPerReport=10, got {thresholds.get('maxArticlesPerReport')}",
+    )
+    require(
+        len(thresholds.get("trustedDomains", [])) > 0,
+        "Expected at least one trusted domain in settings",
+    )
+    require(
+        thresholds.get("minRelevanceScore", 0) > 0,
+        "Standard QA should NOT use debug mode (threshold > 0)",
+    )
+    print(
+        f"Settings round-trip verified: minRelevanceScore={thresholds['minRelevanceScore']}, "
+        f"trustedDomains={len(thresholds.get('trustedDomains', []))} domains"
+    )
 
     # ── Step 5: Add & test feeds ────────────────────────────────────────
     successful_feeds: list[dict] = []
@@ -341,6 +369,31 @@ def main() -> int:
         f"Run did not reach success status (got '{run_status}') within {POLL_TIMEOUT}s",
     )
     print(f"Run completed successfully: {run_id}")
+
+    # ── Step 7b: Verify threshold application on content ──────────────────
+    status, excluded = client.request(
+        "GET",
+        f"/workspaces/{workspace_id}/content?status=excluded",
+    )
+    require(status == 200, f"Excluded content query failed: {status} {excluded}")
+    excluded_count = len(excluded) if isinstance(excluded, list) else 0
+    print(f"Excluded items: {excluded_count}")
+
+    status, included = client.request(
+        "GET",
+        f"/workspaces/{workspace_id}/content?status=included",
+    )
+    require(status == 200, f"Included content query failed: {status} {included}")
+    included_count = len(included) if isinstance(included, list) else 0
+    print(f"Included items: {included_count}")
+
+    if isinstance(included, list) and included:
+        top = max(included, key=lambda x: x.get("finalScore", 0) or 0)
+        print(f"Top item: '{top.get('title', 'N/A')}' score={top.get('finalScore', 0)}")
+        require(
+            (top.get("finalScore") or 0) > 0,
+            "Top included item should have positive score",
+        )
 
     # ── Step 7: Verify run metadata ─────────────────────────────────────
     status, detail = client.request("GET", f"/runs/{run_id}")

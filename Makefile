@@ -1,10 +1,10 @@
-.PHONY: lint typecheck test build ci dev up down logs clean install backend backend-test db-migrate db-seed worker beat preflight demo-seed
+.PHONY: lint typecheck test build ci dev up down logs clean install backend backend-test integration-test db-migrate db-seed worker beat preflight demo-seed
 
 # Default target
 all: lint build test
 
 # CI target — runs lint, typecheck, test, and build
-ci: lint typecheck test build backend-test
+ci: lint typecheck test build backend-test integration-test
 
 # Install dependencies
 install:
@@ -65,6 +65,10 @@ beat:
 # Run backend pytest
 backend-test:
 	cd backend && python -m pytest
+
+# Run integration tests (repo-root tests/integration/)
+integration-test:
+	cd backend && python -m pytest ../tests/integration/ -v --timeout=120
 
 # Run alembic upgrade head
 db-migrate:

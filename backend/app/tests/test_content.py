@@ -322,3 +322,157 @@ class TestDeleteContentItem:
 
         resp = client.delete(f"/api/content/{item_id}")
         assert resp.status_code == 401
+
+
+class TestContentDetailExposesRequiredFieldsForDiagnostics:
+    """Verify detail endpoint returns all fields needed by the diagnostic helper."""
+
+    def test_content_detail_exposes_required_score_breakdown_fields_for_diagnostics(
+        self, client
+    ):
+        """Detail endpoint exposes all scoreBreakdown fields the diagnostic reads."""
+        ws_id = _create_workspace(client)
+        item_id = _create_content_item(
+            client,
+            ws_id,
+            title="Diagnostic Fields Test",
+            source_name="TechCrunch",
+            score_breakdown_json={
+                "scores": {
+                    "keyword": 0.5,
+                    "bm25": 0.3,
+                    "freshness": 0.9,
+                    "source_authority": 0.5,
+                },
+                "weights": {"keyword": 0.25, "bm25": 0.2},
+                "combined_score": 0.72,
+                "feedback_adjustment": 0.05,
+                "feedback": {
+                    "topics_matched": ["AI"],
+                    "sources_matched": ["TechCrunch"],
+                    "event_count": 1,
+                },
+                "theme_match": {
+                    "matched": ["ai", "machine learning"],
+                    "unmatched": ["blockchain"],
+                },
+                "competitor_match": {
+                    "matched": ["openai"],
+                    "unmatched": ["anthropic"],
+                },
+                "multi_signal_boost": {"bonus": 0.02, "distinct_matched_themes": 2},
+                "filter_reason": "below_relevance_threshold",
+                "min_relevance_threshold": 0.15,
+            },
+            status="excluded",
+            exclusion_reason="below threshold",
+        )
+
+        resp = client.get(f"/api/content/{item_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Top-level fields the diagnostic uses from list items
+        assert data["source"] == "TechCrunch"
+        assert data["status"] == "excluded"
+        assert data["exclusionReason"] == "below threshold"
+
+        # scoreBreakdown fields the diagnostic reads
+        sb = data["scoreBreakdown"]
+        assert "combinedScore" in sb
+        assert sb["combinedScore"] == 0.72
+        assert "relevance" in sb
+        assert "bm25" in sb
+        assert "freshness" in sb
+        assert "sourceAuthority" in sb
+        assert "feedbackAdjustment" in sb
+        assert "themeMatch" in sb
+        assert "competitorMatch" in sb
+        assert "multiSignalBoost" in sb
+        assert "filterReason" in sb
+        assert "minRelevanceThreshold" in sb
+
+    def test_content_list_and_content_detail_contract_support_workspace_diagnostics(
+        self, client
+    ):
+        """Verify list → detail flow works correctly for diagnostics.
+
+        The diagnostic helper fetches the list (plain list, no pagination),
+        then fetches each item's detail to get scoreBreakdown. This test
+        validates the full round-trip.
+        """
+        ws_id = _create_workspace(client)
+        item1_id = _create_content_item(
+            client,
+            ws_id,
+            title="Included Item",
+            source_name="TechCrunch",
+            status="included",
+            final_score=0.85,
+            score_breakdown_json={
+                "scores": {
+                    "keyword": 0.7,
+                    "bm25": 0.6,
+                    "freshness": 0.9,
+                    "source_authority": 0.8,
+                },
+                "weights": {"keyword": 0.25, "bm25": 0.2},
+                "combined_score": 0.85,
+                "theme_match": {"matched": ["ai"], "unmatched": []},
+                "competitor_match": {"matched": ["openai"], "unmatched": []},
+            },
+        )
+        item2_id = _create_content_item(
+            client,
+            ws_id,
+            title="Excluded Item",
+            source_name="The Verge",
+            status="excluded",
+            exclusion_reason="low relevance",
+            final_score=0.12,
+            score_breakdown_json={
+                "scores": {
+                    "keyword": 0.1,
+                    "bm25": 0.05,
+                    "freshness": 0.2,
+                    "source_authority": 0.1,
+                },
+                "weights": {"keyword": 0.25, "bm25": 0.2},
+                "combined_score": 0.12,
+                "filter_reason": "below_relevance_threshold",
+                "min_relevance_threshold": 0.15,
+                "theme_match": {"matched": [], "unmatched": ["blockchain"]},
+                "competitor_match": {"matched": [], "unmatched": ["anthropic"]},
+            },
+        )
+
+        # Step 1: List endpoint returns a plain list (no pagination envelope)
+        list_resp = client.get(f"/api/workspaces/{ws_id}/content")
+        assert list_resp.status_code == 200
+        items = list_resp.json()
+        assert isinstance(items, list)
+        assert len(items) == 2
+
+        # List items have camelCase fields the diagnostic reads
+        for item in items:
+            assert "source" in item  # not "source_name"
+            assert "exclusionReason" in item  # not "exclusion_reason"
+            assert "scoreBreakdown" not in item  # NOT included on list
+
+        # Step 2: For each list item, fetch detail to get scoreBreakdown
+        id_to_list_item = {item["id"]: item for item in items}
+        assert item1_id in id_to_list_item
+        assert item2_id in id_to_list_item
+
+        detail1_resp = client.get(f"/api/content/{item1_id}")
+        assert detail1_resp.status_code == 200
+        sb1 = detail1_resp.json()["scoreBreakdown"]
+        assert sb1["combinedScore"] == 0.85
+        assert sb1["themeMatch"]["matched"] == ["ai"]
+
+        detail2_resp = client.get(f"/api/content/{item2_id}")
+        assert detail2_resp.status_code == 200
+        sb2 = detail2_resp.json()["scoreBreakdown"]
+        assert sb2["combinedScore"] == 0.12
+        assert sb2["filterReason"] == "below_relevance_threshold"
+        assert sb2["themeMatch"]["unmatched"] == ["blockchain"]

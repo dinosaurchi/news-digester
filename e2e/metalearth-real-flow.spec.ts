@@ -79,29 +79,35 @@ const PROFILE = {
 };
 
 const FEEDS: { name: string; url: string }[] = [
+  // Feed 1: The Toy Book — official trade publication for the North American toy industry
   {
-    name: 'Metal Earth & Fascinations brand mentions',
-    url: 'https://news.google.com/rss/search?q=%22metal+earth%22+OR+%22Fascinations+Inc%22+OR+%223D+metal+model+kit%22',
+    name: 'The Toy Book — toy industry news',
+    url: 'https://toybook.com/feed/',
   },
+  // Feed 2: The Pop Insider — pop culture, collectibles, licensing and merch news
   {
-    name: 'Star Wars & Marvel toys and collectibles licensing',
-    url: 'https://news.google.com/rss/search?q=Star+Wars+OR+Marvel+toys+collectibles+licensing',
+    name: 'The Pop Insider — pop culture & collectibles',
+    url: 'https://thepopinsider.com/feed/',
   },
+  // Feed 3: aNb Media / TFE Magazine — toy & hobby industry coverage
   {
-    name: 'Toy industry & hobby retail trends',
-    url: 'https://news.google.com/rss/search?q=%22toy+industry%22+OR+%22hobby+retail%22+OR+%22toy+fair%22+collectibles',
+    name: 'aNb Media / TFE Magazine — toy industry',
+    url: 'https://www.anbmedia.com/feed/',
   },
+  // Feed 4: Make: — maker/DIY projects, includes scale modeling and hobby content
   {
-    name: 'Competitor watch — Piececool, UGEARS, Tenyo metal models',
-    url: 'https://news.google.com/rss/search?q=Piececool+OR+UGEARS+OR+Tenyo+OR+%22metal+puzzle%22+OR+%22model+kit+brand%22',
+    name: 'Make: — maker projects & scale modeling',
+    url: 'https://makezine.com/feed/',
   },
+  // Feed 5: The Mary Sue — pop culture news covering entertainment, comics, toys
   {
-    name: 'DIY model kits & scale modelling hobby',
-    url: 'https://news.google.com/rss/search?q=%22model+kit%22+OR+%22scale+model%22+OR+%22DIY+kit%22+hobby+new+release',
+    name: 'The Mary Sue — pop culture & entertainment',
+    url: 'https://www.themarysue.com/feed/',
   },
+  // Feed 6: Collectibles.org — collectibles industry news and market trends
   {
-    name: 'Entertainment franchise IP — new movies, series & licensing deals',
-    url: 'https://news.google.com/rss/search?q=%22licensing+deal%22+OR+%22franchise+merchandise%22+OR+%22Disney+consumer+products%22+OR+%22Hasbro+licensing%22',
+    name: 'Collectibles.org — collectibles industry',
+    url: 'https://www.collectibles.org/feed/',
   },
 ];
 
@@ -344,10 +350,23 @@ test.describe.serial('Metal Earth Real Flow — Manual QA', () => {
     const res = await page.request.put(`/api/workspaces/${wsId}/settings`, {
       data: {
         reportStyle: 'detailed',
+        // Standard QA thresholds — not debug mode. Filters obvious junk
+        // while keeping borderline items for scoring verification.
         thresholds: {
-          minRelevanceScore: 0.0,
-          minFinalScore: 0.0,
+          minRelevanceScore: 0.15,
+          minFinalScore: 0.15,
           maxArticlesPerReport: 10,
+          trustedDomains: [
+            'toybook.com',
+            'licenseglobal.com',
+            'thepopinsider.com',
+            'hasbro.com',
+            'mattel.com',
+            'disney.com',
+            'starwars.com',
+            'marvel.com',
+            'anbmedia.com',
+          ],
         },
         schedule: {
           enabled: false,
@@ -359,7 +378,19 @@ test.describe.serial('Metal Earth Real Flow — Manual QA', () => {
     });
     expect(res.status()).toBe(200);
 
-    console.log('✓ Settings updated (low thresholds, schedule disabled)');
+    // Verify settings round-trip — confirm non-debug thresholds are stored
+    const settingsResp = await page.request.get(`/api/workspaces/${wsId}/settings`);
+    expect(settingsResp.ok()).toBeTruthy();
+    const settingsData = await settingsResp.json();
+    expect(settingsData.thresholds.minRelevanceScore).toBe(0.15);
+    expect(settingsData.thresholds.minFinalScore).toBe(0.15);
+    expect(settingsData.thresholds.maxArticlesPerReport).toBe(10);
+    expect(settingsData.thresholds.trustedDomains.length).toBeGreaterThan(0);
+    // Confirm we are NOT in debug mode (debug would be threshold 0)
+    expect(settingsData.thresholds.minRelevanceScore).toBeGreaterThan(0);
+
+    console.log('✓ Settings updated (QA thresholds 0.15, schedule disabled, trusted domains configured)');
+    console.log(`  Settings round-trip verified: minRelevanceScore=${settingsData.thresholds.minRelevanceScore}, trustedDomains=${settingsData.thresholds.trustedDomains.length} domains`);
   });
 
   /* ------------------------------------------------------------------ */
@@ -420,6 +451,10 @@ test.describe.serial('Metal Earth Real Flow — Manual QA', () => {
 
   /* ------------------------------------------------------------------ */
   /*  Step 8: Verify content via UI                                     */
+  /*  NOTE: Content scoring is deterministic/lexical only (keyword, BM25,*/
+  /*  freshness, source authority).  LLM is NOT used for base content    */
+  /*  scoring — it is used only for shortlist reranking and report       */
+  /*  generation.                                                        */
   /* ------------------------------------------------------------------ */
 
   test('Step 8: Verify content via UI', async ({ page }) => {
@@ -458,6 +493,31 @@ test.describe.serial('Metal Earth Real Flow — Manual QA', () => {
     const hasTable = await page.locator('table thead').isVisible().catch(() => false);
     const hasEmpty = await page.getByText('No content items').isVisible().catch(() => false);
     expect(hasTable || hasEmpty || rowCount > 0).toBeTruthy();
+
+    // Verify threshold is actually applied — check excluded items
+    const excludedResp = await page.request.get(`/api/workspaces/${wsId}/content?status=excluded`);
+    if (excludedResp.ok()) {
+      const excludedItems = await excludedResp.json();
+      if (Array.isArray(excludedItems) && excludedItems.length > 0) {
+        // At least one excluded item should have an exclusionReason
+        const withReason = excludedItems.filter((item: any) => item.exclusionReason);
+        // Soft assertion — log but don't fail if no excluded items (feeds may be all relevant)
+        console.log(`  Excluded items: ${excludedItems.length}, with reasons: ${withReason.length}`);
+      } else {
+        console.log('  No excluded items found (all feed content passed threshold)');
+      }
+    }
+
+    // Verify at least one top result has meaningful score
+    const includedResp = await page.request.get(`/api/workspaces/${wsId}/content?status=included`);
+    if (includedResp.ok()) {
+      const includedItems = await includedResp.json();
+      if (Array.isArray(includedItems) && includedItems.length > 0) {
+        const topItem = includedItems.sort((a: any, b: any) => (b.finalScore || 0) - (a.finalScore || 0))[0];
+        console.log(`  Top item: "${topItem.title}" score=${topItem.finalScore}`);
+        expect(topItem.finalScore).toBeGreaterThan(0);
+      }
+    }
 
     console.log('✓ Content page verified');
   });

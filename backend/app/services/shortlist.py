@@ -119,7 +119,7 @@ def _get_max_articles(workspace: Workspace) -> int:
     settings = workspace.settings
     if settings and settings.thresholds:
         return int(
-            settings.thresholds.get("maxArticlesPerReport", _DEFAULT_MAX_ARTICLES)
+            settings.thresholds.get("max_articles_per_report", _DEFAULT_MAX_ARTICLES)
         )
     return _DEFAULT_MAX_ARTICLES
 

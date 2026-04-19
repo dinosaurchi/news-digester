@@ -434,8 +434,8 @@ export default function ContentPage() {
                     <td className="px-3 py-2.5">
                       <ScoreBar score={item.relevanceScore * 100} size="sm" />
                     </td>
-                    {/* LLM Score */}
-                    <td className="px-3 py-2.5">
+                    {/* BM25 (lexical relevance score — NOT an LLM/semantic score) */}
+                    <td className="px-3 py-2.5" title="Lexical relevance score based on term frequency. NOT an LLM/semantic score.">
                       <ScoreBar score={item.bm25Score * 100} size="sm" showBar={false} />
                     </td>
                     {/* Final Score */}

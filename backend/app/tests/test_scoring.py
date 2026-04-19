@@ -8,14 +8,21 @@ from app.services.scoring import (
     _compute_decay_factor,
     compute_bm25_score,
     compute_combined_score,
+    compute_competitor_mention_score,
+    compute_competitor_mention_score_detailed,
     compute_content_type_prior_score,
     compute_document_frequencies,
-    compute_competitor_mention_score,
     compute_excluded_topic_score,
     compute_freshness_score,
     compute_feed_health_score,
     compute_keyword_score,
+    compute_keyword_score_detailed,
+    compute_multi_signal_boost,
     compute_source_authority_score,
+    decompose_theme,
+    generate_competitor_aliases,
+    normalize_competitor_name,
+    normalize_theme,
     score_content_items,
 )
 
@@ -342,9 +349,9 @@ class TestComputeCombinedScore:
     def test_breakdown_contains_weights(self):
         _, breakdown = compute_combined_score({})
         assert "weights" in breakdown
-        assert breakdown["weights"]["keyword"] == pytest.approx(0.25)
+        assert breakdown["weights"]["keyword"] == pytest.approx(0.30)
         assert breakdown["weights"]["competitor_mention"] == pytest.approx(0.20)
-        assert breakdown["weights"]["freshness"] == pytest.approx(0.20)
+        assert breakdown["weights"]["freshness"] == pytest.approx(0.15)
         assert breakdown["weights"]["source_authority"] == pytest.approx(0.15)
         assert breakdown["weights"]["bm25"] == pytest.approx(0.20)
 
@@ -699,7 +706,7 @@ class TestWeightOverrides:
         assert breakdown["weights"]["bm25"] == pytest.approx(0.25)
         # Unchanged keys keep their defaults
         assert breakdown["weights"]["competitor_mention"] == pytest.approx(0.20)
-        assert breakdown["weights"]["freshness"] == pytest.approx(0.20)
+        assert breakdown["weights"]["freshness"] == pytest.approx(0.15)
         assert breakdown["weights"]["source_authority"] == pytest.approx(0.15)
 
     def test_unknown_weight_keys_are_ignored(self):
@@ -716,9 +723,9 @@ class TestWeightOverrides:
         scores = {"keyword": 1.0}
         _, breakdown = compute_combined_score(scores, weight_overrides=None)
 
-        assert breakdown["weights"]["keyword"] == pytest.approx(0.25)
+        assert breakdown["weights"]["keyword"] == pytest.approx(0.30)
         assert breakdown["weights"]["competitor_mention"] == pytest.approx(0.20)
-        assert breakdown["weights"]["freshness"] == pytest.approx(0.20)
+        assert breakdown["weights"]["freshness"] == pytest.approx(0.15)
         assert breakdown["weights"]["source_authority"] == pytest.approx(0.15)
         assert breakdown["weights"]["bm25"] == pytest.approx(0.20)
 
@@ -1637,3 +1644,1268 @@ class TestBM25MultiWordTerms:
 
         assert match_item.score_breakdown_json is not None
         assert match_item.score_breakdown_json["scores"]["bm25"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Pass 1 — Baseline diagnostics and scoring observability
+# ---------------------------------------------------------------------------
+
+
+class TestScoreBreakdownConsistency:
+    """Score breakdown dict always contains all expected component keys."""
+
+    def test_score_breakdown_contains_component_scores_consistently(self, db_session):
+        """Verify the score breakdown dict always contains all expected component keys.
+
+        This test ensures backward compatibility: all existing component keys
+        must be present in the breakdown regardless of workspace configuration.
+        """
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai", "machine learning", "robotics"],
+            competitors=["OpenAI", "Anthropic"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="OpenAI announces AI and machine learning breakthrough",
+            url="https://reuters.com/tech/ai-breakthrough",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert breakdown is not None
+
+        # Core component scores must always be present
+        expected_score_keys = [
+            "keyword",
+            "competitor_mention",
+            "freshness",
+            "source_authority",
+            "bm25",
+            "content_type_prior",
+        ]
+        for key in expected_score_keys:
+            assert key in breakdown["scores"], f"Missing score component: {key}"
+
+        # Metadata keys must always be present
+        expected_metadata_keys = [
+            "weights",
+            "combined_score",
+            "excluded_topic_score",
+            "filter_reason",
+            "content_type",
+            "theme_match",
+            "competitor_match",
+        ]
+        for key in expected_metadata_keys:
+            assert key in breakdown, f"Missing metadata key: {key}"
+
+    def test_score_breakdown_consistent_with_no_themes(self, db_session):
+        """Breakdown is consistent even with empty priority themes."""
+        ws = _make_workspace(db_session, priority_themes=[], competitors=[])
+        item = _make_item(db_session, ws.id, title="Some article")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "theme_match" in breakdown
+        assert "matched" in breakdown["theme_match"]
+        assert "unmatched" in breakdown["theme_match"]
+        assert "normalized_themes" in breakdown["theme_match"]
+        assert "competitor_match" in breakdown
+
+
+class TestThemeMatchMetadata:
+    """Score breakdown exposes theme match details for diagnostics."""
+
+    def test_score_breakdown_can_expose_theme_match_metadata(self, db_session):
+        """Theme match metadata shows which themes matched and which didn't."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=[
+                "ai",
+                "machine learning",
+                "quantum computing",
+                "blockchain",
+            ],
+        )
+
+        # Item matches "ai" and "machine learning" but not the others
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI breakthrough in machine learning announced today",
+            summary_snippet="New advances in artificial intelligence.",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "theme_match" in breakdown
+
+        theme_match = breakdown["theme_match"]
+        assert "matched" in theme_match
+        assert "unmatched" in theme_match
+        assert "normalized_themes" in theme_match
+
+        # "ai" and "machine learning" should be matched
+        assert "ai" in theme_match["matched"]
+        assert "machine learning" in theme_match["matched"]
+
+        # "quantum computing" and "blockchain" should be unmatched
+        assert "quantum computing" in theme_match["unmatched"]
+        assert "blockchain" in theme_match["unmatched"]
+
+        # Normalized themes should contain all themes (lowercased)
+        assert set(theme_match["normalized_themes"]) == {
+            "ai",
+            "machine learning",
+            "quantum computing",
+            "blockchain",
+        }
+
+    def test_theme_match_all_matched(self, db_session):
+        """When all themes match, unmatched list is empty."""
+        ws = _make_workspace(db_session, priority_themes=["ai", "technology"])
+        item = _make_item(db_session, ws.id, title="AI and technology news")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert len(breakdown["theme_match"]["matched"]) == 2
+        assert len(breakdown["theme_match"]["unmatched"]) == 0
+
+    def test_theme_match_none_matched(self, db_session):
+        """When no themes match, matched list is empty."""
+        ws = _make_workspace(db_session, priority_themes=["quantum", "blockchain"])
+        item = _make_item(db_session, ws.id, title="Weather forecast today")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert len(breakdown["theme_match"]["matched"]) == 0
+        assert len(breakdown["theme_match"]["unmatched"]) == 2
+
+    def test_theme_match_case_insensitive(self, db_session):
+        """Theme matching is case-insensitive in metadata."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["AI", "Machine Learning", "QUANTUM"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="ai and machine learning advances",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        # Normalized themes should be lowercased
+        assert "ai" in breakdown["theme_match"]["normalized_themes"]
+        assert "machine learning" in breakdown["theme_match"]["normalized_themes"]
+        assert "quantum" in breakdown["theme_match"]["normalized_themes"]
+
+
+class TestCompetitorMatchMetadata:
+    """Score breakdown exposes competitor match details for diagnostics."""
+
+    def test_score_breakdown_can_expose_competitor_match_metadata(self, db_session):
+        """Competitor match metadata shows which competitors matched and which didn't."""
+        ws = _make_workspace(
+            db_session,
+            competitors=["OpenAI", "Anthropic", "Google DeepMind"],
+        )
+
+        # Item mentions OpenAI but not the others
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="OpenAI releases new GPT model",
+            summary_snippet="OpenAI announced breakthrough capabilities.",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "competitor_match" in breakdown
+
+        comp_match = breakdown["competitor_match"]
+        assert "matched" in comp_match
+        assert "unmatched" in comp_match
+        assert "normalized_competitors" in comp_match
+
+        # "openai" should be matched
+        assert "openai" in comp_match["matched"]
+
+        # Others should be unmatched
+        assert "anthropic" in comp_match["unmatched"]
+        assert "google deepmind" in comp_match["unmatched"]
+
+        # Normalized competitors should contain all competitors (lowercased)
+        assert set(comp_match["normalized_competitors"]) == {
+            "openai",
+            "anthropic",
+            "google deepmind",
+        }
+
+    def test_competitor_match_all_matched(self, db_session):
+        """When all competitors are mentioned, unmatched list is empty."""
+        ws = _make_workspace(db_session, competitors=["OpenAI", "Anthropic"])
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="OpenAI and Anthropic collaborate on AI safety",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert len(breakdown["competitor_match"]["matched"]) == 2
+        assert len(breakdown["competitor_match"]["unmatched"]) == 0
+
+    def test_competitor_match_none_matched(self, db_session):
+        """When no competitors are mentioned, matched list is empty."""
+        ws = _make_workspace(db_session, competitors=["OpenAI", "Anthropic"])
+        item = _make_item(db_session, ws.id, title="Weather forecast today")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert len(breakdown["competitor_match"]["matched"]) == 0
+        assert len(breakdown["competitor_match"]["unmatched"]) == 2
+
+    def test_competitor_match_case_insensitive(self, db_session):
+        """Competitor matching is case-insensitive in metadata."""
+        ws = _make_workspace(db_session, competitors=["OpenAI", "ANTHROPIC"])
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="openai is growing fast",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        # Normalized competitors should be lowercased
+        assert "openai" in breakdown["competitor_match"]["normalized_competitors"]
+        assert "anthropic" in breakdown["competitor_match"]["normalized_competitors"]
+
+
+class TestComputeKeywordScoreDetailed:
+    """compute_keyword_score_detailed returns score with match details."""
+
+    def test_returns_tuple_with_matched_and_unmatched(self):
+        score, matched, unmatched = compute_keyword_score_detailed(
+            "AI and machine learning are growing",
+            ["ai", "machine learning", "blockchain"],
+        )
+        assert score == pytest.approx(2 / 3)
+        assert set(matched) == {"ai", "machine learning"}
+        assert set(unmatched) == {"blockchain"}
+
+    def test_all_matched(self):
+        score, matched, unmatched = compute_keyword_score_detailed(
+            "ai machine learning",
+            ["ai", "machine learning"],
+        )
+        assert score == pytest.approx(1.0)
+        assert len(matched) == 2
+        assert len(unmatched) == 0
+
+    def test_none_matched(self):
+        score, matched, unmatched = compute_keyword_score_detailed(
+            "weather forecast",
+            ["ai", "crypto"],
+        )
+        assert score == pytest.approx(0.0)
+        assert len(matched) == 0
+        assert len(unmatched) == 2
+
+    def test_empty_text_returns_zero_with_all_unmatched(self):
+        score, matched, unmatched = compute_keyword_score_detailed("", ["ai"])
+        assert score == pytest.approx(0.0)
+        assert matched == []
+        assert unmatched == ["ai"]
+
+    def test_empty_keywords_returns_zero_with_empty_lists(self):
+        score, matched, unmatched = compute_keyword_score_detailed("some text", [])
+        assert score == pytest.approx(0.0)
+        assert matched == []
+        assert unmatched == []
+
+
+class TestComputeCompetitorMentionScoreDetailed:
+    """compute_competitor_mention_score_detailed returns score with match details."""
+
+    def test_returns_tuple_with_matched_and_unmatched(self):
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "OpenAI announced a new model",
+            ["OpenAI", "Anthropic", "Google"],
+        )
+        assert score == pytest.approx(1.0)
+        assert set(matched) == {"openai"}
+        assert set(unmatched) == {"anthropic", "google"}
+
+    def test_all_matched(self):
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "OpenAI and Anthropic collaborate",
+            ["OpenAI", "Anthropic"],
+        )
+        assert score == pytest.approx(1.0)
+        assert len(matched) == 2
+        assert len(unmatched) == 0
+
+    def test_none_matched(self):
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "Weather forecast today",
+            ["OpenAI", "Anthropic"],
+        )
+        assert score == pytest.approx(0.0)
+        assert len(matched) == 0
+        assert len(unmatched) == 2
+
+    def test_empty_text_returns_zero_with_all_unmatched(self):
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "", ["OpenAI"]
+        )
+        assert score == pytest.approx(0.0)
+        assert matched == []
+        assert unmatched == ["openai"]
+
+    def test_empty_competitors_returns_zero_with_empty_lists(self):
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "some text", []
+        )
+        assert score == pytest.approx(0.0)
+        assert matched == []
+        assert unmatched == []
+
+
+# ---------------------------------------------------------------------------
+# Pass 3 — Normalize profile themes and competitor aliases before scoring
+# ---------------------------------------------------------------------------
+
+
+class TestCompetitorNormalization:
+    """Competitor name normalization strips noise and generates aliases."""
+
+    def test_normalize_competitor_removes_parenthetical_noise(self):
+        """Parenthetical annotations are stripped from competitor aliases."""
+        raw = "Tenyo Metallic Nano (Japanese licensee, same factory)"
+        aliases = generate_competitor_aliases(raw)
+        # The base alias should have the parenthetical stripped
+        assert "tenyo metallic nano" in aliases
+        # No alias should contain the raw parenthetical content
+        for alias in aliases:
+            assert "(" not in alias
+            assert "japanese licensee" not in alias
+
+    def test_normalize_competitor_generates_expected_aliases(self):
+        """generate_competitor_aliases produces meaningful matching aliases."""
+        # Tenyo: full name, suffix (drop first word), first word
+        aliases = generate_competitor_aliases(
+            "Tenyo Metallic Nano (Japanese licensee, same factory)"
+        )
+        assert "tenyo metallic nano" in aliases
+        assert "metallic nano" in aliases
+        assert "tenyo" in aliases
+
+        # Piececool: single word, no meaningful parenthetical phrase
+        aliases = generate_competitor_aliases("Piececool (Chinese 3D metal puzzles)")
+        assert "piececool" in aliases
+
+        # UGEARS: single uppercase word
+        aliases = generate_competitor_aliases(
+            "UGEARS (Ukrainian wooden mechanical models)"
+        )
+        assert "ugears" in aliases
+
+        # Fascinations: single word with a meaningful parenthetical phrase
+        aliases = generate_competitor_aliases(
+            "Fascinations (Metal Earth parent company)"
+        )
+        assert "fascinations" in aliases
+        assert "metal earth" in aliases
+
+    def test_aliases_are_deterministic(self):
+        """Calling generate_competitor_aliases twice returns the same result."""
+        name = "Tenyo Metallic Nano (Japanese licensee, same factory)"
+        first = generate_competitor_aliases(name)
+        second = generate_competitor_aliases(name)
+        assert first == second
+
+    def test_empty_input_returns_empty(self):
+        assert normalize_competitor_name("") == ""
+        assert normalize_competitor_name(None) == ""  # type: ignore[arg-type]
+        assert generate_competitor_aliases("") == []
+        assert generate_competitor_aliases(None) == []  # type: ignore[arg-type]
+
+    def test_no_parenthetical_generates_base_and_word_aliases(self):
+        """Competitor without parenthetical still generates suffix/first-word aliases."""
+        aliases = generate_competitor_aliases("Metal Earth Models")
+        assert "metal earth models" in aliases
+        assert "earth models" in aliases
+        assert "metal" in aliases
+
+    def test_normalize_competitor_name_lowercases(self):
+        assert normalize_competitor_name("OpenAI") == "openai"
+        assert normalize_competitor_name("  SPACE  ") == "space"
+
+
+class TestThemeDecomposition:
+    """Theme decomposition splits complex theme strings into sub-terms."""
+
+    def test_priority_theme_decomposition_generates_subterms(self):
+        """decompose_theme splits comma-separated and and-separated themes."""
+        # Comma-separated themes
+        result = decompose_theme("Star Wars, Marvel, Disney franchise developments")
+        assert "star wars" in result
+        assert "marvel" in result
+
+        # "and" split
+        result = decompose_theme("licensed merchandise and IP deals")
+        assert "licensed merchandise" in result
+        assert "ip deals" in result
+
+    def test_decomposition_generates_bigrams_for_long_phrases(self):
+        """3+ word phrases produce bigram sub-terms."""
+        result = decompose_theme("hobby retail channel and specialty store trends")
+        assert "hobby retail channel" in result
+        assert "specialty store trends" in result
+        assert "hobby retail" in result
+        assert "retail channel" in result
+        assert "specialty store" in result
+
+    def test_decomposition_is_deterministic(self):
+        """decompose_theme always returns the same result for the same input."""
+        theme = "Star Wars, Marvel, Disney franchise developments"
+        assert decompose_theme(theme) == decompose_theme(theme)
+
+    def test_empty_input_returns_empty(self):
+        assert decompose_theme("") == []
+        assert decompose_theme(None) == []  # type: ignore[arg-type]
+
+    def test_single_word_theme_unchanged(self):
+        assert decompose_theme("ai") == ["ai"]
+        assert decompose_theme("hobby") == ["hobby"]
+
+    def test_two_word_theme_unchanged(self):
+        assert decompose_theme("star wars") == ["star wars"]
+
+    def test_normalize_theme_lowercases(self):
+        assert normalize_theme("Star Wars") == "star wars"
+        assert normalize_theme("  SPACE  ") == "space"
+
+
+class TestKeywordScoreWithNormalizedThemes:
+    """Keyword scoring matches on decomposed sub-terms, not just raw strings."""
+
+    def test_keyword_score_uses_normalized_theme_terms(self):
+        """A comma-separated theme matches when any sub-term appears in text."""
+        # The full raw string "Star Wars, Marvel" is NOT a substring of the
+        # text, but "marvel" IS — so the keyword should still match.
+        text = "New marvel movie announced this week"
+        score = compute_keyword_score(text, ["Star Wars, Marvel"])
+        assert score == pytest.approx(1.0)
+
+    def test_keyword_score_detailed_with_decomposed_theme(self):
+        """Detailed variant reports the theme as matched via sub-term."""
+        text = "New marvel movie announced this week"
+        score, matched, unmatched = compute_keyword_score_detailed(
+            text, ["Star Wars, Marvel"]
+        )
+        assert score == pytest.approx(1.0)
+        # The raw lowercased keyword is reported as matched
+        assert "star wars, marvel" in matched
+
+    def test_keyword_score_and_split_matches(self):
+        """'and'-separated theme phrases are decomposed for matching."""
+        text = "New IP deals announced in the licensing sector"
+        score = compute_keyword_score(text, ["licensed merchandise and IP deals"])
+        assert score == pytest.approx(1.0)
+
+    def test_keyword_score_simple_themes_unaffected(self):
+        """Simple single-word themes are unaffected by decomposition."""
+        score = compute_keyword_score("AI is here", ["ai"])
+        assert score == pytest.approx(1.0)
+        score = compute_keyword_score("Weather today", ["ai"])
+        assert score == pytest.approx(0.0)
+
+
+class TestCompetitorMentionScoreWithAliases:
+    """Competitor mention scoring matches on generated aliases."""
+
+    def test_competitor_mention_score_uses_aliases_not_only_raw_strings(self):
+        """Competitor with parenthetical matches on its base name via alias."""
+        text = "Tenyo releases new metallic nano model kit"
+        score = compute_competitor_mention_score(
+            text,
+            ["Tenyo Metallic Nano (Japanese licensee, same factory)"],
+        )
+        assert score == pytest.approx(1.0)
+
+    def test_competitor_mention_matches_on_first_word_alias(self):
+        """A competitor should match when only its first-word alias appears."""
+        text = "Tenyo announced a new product line today"
+        score = compute_competitor_mention_score(
+            text,
+            ["Tenyo Metallic Nano (Japanese licensee, same factory)"],
+        )
+        assert score == pytest.approx(1.0)
+
+    def test_competitor_mention_matches_on_parenthetical_phrase(self):
+        """A competitor should match via a capitalized phrase in parenthetical."""
+        text = "Metal Earth is expanding its product range"
+        score = compute_competitor_mention_score(
+            text,
+            ["Fascinations (Metal Earth parent company)"],
+        )
+        assert score == pytest.approx(1.0)
+
+    def test_competitor_mention_detailed_with_aliases(self):
+        """Detailed variant reports the competitor as matched via alias."""
+        score, matched, unmatched = compute_competitor_mention_score_detailed(
+            "Tenyo announces new product",
+            ["Tenyo Metallic Nano (Japanese licensee, same factory)"],
+        )
+        assert score == pytest.approx(1.0)
+        assert len(matched) == 1
+        assert "tenyo metallic nano (japanese licensee, same factory)" in matched
+
+    def test_competitor_mention_simple_names_unaffected(self):
+        """Simple competitor names without parentheticals are unaffected."""
+        score = compute_competitor_mention_score(
+            "OpenAI announced a new model", ["OpenAI"]
+        )
+        assert score == pytest.approx(1.0)
+
+
+class TestBM25WithNormalizedThemes:
+    """BM25 scoring in the pipeline uses decomposed theme terms."""
+
+    def test_bm25_uses_normalized_theme_terms(self, db_session):
+        """BM25 score is non-zero when a decomposed sub-term matches."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["Star Wars, Marvel"],
+        )
+        # Item containing "marvel" but not the full raw theme string
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="New Marvel superhero movie announced",
+            content_type="news",
+        )
+        # Several non-matching items so IDF for "marvel" is non-zero
+        # (IDF = log(N/(1+df)); with N=4, df=1 → log(4/2) = log(2) > 0)
+        other_items = [
+            _make_item(db_session, ws.id, title=title, content_type="news")
+            for title in [
+                "Weather forecast for this weekend",
+                "Sports results and football scores",
+                "Local politics update from city hall",
+            ]
+        ]
+
+        score_content_items(db_session, [item] + other_items, ws)
+
+        assert item.score_breakdown_json is not None
+        assert item.score_breakdown_json["scores"]["bm25"] > 0
+
+    def test_bm25_breakdown_includes_decomposed_themes(self, db_session):
+        """Score breakdown includes decomposed_themes metadata."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["Star Wars, Marvel, Disney franchise developments"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Some article",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "theme_match" in breakdown
+        assert "decomposed_themes" in breakdown["theme_match"]
+        decomposed = breakdown["theme_match"]["decomposed_themes"]
+        assert "star wars, marvel, disney franchise developments" in decomposed
+        assert (
+            "star wars"
+            in decomposed["star wars, marvel, disney franchise developments"]
+        )
+        assert (
+            "marvel" in decomposed["star wars, marvel, disney franchise developments"]
+        )
+
+    def test_competitor_aliases_in_breakdown(self, db_session):
+        """Score breakdown includes competitor_aliases metadata."""
+        ws = _make_workspace(
+            db_session,
+            competitors=["Fascinations (Metal Earth parent company)"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Some article",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "competitor_match" in breakdown
+        assert "competitor_aliases" in breakdown["competitor_match"]
+        aliases = breakdown["competitor_match"]["competitor_aliases"]
+        raw_key = "fascinations (metal earth parent company)"
+        assert raw_key in aliases
+        assert "fascinations" in aliases[raw_key]
+        assert "metal earth" in aliases[raw_key]
+
+
+# ---------------------------------------------------------------------------
+# Pass 4 — Scoring quality and weighting improvements
+# ---------------------------------------------------------------------------
+
+
+class TestComputeMultiSignalBoost:
+    """compute_multi_signal_boost rewards articles matching multiple themes."""
+
+    def test_single_theme_match_no_boost(self):
+        boost, count = compute_multi_signal_boost(["star wars"])
+        assert boost == pytest.approx(0.0)
+        assert count == 1
+
+    def test_two_theme_matches_gets_boost(self):
+        boost, count = compute_multi_signal_boost(["star wars", "licensing"])
+        assert boost == pytest.approx(0.05)
+        assert count == 2
+
+    def test_three_theme_matches_gets_boost(self):
+        boost, count = compute_multi_signal_boost(
+            ["star wars", "licensing", "toy industry"]
+        )
+        assert boost == pytest.approx(0.05)
+        assert count == 3
+
+    def test_empty_matched_themes_no_boost(self):
+        boost, count = compute_multi_signal_boost([])
+        assert boost == pytest.approx(0.0)
+        assert count == 0
+
+    def test_custom_bonus_and_threshold(self):
+        boost, count = compute_multi_signal_boost(
+            ["a", "b"], bonus=0.10, min_distinct_themes=2
+        )
+        assert boost == pytest.approx(0.10)
+
+    def test_below_custom_threshold_no_boost(self):
+        boost, count = compute_multi_signal_boost(
+            ["a"], bonus=0.10, min_distinct_themes=3
+        )
+        assert boost == pytest.approx(0.0)
+
+
+class TestPass4ScoringQuality:
+    """Pass 4 scoring quality tests: realistic toy/licensing scenario."""
+
+    def test_realistic_toy_licensing_article_scores_above_threshold(self, db_session):
+        """A realistic toy/franchise/licensing article should score above 0.15."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=[
+                "licensed franchise",
+                "collectibles",
+                "toy industry",
+                "Star Wars",
+                "model kit",
+            ],
+            competitors=["Fascinations", "Piececool"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Hasbro announces new Star Wars licensed collectible toy line",
+            summary_snippet=(
+                "Hasbro has signed a new licensing deal for Star Wars collectibles, "
+                "expanding their toy industry portfolio with premium model kits."
+            ),
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        assert item.final_score is not None
+        assert item.final_score > 0.15, (
+            f"Expected strong toy/licensing article to score > 0.15, got {item.final_score}"
+        )
+
+    def test_irrelevant_generic_licensing_article_scores_lower_than_toy_licensing_article(
+        self, db_session
+    ):
+        """A generic licensing article should score lower than a toy-specific one."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=[
+                "licensed franchise",
+                "collectibles",
+                "toy industry",
+                "Star Wars",
+                "model kit",
+            ],
+        )
+        # Strong toy-specific article
+        strong_item = _make_item(
+            db_session,
+            ws.id,
+            title="Hasbro announces new Star Wars licensed collectible toy line",
+            summary_snippet=(
+                "Hasbro has signed a new licensing deal for Star Wars collectibles, "
+                "expanding their toy industry portfolio with premium model kits."
+            ),
+            content_type="news",
+        )
+        # Generic licensing article (matches "licensed franchise" but not toy themes)
+        generic_item = _make_item(
+            db_session,
+            ws.id,
+            title="New software licensing deal announced for enterprise cloud",
+            summary_snippet=(
+                "TechCorp has entered a licensing agreement for enterprise software, "
+                "expanding their intellectual property portfolio."
+            ),
+            content_type="news",
+        )
+
+        score_content_items(db_session, [strong_item, generic_item], ws)
+
+        assert strong_item.final_score is not None
+        assert generic_item.final_score is not None
+        assert strong_item.final_score > generic_item.final_score, (
+            f"Expected strong article ({strong_item.final_score}) > "
+            f"generic article ({generic_item.final_score})"
+        )
+
+    def test_competitor_article_scores_above_generic_noise_article(self, db_session):
+        """An article mentioning a competitor should score above noise."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["model kit", "collectibles"],
+            competitors=["Fascinations", "Piececool"],
+        )
+        competitor_item = _make_item(
+            db_session,
+            ws.id,
+            title="Piececool releases new metal puzzle collection",
+            summary_snippet="Piececool's new 3D metal puzzle series is now available.",
+            content_type="news",
+        )
+        noise_item = _make_item(
+            db_session,
+            ws.id,
+            title="Local weather forecast for the weekend",
+            summary_snippet="Sunny skies expected throughout the weekend.",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [competitor_item, noise_item], ws)
+
+        assert competitor_item.final_score is not None
+        assert noise_item.final_score is not None
+        assert competitor_item.final_score > noise_item.final_score, (
+            f"Expected competitor article ({competitor_item.final_score}) > "
+            f"noise article ({noise_item.final_score})"
+        )
+
+    def test_trusted_domain_boost_improves_source_authority(self, db_session):
+        """Articles from trusted domains should get higher source authority."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["model kit"],
+            trusted_domains=["toybook.com", "licenseglobal.com", "hasbro.com"],
+        )
+        trusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="New model kit announced",
+            url="https://toybook.com/new-model-kit",
+            content_type="news",
+        )
+        untrusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="New model kit announced",
+            url="https://random-blog.xyz/new-model-kit",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [trusted_item, untrusted_item], ws)
+
+        trusted_auth = trusted_item.score_breakdown_json["scores"]["source_authority"]
+        untrusted_auth = untrusted_item.score_breakdown_json["scores"][
+            "source_authority"
+        ]
+        assert trusted_auth == pytest.approx(1.0)
+        assert untrusted_auth == pytest.approx(0.3)
+        assert trusted_item.final_score > untrusted_item.final_score
+
+    def test_publisher_domain_used_for_source_authority(self, db_session):
+        """publisher_domain is preferred over URL domain for source authority."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["model kit"],
+            trusted_domains=["toybook.com"],
+        )
+        # Item with Google News URL but publisher_domain set to trusted domain
+        trusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="New model kit announced",
+            url="https://news.google.com/rss/articles/test123",
+            publisher_domain="toybook.com",
+            content_type="news",
+        )
+        # Item with Google News URL and no publisher_domain (untrusted)
+        untrusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="New model kit announced",
+            url="https://news.google.com/rss/articles/test456",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [trusted_item, untrusted_item], ws)
+
+        trusted_auth = trusted_item.score_breakdown_json["scores"]["source_authority"]
+        untrusted_auth = untrusted_item.score_breakdown_json["scores"][
+            "source_authority"
+        ]
+        assert trusted_auth == pytest.approx(1.0), (
+            f"publisher_domain 'toybook.com' should be trusted, got {trusted_auth}"
+        )
+        assert untrusted_auth == pytest.approx(0.3), (
+            f"Google News domain without publisher_domain should be untrusted, got {untrusted_auth}"
+        )
+
+    def test_multi_signal_article_scores_higher_than_single_signal_article(
+        self, db_session
+    ):
+        """An article matching multiple themes should score higher than single-theme."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=[
+                "Star Wars",
+                "model kit",
+                "collectibles",
+                "toy industry",
+            ],
+        )
+        # Multi-signal: matches Star Wars, model kit, collectibles
+        multi_item = _make_item(
+            db_session,
+            ws.id,
+            title="New Star Wars model kit collectible announced",
+            summary_snippet="A new Star Wars collectible model kit is coming soon.",
+            content_type="news",
+        )
+        # Single-signal: only matches model kit
+        single_item = _make_item(
+            db_session,
+            ws.id,
+            title="New model kit available for purchase",
+            summary_snippet="A new model kit is now available.",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [multi_item, single_item], ws)
+
+        assert multi_item.final_score is not None
+        assert single_item.final_score is not None
+        assert multi_item.final_score > single_item.final_score, (
+            f"Expected multi-signal article ({multi_item.final_score}) > "
+            f"single-signal article ({single_item.final_score})"
+        )
+
+        # Verify the multi-signal boost appears in the breakdown
+        breakdown = multi_item.score_breakdown_json
+        assert "multi_signal_boost" in breakdown
+        assert breakdown["multi_signal_boost"]["bonus"] == pytest.approx(0.05)
+
+    def test_metalearth_regression_distribution_not_compressed_to_trivial_range(
+        self, db_session
+    ):
+        """Strong articles should score significantly higher than weak ones.
+
+        Uses a synthetic corpus (no network) with four archetypes:
+        - Strong toy/franchise/licensing article
+        - Generic licensing article
+        - Competitor article
+        - Weak/noisy article
+        """
+        ws = _make_workspace(
+            db_session,
+            priority_themes=[
+                "metal earth",
+                "model kit",
+                "collectibles",
+                "Star Wars",
+                "toy industry",
+                "licensed franchise",
+            ],
+            competitors=["Fascinations", "Piececool", "UGEARS"],
+        )
+
+        # Strong article: hits multiple priority themes
+        strong = _make_item(
+            db_session,
+            ws.id,
+            title=(
+                "Hasbro and Disney announce new Star Wars licensed franchise "
+                "collectible model kit series"
+            ),
+            summary_snippet=(
+                "The new Star Wars collectible model kit series from Hasbro and Disney "
+                "brings iconic spacecraft to the toy industry. These premium licensed "
+                "franchise collectibles expand the metal earth market."
+            ),
+            content_type="news",
+        )
+
+        # Generic licensing: only partially relevant
+        generic = _make_item(
+            db_session,
+            ws.id,
+            title="New software licensing agreement for enterprise cloud platform",
+            summary_snippet=(
+                "TechCorp announced a new licensing deal for cloud computing, "
+                "expanding their intellectual property portfolio in enterprise."
+            ),
+            content_type="news",
+        )
+
+        # Competitor article
+        competitor = _make_item(
+            db_session,
+            ws.id,
+            title="Piececool releases new 3D metal puzzle architecture series",
+            summary_snippet="Piececool's new architecture model kit collection is available.",
+            content_type="news",
+        )
+
+        # Weak/noisy article
+        weak = _make_item(
+            db_session,
+            ws.id,
+            title="Local sports results: football and basketball scores updated",
+            summary_snippet="Weekend sports roundup with all the latest scores.",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [strong, generic, competitor, weak], ws)
+
+        scores = {
+            "strong": strong.final_score,
+            "generic": generic.final_score,
+            "competitor": competitor.final_score,
+            "weak": weak.final_score,
+        }
+
+        # All scores should be non-None
+        for name, score in scores.items():
+            assert score is not None, f"{name} score should not be None"
+
+        # Strong should be significantly higher than weak
+        assert scores["strong"] > scores["weak"], (
+            f"Strong ({scores['strong']}) should exceed weak ({scores['weak']})"
+        )
+
+        # The score range should not be compressed to a trivial band.
+        # We check that the gap between strong and weak is at least 0.1.
+        gap = scores["strong"] - scores["weak"]
+        assert gap >= 0.1, (
+            f"Score gap between strong ({scores['strong']}) and weak "
+            f"({scores['weak']}) is {gap:.4f}, expected >= 0.1"
+        )
+
+        # Strong should also beat generic and competitor
+        assert scores["strong"] > scores["generic"]
+        assert scores["competitor"] > scores["weak"]
+
+
+# ---------------------------------------------------------------------------
+# Pass 5 — Semantic/LLM scoring decision: Option A (stay deterministic)
+# ---------------------------------------------------------------------------
+
+
+class TestNoSemanticScoringComponent:
+    """Guard-rail tests ensuring no semantic/LLM component sneaks into scoring.
+
+    Content scoring is intentionally deterministic/lexical only (keyword,
+    competitor, BM25, freshness, source authority).  LLM is used exclusively
+    in ``shortlist.py`` (reranking) and ``report_generator.py`` (reports).
+
+    These tests will break if someone accidentally adds a ``semantic_relevance``
+    or ``llm_score`` key to the score breakdown, catching the introduction of
+    undocumented LLM-based scoring.
+    """
+
+    def test_score_breakdown_does_not_contain_semantic_component(self, db_session):
+        """Score breakdown must NOT contain a 'semantic_relevance' key."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai", "machine learning"],
+            competitors=["OpenAI"],
+        )
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI and machine learning breakthrough by OpenAI",
+            content_type="news",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "semantic_relevance" not in breakdown
+        assert "semantic_relevance" not in breakdown.get("scores", {})
+
+    def test_score_breakdown_does_not_contain_llm_score_key(self, db_session):
+        """Score breakdown must NOT contain an 'llm_score' key in the scores section.
+
+        NOTE: The ORM model has a legacy ``llm_score`` column (repurposed to
+        store BM25), but the score breakdown dict produced by this module must
+        not introduce a new ``llm_score`` scoring component.
+        """
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+        item = _make_item(db_session, ws.id, title="AI news", content_type="news")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        assert "llm_score" not in breakdown
+        assert "llm_score" not in breakdown.get("scores", {})
+
+    def test_combined_score_breakdown_has_only_known_components(self, db_session):
+        """The combined score breakdown only contains known deterministic components."""
+        ws = _make_workspace(db_session, priority_themes=["ai"])
+        item = _make_item(db_session, ws.id, title="AI article", content_type="news")
+
+        score_content_items(db_session, [item], ws)
+
+        breakdown = item.score_breakdown_json
+        scores = breakdown.get("scores", {})
+
+        # All known deterministic scoring components
+        known_keys = {
+            "keyword",
+            "competitor_mention",
+            "freshness",
+            "source_authority",
+            "bm25",
+            "content_type_prior",
+            "feed_health",
+        }
+
+        # Any key in scores that is not in known_keys is a potential
+        # accidental introduction of a new scoring signal
+        unknown_keys = set(scores.keys()) - known_keys
+        assert unknown_keys == set(), (
+            f"Unexpected scoring components found: {unknown_keys}. "
+            "Content scoring should only use deterministic/lexical signals."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Pass 1 — Canonical threshold keys: scorer reads normalized keys
+# ---------------------------------------------------------------------------
+
+
+class TestScorerUsesNormalizedThresholdKeys:
+    """The scorer must read snake_case threshold keys stored by the API."""
+
+    def test_scorer_uses_normalized_min_relevance_score_from_workspace_settings(
+        self, db_session
+    ):
+        """Settings set via API (snake_case in DB) are read correctly by scorer."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            min_relevance_score=0.80,
+        )
+        # Article about AI should be relevant but score below 0.80
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Brief mention of ai",
+            summary_snippet="Something about ai.",
+        )
+
+        result = score_content_items(db_session, [item], ws)
+
+        # With min_relevance_score=0.80, the brief mention should be excluded
+        assert result["excluded_count"] == 1
+        assert item.status == "excluded"
+        assert item.exclusion_reason == "below_relevance_threshold"
+        assert item.score_breakdown_json["min_relevance_threshold"] == 0.80
+
+    def test_scorer_uses_normalized_trusted_domains_from_workspace_settings(
+        self, db_session
+    ):
+        """Trusted domains stored as trusted_domains (snake_case) are used."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            trusted_domains=["reuters.com", "bbc.com"],
+        )
+        trusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI news",
+            url="https://reuters.com/ai-article",
+        )
+        untrusted_item = _make_item(
+            db_session,
+            ws.id,
+            title="AI news",
+            url="https://random-blog.xyz/ai-article",
+        )
+
+        score_content_items(db_session, [trusted_item, untrusted_item], ws)
+
+        trusted_auth = trusted_item.score_breakdown_json["scores"]["source_authority"]
+        untrusted_auth = untrusted_item.score_breakdown_json["scores"][
+            "source_authority"
+        ]
+        assert trusted_auth == pytest.approx(1.0)
+        assert untrusted_auth == pytest.approx(0.3)
+
+
+class TestMinFinalScoreInScoring:
+    """min_final_score acts as a secondary filter in the scoring pipeline."""
+
+    def test_min_final_score_filters_content_in_scoring(self, db_session):
+        """Items between min_relevance_score and min_final_score are excluded."""
+        from app.models.workspace import WorkspaceSettings
+
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai", "machine learning"],
+            min_relevance_score=0.10,
+        )
+
+        # Override settings to add min_final_score
+        existing_settings = (
+            db_session.query(WorkspaceSettings)
+            .filter(WorkspaceSettings.workspace_id == ws.id)
+            .first()
+        )
+        thresholds = existing_settings.thresholds or {}
+        thresholds["min_final_score"] = 0.90
+        existing_settings.thresholds = thresholds
+        db_session.flush()
+
+        # This article will have a decent score (matches ai) but almost certainly
+        # below 0.90 given the short text
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI and machine learning",
+            summary_snippet="News about ai.",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        # Item should be excluded by final score filter
+        assert item.status == "excluded"
+        assert item.exclusion_reason == "below_final_score"
+        assert item.score_breakdown_json["filter_reason"] == "below_final_score"
+        assert item.score_breakdown_json["min_final_threshold"] == 0.90
+
+    def test_min_final_score_zero_does_not_filter(self, db_session):
+        """When min_final_score is 0, only min_relevance_score applies."""
+        from app.models.workspace import WorkspaceSettings
+
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            min_relevance_score=0.05,
+        )
+
+        # Explicitly set min_final_score to 0
+        existing_settings = (
+            db_session.query(WorkspaceSettings)
+            .filter(WorkspaceSettings.workspace_id == ws.id)
+            .first()
+        )
+        thresholds = existing_settings.thresholds or {}
+        thresholds["min_final_score"] = 0.0
+        existing_settings.thresholds = thresholds
+        db_session.flush()
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI breakthrough announced",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        # With min_final_score=0, the item should not be excluded by final score
+        assert item.exclusion_reason != "below_final_score"
+
+    def test_min_final_score_none_does_not_filter(self, db_session):
+        """When min_final_score is absent, only min_relevance_score applies."""
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            min_relevance_score=0.05,
+        )
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="AI breakthrough announced",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        # With no min_final_score, the item should not be excluded by final score
+        assert item.exclusion_reason != "below_final_score"
+
+    def test_excluded_topic_takes_priority_over_final_score(self, db_session):
+        """Excluded topic filter runs before final score filter."""
+        from app.models.workspace import WorkspaceSettings
+
+        ws = _make_workspace(
+            db_session,
+            priority_themes=["ai"],
+            excluded_topics=["celebrity gossip"],
+            min_relevance_score=0.05,
+        )
+
+        existing_settings = (
+            db_session.query(WorkspaceSettings)
+            .filter(WorkspaceSettings.workspace_id == ws.id)
+            .first()
+        )
+        thresholds = existing_settings.thresholds or {}
+        thresholds["min_final_score"] = 0.90
+        existing_settings.thresholds = thresholds
+        db_session.flush()
+
+        item = _make_item(
+            db_session,
+            ws.id,
+            title="Celebrity gossip about ai",
+        )
+
+        score_content_items(db_session, [item], ws)
+
+        # Excluded topic takes priority over final score
+        assert item.exclusion_reason == "matched_excluded_topic"

@@ -1,4 +1,37 @@
-"""Pure utility functions for cheap relevance scoring of content items."""
+"""Pure utility functions for cheap relevance scoring of content items.
+
+**Scoring Architecture — Deterministic / Lexical Only**
+
+Content scoring is **deterministic and lexical**.  No LLM or semantic model
+is used to compute base relevance scores.  The scoring signals are:
+
+- **Keyword matching** — case-insensitive substring / sub-term matching
+  against workspace priority themes
+- **Competitor mention detection** — substring matching against competitor
+  names and their generated aliases
+- **BM25** — simplified BM25-style term-frequency scoring with optional
+  inverse-document-frequency (IDF) weighting across a content batch
+- **Freshness / recency** — linear time-decay based on publish date
+- **Source authority** — domain trust look-up against a configurable
+  allow-list
+- **Content type prior** — configurable prior weights per content type
+  (news, blog, press_release, etc.)
+- **Multi-signal boost** — small additive bonus when multiple distinct
+  priority themes match in the same article
+- **Feedback adjustment** — lightweight score delta from user preference
+  signals with exponential time decay
+
+**Where LLM IS Used (outside this module)**
+
+- ``shortlist.py`` — LLM-based reranking of a shortlisted article set
+  before report generation
+- ``report_generator.py`` — LLM-based intelligence report generation and
+  conversational follow-ups
+
+If you are considering adding semantic / LLM-based scoring to this module,
+consult the team first — the current deterministic approach was chosen
+deliberately after evaluating scoring quality across multiple passes.
+"""
 
 from __future__ import annotations
 
@@ -77,6 +110,142 @@ def _compute_decay_factor(
 
 
 # ---------------------------------------------------------------------------
+# Text normalization helpers
+# ---------------------------------------------------------------------------
+
+
+def normalize_competitor_name(name: str) -> str:
+    """Lowercase and strip whitespace from a competitor name.
+
+    For full alias generation including parenthetical stripping, use
+    :func:`generate_competitor_aliases` instead.
+    """
+    if not name:
+        return ""
+    return name.lower().strip()
+
+
+def generate_competitor_aliases(name: str) -> list[str]:
+    """Generate matching aliases from a raw competitor profile string.
+
+    Strips parenthetical annotations and generates meaningful aliases:
+
+    1. The base name (lowercased, parentheticals removed)
+    2. Capitalized multi-word phrases extracted from parenthetical content
+    3. Suffix alias (base name with first word dropped)
+    4. First word of the base name
+
+    Returns a deterministic, deduplicated list of aliases.  Empty input
+    returns ``[]``.
+    """
+    if not name or not name.strip():
+        return []
+
+    aliases: list[str] = []
+
+    # Strip parenthetical content to isolate the base name
+    base_name = re.sub(r"\s*\([^)]*\)\s*", " ", name).strip()
+    base_lower = base_name.lower()
+
+    if not base_lower:
+        return []
+
+    # 1. Always include the full base name
+    aliases.append(base_lower)
+
+    # 2. Extract capitalized multi-word phrases from parenthetical content
+    parentheticals = re.findall(r"\(([^)]+)\)", name)
+    for paren_content in parentheticals:
+        words = paren_content.split()
+        i = 0
+        while i < len(words):
+            if words[i] and words[i][0].isupper():
+                phrase_words = [words[i]]
+                j = i + 1
+                while j < len(words) and words[j] and words[j][0].isupper():
+                    phrase_words.append(words[j])
+                    j += 1
+                if len(phrase_words) >= 2:
+                    phrase = " ".join(w.lower() for w in phrase_words)
+                    if phrase not in aliases:
+                        aliases.append(phrase)
+                i = j
+            else:
+                i += 1
+
+    # 3. Suffix alias: base name with the first word dropped
+    base_words = base_lower.split()
+    if len(base_words) >= 2:
+        suffix = " ".join(base_words[1:])
+        if suffix not in aliases:
+            aliases.append(suffix)
+
+    # 4. First word of the base name (if not already present)
+    if base_words and base_words[0] not in aliases:
+        aliases.append(base_words[0])
+
+    return aliases
+
+
+def normalize_theme(theme: str) -> str:
+    """Lowercase and strip whitespace from a theme string.
+
+    For sub-term decomposition, use :func:`decompose_theme` instead.
+    """
+    if not theme:
+        return ""
+    return theme.lower().strip()
+
+
+def decompose_theme(theme: str) -> list[str]:
+    """Decompose a theme string into meaningful sub-terms for matching.
+
+    Rules:
+
+    1. Split on commas to separate distinct theme phrases.
+    2. Split each phrase on ``" and "`` to separate conjunctive terms.
+    3. For 3+ word sub-terms, extract bigrams as additional matching terms.
+    4. Deduplicate while preserving insertion order.
+
+    Returns a deterministic, deduplicated list.  Empty input returns ``[]``.
+    """
+    if not theme or not theme.strip():
+        return []
+
+    # Steps 1–2: split on commas, then on " and "
+    terms: list[str] = []
+    for comma_part in theme.split(","):
+        comma_part = comma_part.strip()
+        if not comma_part:
+            continue
+        for and_part in comma_part.split(" and "):
+            term = and_part.strip().lower()
+            if term:
+                terms.append(term)
+
+    # Step 3: for 3+ word terms, extract bigrams
+    expanded: list[str] = list(terms)
+    for term in terms:
+        words = term.split()
+        if len(words) >= 3:
+            for i in range(len(words) - 1):
+                bigram = f"{words[i]} {words[i + 1]}"
+                if bigram not in expanded:
+                    expanded.append(bigram)
+
+    # Step 4: deduplicate while preserving order
+    seen: set[str] = set()
+    result: list[str] = []
+    for t in expanded:
+        t = t.strip()
+        if t and t not in seen:
+            seen.add(t)
+            result.append(t)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Keyword matching
 # ---------------------------------------------------------------------------
 
@@ -87,12 +256,52 @@ def compute_keyword_score(text: str, keywords: list[str]) -> float:
     The score is the fraction of *keywords* found (case-insensitive) in *text*.
     Returns 0.0 when either *text* or *keywords* is empty.
     """
+    score, _matched, _unmatched = compute_keyword_score_detailed(text, keywords)
+    return score
+
+
+def compute_keyword_score_detailed(
+    text: str, keywords: list[str]
+) -> tuple[float, list[str], list[str]]:
+    """Return keyword match score along with matched/unmatched keyword lists.
+
+    Each keyword is decomposed into sub-terms via :func:`decompose_theme`
+    so that a comma-separated or conjunctive theme like
+    ``"Star Wars, Marvel"`` matches when *any* sub-term (``"star wars"`` or
+    ``"marvel"``) appears in *text*.  The raw lowercased keyword is always
+    included as a fallback matching term.
+
+    Returns
+    -------
+    (score, matched_keywords, unmatched_keywords) where:
+    - ``score`` is the normalised 0.0–1.0 match ratio (same as compute_keyword_score)
+    - ``matched_keywords`` is a list of keywords found in text (lowercased)
+    - ``unmatched_keywords`` is a list of keywords NOT found in text (lowercased)
+    """
     if not text or not keywords:
-        return 0.0
+        return 0.0, [], list(keywords)
 
     lower_text = text.lower()
-    matched = sum(1 for kw in keywords if kw.lower() in lower_text)
-    return matched / len(keywords)
+    matched: list[str] = []
+    unmatched: list[str] = []
+    for kw in keywords:
+        kw_lower = kw.lower()
+        # Decompose into sub-terms for flexible matching
+        sub_terms = decompose_theme(kw)
+        # Always include the raw lowercased keyword as a fallback
+        all_terms = list(dict.fromkeys([kw_lower] + sub_terms))
+
+        # A keyword matches if ANY of its terms appear in the text
+        found = False
+        for term in all_terms:
+            if term and term in lower_text:
+                matched.append(kw_lower)
+                found = True
+                break
+        if not found:
+            unmatched.append(kw_lower)
+    score = len(matched) / len(keywords) if keywords else 0.0
+    return score, matched, unmatched
 
 
 # ---------------------------------------------------------------------------
@@ -108,14 +317,56 @@ def compute_competitor_mention_score(
 
     Matching is case-insensitive and partial-word (substring).
     """
+    score, _matched, _unmatched = compute_competitor_mention_score_detailed(
+        text, competitors
+    )
+    return score
+
+
+def compute_competitor_mention_score_detailed(
+    text: str,
+    competitors: list[str],
+) -> tuple[float, list[str], list[str]]:
+    """Return competitor mention score along with matched/unmatched lists.
+
+    Each competitor name is expanded into aliases via
+    :func:`generate_competitor_aliases` so that a raw profile string like
+    ``"Tenyo Metallic Nano (Japanese licensee, same factory)"`` matches when
+    *any* alias (``"tenyo metallic nano"``, ``"metallic nano"``, ``"tenyo"``)
+    appears in *text*.  The raw lowercased name is always included as a
+    fallback matching term.
+
+    Returns
+    -------
+    (score, matched_competitors, unmatched_competitors) where:
+    - ``score`` is 1.0 if any competitor matched, else 0.0
+    - ``matched_competitors`` is a list of competitor names found in text (lowercased)
+    - ``unmatched_competitors`` is a list of competitor names NOT found in text (lowercased)
+    """
     if not text or not competitors:
-        return 0.0
+        return 0.0, [], [c.lower() for c in competitors]
 
     lower_text = text.lower()
+    matched: list[str] = []
+    unmatched: list[str] = []
     for name in competitors:
-        if name.lower() in lower_text:
-            return 1.0
-    return 0.0
+        name_lower = name.lower()
+        # Generate aliases for flexible matching
+        aliases = generate_competitor_aliases(name)
+        # Always include the raw lowercased name as a fallback
+        all_terms = list(dict.fromkeys([name_lower] + aliases))
+
+        # A competitor matches if ANY of its terms appear in the text
+        found = False
+        for term in all_terms:
+            if term and term in lower_text:
+                matched.append(name_lower)
+                found = True
+                break
+        if not found:
+            unmatched.append(name_lower)
+    score = 1.0 if matched else 0.0
+    return score, matched, unmatched
 
 
 # ---------------------------------------------------------------------------
@@ -332,14 +583,61 @@ def compute_bm25_score(
 
 
 # ---------------------------------------------------------------------------
+# Multi-signal boosting
+# ---------------------------------------------------------------------------
+
+# Bonus applied when 2+ distinct parent themes match in the same article.
+# Rewards articles that hit multiple aspects of the workspace profile.
+_MULTI_SIGNAL_BONUS: float = 0.05
+
+# Minimum number of distinct matched parent themes to trigger the boost.
+_MULTI_SIGNAL_MIN_THEMES: int = 2
+
+
+def compute_multi_signal_boost(
+    matched_themes: list[str],
+    bonus: float = _MULTI_SIGNAL_BONUS,
+    min_distinct_themes: int = _MULTI_SIGNAL_MIN_THEMES,
+) -> tuple[float, int]:
+    """Compute a small bonus when multiple distinct parent themes match.
+
+    This rewards articles that hit multiple aspects of the workspace profile
+    (e.g., both "star wars" AND "licensing" from different parent themes).
+
+    Parameters
+    ----------
+    matched_themes:
+        List of lowercased parent theme strings that matched in the article
+        (as returned by :func:`compute_keyword_score_detailed`).
+    bonus:
+        Score bonus to apply when the threshold is met.  Default 0.05.
+    min_distinct_themes:
+        Minimum number of distinct matched parent themes required to trigger
+        the boost.  Default 2.
+
+    Returns
+    -------
+    (boost, distinct_count) where:
+    - ``boost`` is the additive score bonus (0.0 or ``bonus``).
+    - ``distinct_count`` is the number of distinct matched parent themes.
+    """
+    distinct_count = len(matched_themes)
+    if distinct_count >= min_distinct_themes:
+        return bonus, distinct_count
+    return 0.0, distinct_count
+
+
+# ---------------------------------------------------------------------------
 # Combined scoring
 # ---------------------------------------------------------------------------
 
 # Default weights for the combined relevance score.
+# keyword bumped up (most meaningful signal); freshness reduced (most articles
+# are recent anyway).  Weights sum to 1.0.
 _WEIGHTS: dict[str, float] = {
-    "keyword": 0.25,
+    "keyword": 0.30,
     "competitor_mention": 0.20,
-    "freshness": 0.20,
+    "freshness": 0.15,
     "source_authority": 0.15,
     "bm25": 0.20,
     "content_type_prior": 0.0,  # disabled by default; enable via workspace settings
@@ -823,6 +1121,14 @@ def score_content_items(
     if settings and settings.thresholds:
         min_relevance_score = float(settings.thresholds.get("min_relevance_score", 0.1))
 
+    # Minimum final score — secondary filter applied after relevance check.
+    # If not set or 0, only min_relevance_score controls inclusion.
+    min_final_score: float | None = None
+    if settings and settings.thresholds:
+        raw_mfs = settings.thresholds.get("min_final_score")
+        if raw_mfs is not None:
+            min_final_score = float(raw_mfs)
+
     # Scoring weight overrides (default: None → use built-in defaults)
     scoring_weights: dict[str, float] | None = None
     if settings and settings.thresholds:
@@ -897,8 +1203,19 @@ def score_content_items(
             parts.append(item.raw_text[:1000])
         items_texts.append(" ".join(parts))
 
+    # Decompose priority themes into sub-terms for BM25 scoring so that
+    # comma-separated themes like "Star Wars, Marvel" produce individual
+    # BM25 query terms instead of a single long string.
+    decomposed_priority_themes: list[str] = []
+    _seen_theme_terms: set[str] = set()
+    for theme in priority_themes:
+        for sub_term in decompose_theme(theme):
+            if sub_term not in _seen_theme_terms:
+                _seen_theme_terms.add(sub_term)
+                decomposed_priority_themes.append(sub_term)
+
     batch_idf: dict[str, float] = compute_document_frequencies(
-        items_texts, priority_themes
+        items_texts, decomposed_priority_themes
     )
 
     # ------------------------------------------------------------------
@@ -911,22 +1228,29 @@ def score_content_items(
     for idx, item in enumerate(items):
         item_text = items_texts[idx]
 
-        # Compute individual scores
+        # Compute individual scores with detailed match metadata
+        kw_score, themes_matched, themes_unmatched = compute_keyword_score_detailed(
+            item_text, priority_themes
+        )
+        comp_score, competitors_matched, competitors_unmatched = (
+            compute_competitor_mention_score_detailed(item_text, competitors)
+        )
+
         individual_scores: dict[str, float] = {
-            "keyword": compute_keyword_score(item_text, priority_themes),
-            "competitor_mention": compute_competitor_mention_score(
-                item_text, competitors
-            ),
+            "keyword": kw_score,
+            "competitor_mention": comp_score,
             "freshness": compute_freshness_score(
                 item.published_at  # type: ignore[arg-type]
                 if not isinstance(item.published_at, str)
                 else None,
             ),
             "source_authority": compute_source_authority_score(
-                _extract_domain(item.url),
+                item.publisher_domain or _extract_domain(item.url),
                 trusted_domains,
             ),
-            "bm25": compute_bm25_score(item_text, priority_themes, idf=batch_idf),
+            "bm25": compute_bm25_score(
+                item_text, decomposed_priority_themes, idf=batch_idf
+            ),
             "content_type_prior": compute_content_type_prior_score(
                 item.content_type,
                 weights=content_type_weights,
@@ -962,8 +1286,41 @@ def score_content_items(
         # Include content type in breakdown for debugging
         breakdown["content_type"] = item.content_type
 
+        # Include theme match metadata for diagnostic observability
+        breakdown["theme_match"] = {
+            "matched": themes_matched,
+            "unmatched": themes_unmatched,
+            "normalized_themes": [t.lower() for t in priority_themes],
+            "decomposed_themes": {
+                t.lower(): decompose_theme(t) for t in priority_themes
+            },
+        }
+
+        # Include competitor match metadata for diagnostic observability
+        breakdown["competitor_match"] = {
+            "matched": competitors_matched,
+            "unmatched": competitors_unmatched,
+            "normalized_competitors": [c.lower() for c in competitors],
+            "competitor_aliases": {
+                c.lower(): generate_competitor_aliases(c) for c in competitors
+            },
+        }
+
         # ------------------------------------------------------------------
-        # 2b. Apply feedback adjustment
+        # 2b. Apply multi-signal boost
+        # ------------------------------------------------------------------
+        multi_signal_boost, distinct_theme_count = compute_multi_signal_boost(
+            themes_matched
+        )
+        if multi_signal_boost > 0:
+            combined_score = max(0.0, min(1.0, combined_score + multi_signal_boost))
+            breakdown["multi_signal_boost"] = {
+                "bonus": multi_signal_boost,
+                "distinct_matched_themes": distinct_theme_count,
+            }
+
+        # ------------------------------------------------------------------
+        # 2c. Apply feedback adjustment
         # ------------------------------------------------------------------
         feedback_adj, topics_matched, sources_matched = _compute_feedback_adjustment(
             item_text, item.source_name, topic_prefs, source_prefs
@@ -973,7 +1330,7 @@ def score_content_items(
             breakdown["feedback_adjustment"] = feedback_adj
 
         # ------------------------------------------------------------------
-        # 2c. Apply feed health weight (multiplicative)
+        # 2d. Apply feed health weight (multiplicative)
         # ------------------------------------------------------------------
         if feed_info is not None and feed_health_score < 1.0:
             combined_score = max(0.0, min(1.0, combined_score * feed_health_score))
@@ -1006,6 +1363,17 @@ def score_content_items(
             item.inclusion_reason = None
             breakdown["filter_reason"] = "below_relevance_threshold"
             breakdown["min_relevance_threshold"] = min_relevance_score
+            excluded_count += 1
+        elif (
+            min_final_score is not None
+            and min_final_score > 0
+            and combined_score < min_final_score
+        ):
+            item.status = "excluded"
+            item.exclusion_reason = "below_final_score"
+            item.inclusion_reason = None
+            breakdown["filter_reason"] = "below_final_score"
+            breakdown["min_final_threshold"] = min_final_score
             excluded_count += 1
         else:
             item.status = "included"

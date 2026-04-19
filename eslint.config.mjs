@@ -18,6 +18,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ["dist/", "node_modules/", "coverage/", "e2e/"],
+    ignores: ["dist/", "node_modules/", "coverage/", "e2e/", ".ai/"],
   }
 );

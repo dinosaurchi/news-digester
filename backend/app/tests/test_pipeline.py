@@ -15,6 +15,7 @@ from app.services.pipeline_steps import (
     _extract_raw_text,
     _extract_summary,
     _extract_url,
+    _pick_best_url,
     _strip_html_tags,
     _struct_time_to_dt,
     compute_source_entry_id,
@@ -22,6 +23,7 @@ from app.services.pipeline_steps import (
     fetch_feed,
     normalize_content,
     parse_rfc2822,
+    resolve_news_url,
 )
 
 
@@ -732,3 +734,448 @@ class TestNormalizeContentEnrichmentDisabled:
         mock_enrich.assert_not_called()
         # raw_text should remain as the original feed text
         assert items[0].raw_text == "Original feed text"
+
+
+# ---------------------------------------------------------------------------
+# Google News URL resolution tests
+# ---------------------------------------------------------------------------
+
+
+class TestResolveNewsUrl:
+    """resolve_news_url resolves Google News redirect URLs."""
+
+    GOOGLE_RSS_URL = (
+        "https://news.google.com/rss/articles/CBMiigFBVV95cUxQYU1MaDRVZXpaeEdY"
+        "YWJZOGw3MTQtTWVOSXh1UF9OS0drcXdhU0R5akVicnZRV0JUbUJlcXI1LVBhNDVXakdR"
+        "QW5yN2hXT0xHODUtRkJhTDBkcXVTT0ZjLWRiNFh4d1k2MDRQZjJPa2NWSmstdkZlWnNL"
+        "RXJQV3ZfZ0RxQWtibzhaYWc?oc=5"
+    )
+    CANONICAL_URL = "https://www.reuters.com/world/article-canonical-123/"
+
+    def test_resolve_google_news_redirect_url(self):
+        """Google News redirect URL is resolved to the canonical article URL."""
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.url = self.CANONICAL_URL
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.head.return_value = mock_response
+
+        with patch(
+            "app.services.pipeline_steps.httpx.Client", return_value=mock_client
+        ):
+            result = resolve_news_url(self.GOOGLE_RSS_URL)
+
+        assert result == self.CANONICAL_URL
+
+    def test_resolve_non_google_url_unchanged(self):
+        """Non-Google URLs pass through unchanged (no HTTP call)."""
+        with patch("app.services.pipeline_steps.httpx.Client") as mock_client_cls:
+            result = resolve_news_url("https://www.reuters.com/world/some-article")
+
+        assert result == "https://www.reuters.com/world/some-article"
+        mock_client_cls.assert_not_called()
+
+    def test_resolve_google_news_url_failure_falls_back(self):
+        """On network error, falls back to the original Google News URL."""
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.head.side_effect = httpx.TimeoutException("timeout")
+
+        with patch(
+            "app.services.pipeline_steps.httpx.Client", return_value=mock_client
+        ):
+            result = resolve_news_url(self.GOOGLE_RSS_URL)
+
+        assert result == self.GOOGLE_RSS_URL
+
+    def test_resolve_google_news_403_falls_back(self):
+        """On HTTP 403, falls back to the original Google News URL."""
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Forbidden",
+            request=MagicMock(),
+            response=MagicMock(status_code=403),
+        )
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.head.return_value = mock_response
+
+        with patch(
+            "app.services.pipeline_steps.httpx.Client", return_value=mock_client
+        ):
+            result = resolve_news_url(self.GOOGLE_RSS_URL)
+
+        assert result == self.GOOGLE_RSS_URL
+
+    def test_resolve_empty_url(self):
+        """Empty string returns empty string."""
+        assert resolve_news_url("") == ""
+
+    def test_resolve_none_like_empty(self):
+        """None is handled gracefully (returns original value)."""
+        # The function type hint says str, but we test defensive behaviour
+        assert resolve_news_url(None) is None  # type: ignore[arg-type]
+
+    def test_resolve_google_news_articles_path(self):
+        """URLs with /articles/ (without /rss/) are also matched."""
+        url = "https://news.google.com/articles/CBMiigFBVV95cUxQ?oc=5"
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.url = "https://example.com/canonical"
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.head.return_value = mock_response
+
+        with patch(
+            "app.services.pipeline_steps.httpx.Client", return_value=mock_client
+        ):
+            result = resolve_news_url(url)
+
+        assert result == "https://example.com/canonical"
+
+    def test_resolve_google_news_stays_on_google_falls_back(self):
+        """When the resolved URL is still a Google News URL, return original."""
+        url = self.GOOGLE_RSS_URL
+        # Simulate Google redirecting to locale-param variant (still Google)
+        resolved_still_google = (
+            "https://news.google.com/rss/articles/CBMiigFBVV95cUxQYU1MaDRVZXpaeEdY"
+            "?hl=en-US&gl=US&ceid=US:en&oc=5"
+        )
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.url = resolved_still_google
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.head.return_value = mock_response
+
+        with patch(
+            "app.services.pipeline_steps.httpx.Client", return_value=mock_client
+        ):
+            result = resolve_news_url(url)
+
+        assert result == url
+
+
+class TestPickBestUrl:
+    """_pick_best_url selects the best URL from feedparser entries."""
+
+    GOOGLE_RSS_URL = "https://news.google.com/rss/articles/CBMiigFBVV95cUxQ?oc=5"
+    CANONICAL_URL = "https://www.reuters.com/world/article-123/"
+
+    def test_prefers_alternate_link_when_primary_is_google_news(self):
+        """When primary link is a Google News redirect and an alternate
+        non-Google-News link exists, the alternate is preferred."""
+        entry = {
+            "link": self.GOOGLE_RSS_URL,
+            "links": [
+                {"rel": "alternate", "href": self.CANONICAL_URL, "type": "text/html"},
+                {"rel": "self", "href": self.GOOGLE_RSS_URL},
+            ],
+        }
+        result = _pick_best_url(entry)
+        assert result == self.CANONICAL_URL
+
+    def test_uses_primary_when_not_google_news(self):
+        """When primary link is not a Google News URL, it is returned directly."""
+        entry = {
+            "link": "https://example.com/article",
+            "links": [
+                {"rel": "alternate", "href": "https://other.com/article"},
+            ],
+        }
+        result = _pick_best_url(entry)
+        assert result == "https://example.com/article"
+
+    def test_falls_back_to_primary_when_no_alternate(self):
+        """When all links are Google News URLs, falls back to primary."""
+        entry = {
+            "link": self.GOOGLE_RSS_URL,
+            "links": [
+                {"rel": "alternate", "href": self.GOOGLE_RSS_URL},
+            ],
+        }
+        result = _pick_best_url(entry)
+        assert result == self.GOOGLE_RSS_URL
+
+    def test_falls_back_to_primary_when_links_missing(self):
+        """When entry.links is missing, falls back to primary."""
+        entry = {"link": self.GOOGLE_RSS_URL}
+        result = _pick_best_url(entry)
+        assert result == self.GOOGLE_RSS_URL
+
+    def test_id_fallback(self):
+        """When link is missing, falls back to id."""
+        entry = {"id": "https://example.com/42"}
+        result = _pick_best_url(entry)
+        assert result == "https://example.com/42"
+
+    def test_empty_entry(self):
+        """Empty entry returns empty string."""
+        entry = {}
+        result = _pick_best_url(entry)
+        assert result == ""
+
+
+class TestExtractUrlResolvesGoogleNews:
+    """Integration: _extract_url resolves Google News redirects."""
+
+    GOOGLE_RSS_URL = "https://news.google.com/rss/articles/CBMiigFBVV95cUxQ?oc=5"
+    CANONICAL_URL = "https://www.reuters.com/world/article-canonical/"
+
+    @patch("app.services.pipeline_steps.httpx.Client")
+    def test_extract_url_resolves_google_news_redirect(self, mock_client_cls):
+        """_extract_url follows Google News redirect and normalises the result."""
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.url = self.CANONICAL_URL
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.head.return_value = mock_response
+        mock_client_cls.return_value = mock_client
+
+        entry = {"link": self.GOOGLE_RSS_URL}
+        result = _extract_url(entry)
+
+        assert result == "https://www.reuters.com/world/article-canonical"
+
+    @patch("app.services.pipeline_steps.httpx.Client")
+    def test_extract_url_falls_back_on_failure(self, mock_client_cls):
+        """_extract_url falls back to normalised Google URL on resolution failure."""
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.head.side_effect = httpx.TimeoutException("timeout")
+        mock_client_cls.return_value = mock_client
+
+        entry = {"link": self.GOOGLE_RSS_URL}
+        result = _extract_url(entry)
+
+        # Should still return a normalised URL (the original Google URL)
+        assert "news.google.com" in result
+
+    @patch("app.services.pipeline_steps.httpx.Client")
+    def test_extract_url_uses_alternate_link(self, mock_client_cls):
+        """_extract_url uses alternate non-Google link and skips resolution."""
+        entry = {
+            "link": self.GOOGLE_RSS_URL,
+            "links": [
+                {"rel": "alternate", "href": self.CANONICAL_URL},
+            ],
+        }
+        result = _extract_url(entry)
+
+        # Should use the alternate link, no HTTP call needed
+        assert result == "https://www.reuters.com/world/article-canonical"
+        mock_client_cls.assert_not_called()
+
+    def test_extract_url_non_google_unchanged(self):
+        """Non-Google URLs are normalised but not resolved."""
+        entry = {"link": "https://example.com/article?utm_source=tw"}
+        result = _extract_url(entry)
+
+        assert "utm_source" not in result
+        assert result == "https://example.com/article"
+
+
+# ---------------------------------------------------------------------------
+# Publisher info extraction tests
+# ---------------------------------------------------------------------------
+
+
+class TestFetchFeedPublisherExtraction:
+    """fetch_feed extracts per-entry publisher info from entry.source."""
+
+    def _make_mock_parsed(self, feed_title, entries):
+        """Build a mock feedparser.parse return value."""
+        from feedparser import FeedParserDict
+        return FeedParserDict({
+            "bozo": False,
+            "feed": FeedParserDict({"title": feed_title}),
+            "entries": entries,
+        })
+
+    def _entry(self, title, link, feed_title="Google News", source_dict=None):
+        """Build a mock feed entry dict for use in mock feedparser results."""
+        from feedparser import FeedParserDict
+        entry = {
+            "title": title,
+            "link": link,
+            "published": "Wed, 20 Mar 2024 08:00:00 +0000",
+            "published_parsed": (2024, 3, 20, 8, 0, 0, 2, 80, 0),
+        }
+        if source_dict is not None:
+            entry["source"] = FeedParserDict(source_dict)
+        return FeedParserDict(entry)
+
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_extracts_publisher_name_from_entry_source(self, mock_parse):
+        """entry.source.title is used as publisher_name and effective source_name."""
+        mock_parse.return_value = self._make_mock_parsed(
+            "Google News",
+            [
+                self._entry(
+                    "Test Article",
+                    "https://news.google.com/rss/articles/test123",
+                    source_dict={"title": "ruhrkanal.news", "href": "https://ruhrkanal.news"},
+                )
+            ],
+        )
+
+        class FakeFeed:
+            id = "feed-test"
+            url = "https://news.google.com/rss?hl=en"
+            name = "Test Feed"
+            type = "rss"
+
+        result = fetch_feed(FakeFeed())
+        assert result.success is True
+        assert len(result.entries) == 1
+
+        entry = result.entries[0]
+        assert entry["publisher_name"] == "ruhrkanal.news"
+        assert entry["publisher_domain"] == "ruhrkanal.news"
+        assert entry["source_name"] == "ruhrkanal.news"  # publisher takes priority
+
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_extracts_publisher_domain_from_href(self, mock_parse):
+        """entry.source.href provides the publisher domain."""
+        mock_parse.return_value = self._make_mock_parsed(
+            "Google News",
+            [
+                self._entry(
+                    "Toy Industry News",
+                    "https://news.google.com/rss/articles/toy123",
+                    source_dict={"title": "The Toy Book", "href": "https://toybook.com"},
+                )
+            ],
+        )
+
+        class FakeFeed:
+            id = "feed-test"
+            url = "https://news.google.com/rss?hl=en"
+            name = "Test Feed"
+            type = "rss"
+
+        result = fetch_feed(FakeFeed())
+        assert result.success is True
+        entry = result.entries[0]
+        assert entry["publisher_name"] == "The Toy Book"
+        assert entry["publisher_domain"] == "toybook.com"
+        assert entry["source_name"] == "The Toy Book"
+
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_fallback_when_entry_source_missing(self, mock_parse):
+        """When entry.source is missing, falls back to feed-level title."""
+        mock_parse.return_value = self._make_mock_parsed(
+            "Some RSS Feed",
+            [self._entry("Test Article", "https://example.com/article1")],
+        )
+
+        class FakeFeed:
+            id = "feed-test"
+            url = "https://example.com/feed.xml"
+            name = "Test Feed"
+            type = "rss"
+
+        result = fetch_feed(FakeFeed())
+        assert result.success is True
+        entry = result.entries[0]
+        assert entry["publisher_name"] is None
+        assert entry["publisher_domain"] is None
+        assert entry["source_name"] == "Some RSS Feed"  # feed-level title
+
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_publisher_name_none_when_source_has_no_title(self, mock_parse):
+        """When entry.source exists but has no title, publisher_name is None."""
+        mock_parse.return_value = self._make_mock_parsed(
+            "Google News",
+            [
+                self._entry(
+                    "Test Article",
+                    "https://example.com/article1",
+                    source_dict={"href": "https://somedomain.com"},
+                )
+            ],
+        )
+
+        class FakeFeed:
+            id = "feed-test"
+            url = "https://news.google.com/rss"
+            name = "Test Feed"
+            type = "rss"
+
+        result = fetch_feed(FakeFeed())
+        assert result.success is True
+        entry = result.entries[0]
+        assert entry["publisher_name"] is None
+        assert entry["publisher_domain"] == "somedomain.com"
+        # Falls back to feed-level title when publisher_name is None
+        assert entry["source_name"] == "Google News"
+
+
+class TestNormalizeContentPublisherFields:
+    """normalize_content passes publisher_name and publisher_domain to ContentItem."""
+
+    def test_publisher_fields_stored_on_content_item(self):
+        """publisher_name and publisher_domain are stored on ContentItem."""
+
+        class FakeFeed:
+            id = "feed-test"
+            type = "rss"
+            name = "Test Feed"
+
+        raw_items = [
+            {
+                "title": "Article One",
+                "url": "https://example.com/1",
+                "source_name": "Publisher Name",
+                "publisher_name": "Publisher Name",
+                "publisher_domain": "publisher.com",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Full content here",
+            },
+        ]
+
+        items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
+        assert len(items) == 1
+        assert items[0].publisher_name == "Publisher Name"
+        assert items[0].publisher_domain == "publisher.com"
+
+    def test_publisher_fields_none_when_missing(self):
+        """Missing publisher fields result in None on ContentItem."""
+
+        class FakeFeed:
+            id = "feed-test"
+            type = "rss"
+            name = "Test Feed"
+
+        raw_items = [
+            {
+                "title": "Article One",
+                "url": "https://example.com/1",
+                "source_name": "Feed Title",
+                "published_at": datetime(2024, 3, 20, tzinfo=timezone.utc),
+                "author": "Alice",
+                "summary": "A short summary",
+                "raw_text": "Full content here",
+            },
+        ]
+
+        items, skipped = normalize_content("ws-1", FakeFeed(), raw_items)
+        assert len(items) == 1
+        assert items[0].publisher_name is None
+        assert items[0].publisher_domain is None

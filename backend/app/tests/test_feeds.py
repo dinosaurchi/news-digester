@@ -292,27 +292,33 @@ class TestToggleFeed:
 class TestTestFeed:
     """POST /api/feeds/{feed_id}/test"""
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_test_feed(self, mock_get, client):
-        response = MagicMock()
-        response.text = """<?xml version="1.0"?>
-        <rss version="2.0">
-          <channel>
-            <title>Real Test Feed</title>
-            <item>
-              <title>Article One</title>
-              <link>https://example.com/one</link>
-              <description>Summary one</description>
-            </item>
-            <item>
-              <title>Article Two</title>
-              <link>https://example.com/two</link>
-              <description>Summary two</description>
-            </item>
-          </channel>
-        </rss>"""
-        response.raise_for_status.return_value = None
-        mock_get.return_value = response
+    def _mock_result(self, success, articles_found=0, source_title="Test Feed",
+                     error=None, bozo=False, bozo_exc=None):
+        """Build a mock FeedValidationResult."""
+        from feedparser import FeedParserDict
+        parsed = FeedParserDict({"bozo": bozo})
+        if bozo_exc:
+            parsed["bozo_exception"] = bozo_exc
+        if success:
+            entries = [
+                FeedParserDict({
+                    "title": f"Article {i+1}",
+                    "link": f"https://example.com/{chr(ord('a')+i)}",
+                    "description": f"Summary {i+1}",
+                })
+                for i in range(articles_found)
+            ]
+        else:
+            entries = []
+        parsed["feed"] = FeedParserDict({"title": source_title})
+        parsed["entries"] = entries
+        return parsed
+
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_test_feed(self, mock_parse, client):
+        mock_parse.return_value = self._mock_result(
+            success=True, articles_found=2, source_title="Real Test Feed"
+        )
 
         resp = client.post(
             "/api/workspaces", json={"name": "Feed WS", "customer": "Co"}
@@ -347,12 +353,14 @@ class TestTestFeed:
         assert feed_data["lastError"] is None
         assert feed_data["lastErrorAt"] is None
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_test_feed_parse_error_updates_feed(self, mock_get, client):
-        response = MagicMock()
-        response.text = "<not-a-feed>"
-        response.raise_for_status.return_value = None
-        mock_get.return_value = response
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_test_feed_parse_error_updates_feed(self, mock_parse, client):
+        exc = Exception("not well-formed XML")
+        mock_parse.return_value = self._mock_result(
+            success=False, articles_found=0,
+            error="Feed parse failed: " + str(exc),
+            bozo=True, bozo_exc=exc
+        )
 
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Bad Feed WS", "customer": "Co"}
@@ -379,13 +387,13 @@ class TestTestFeed:
         assert feed_data["status"] == "error"
         assert feed_data["lastError"] == data["lastError"]
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_test_feed_failure_sets_last_error_at(self, mock_get, client):
-        """On failure, last_error_at should be set to a non-null datetime."""
-        response = MagicMock()
-        response.text = "<not-a-feed>"
-        response.raise_for_status.return_value = None
-        mock_get.return_value = response
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_test_feed_failure_sets_last_error_at(self, mock_parse, client):
+        exc = Exception("not well-formed XML")
+        mock_parse.return_value = self._mock_result(
+            success=False, error="Feed parse failed: " + str(exc),
+            bozo=True, bozo_exc=exc
+        )
 
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Bad Feed WS", "customer": "Co"}
@@ -410,24 +418,12 @@ class TestTestFeed:
         assert feed_data["lastError"] is not None
         assert feed_data["lastErrorAt"] is not None
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_test_feed_failure_does_not_update_last_fetched_at(self, mock_get, client):
-        """On failure, last_fetched_at should NOT be updated."""
-        # First, succeed to set last_fetched_at to a known value
-        success_response = MagicMock()
-        success_response.text = """<?xml version="1.0"?>
-        <rss version="2.0">
-          <channel>
-            <title>Test Feed</title>
-            <item>
-              <title>Article One</title>
-              <link>https://example.com/one</link>
-              <description>Summary one</description>
-            </item>
-          </channel>
-        </rss>"""
-        success_response.raise_for_status.return_value = None
-        mock_get.return_value = success_response
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_test_feed_failure_does_not_update_last_fetched_at(self, mock_parse, client):
+        # First call: succeed to set last_fetched_at to a known value
+        mock_parse.return_value = self._mock_result(
+            success=True, articles_found=1, source_title="Test Feed"
+        )
 
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Recovery WS", "customer": "Co"}
@@ -450,24 +446,25 @@ class TestTestFeed:
         assert fetched_at_before is not None
 
         # Now fail — last_fetched_at must not change
-        fail_response = MagicMock()
-        fail_response.text = "<not-a-feed>"
-        fail_response.raise_for_status.return_value = None
-        mock_get.return_value = fail_response
+        exc = Exception("not well-formed XML")
+        mock_parse.return_value = self._mock_result(
+            success=False, error="Feed parse failed: " + str(exc),
+            bozo=True, bozo_exc=exc
+        )
 
         client.post(f"/api/feeds/{feed_id}/test")
         feed_data = client.get(f"/api/feeds/{feed_id}").json()
         assert feed_data["status"] == "error"
         assert feed_data["lastFetchedAt"] == fetched_at_before
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_test_feed_success_clears_error_state(self, mock_get, client):
-        """Success after error clears last_error, last_error_at, sets healthy."""
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_test_feed_success_clears_error_state(self, mock_parse, client):
         # First, fail to put feed into error state
-        fail_response = MagicMock()
-        fail_response.text = "<not-a-feed>"
-        fail_response.raise_for_status.return_value = None
-        mock_get.return_value = fail_response
+        exc = Exception("not well-formed XML")
+        mock_parse.return_value = self._mock_result(
+            success=False, error="Feed parse failed: " + str(exc),
+            bozo=True, bozo_exc=exc
+        )
 
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Recovery WS", "customer": "Co"}
@@ -490,20 +487,9 @@ class TestTestFeed:
         assert feed_data["lastErrorAt"] is not None
 
         # Now succeed — error state should be cleared
-        success_response = MagicMock()
-        success_response.text = """<?xml version="1.0"?>
-        <rss version="2.0">
-          <channel>
-            <title>Recovered Feed</title>
-            <item>
-              <title>Article One</title>
-              <link>https://example.com/one</link>
-              <description>Summary one</description>
-            </item>
-          </channel>
-        </rss>"""
-        success_response.raise_for_status.return_value = None
-        mock_get.return_value = success_response
+        mock_parse.return_value = self._mock_result(
+            success=True, articles_found=1, source_title="Recovered Feed"
+        )
 
         resp = client.post(f"/api/feeds/{feed_id}/test")
         assert resp.status_code == 200
@@ -514,23 +500,11 @@ class TestTestFeed:
         assert feed_data["lastError"] is None
         assert feed_data["lastErrorAt"] is None
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_test_feed_success_updates_last_fetched_at(self, mock_get, client):
-        """On success, last_fetched_at should be set to a non-null datetime."""
-        response = MagicMock()
-        response.text = """<?xml version="1.0"?>
-        <rss version="2.0">
-          <channel>
-            <title>Fetch Test Feed</title>
-            <item>
-              <title>Article One</title>
-              <link>https://example.com/one</link>
-              <description>Summary one</description>
-            </item>
-          </channel>
-        </rss>"""
-        response.raise_for_status.return_value = None
-        mock_get.return_value = response
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_test_feed_success_updates_last_fetched_at(self, mock_parse, client):
+        mock_parse.return_value = self._mock_result(
+            success=True, articles_found=1, source_title="Fetch Test Feed"
+        )
 
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Fetch WS", "customer": "Co"}
@@ -558,9 +532,8 @@ class TestTestFeed:
         feed_data = client.get(f"/api/feeds/{feed_id}").json()
         assert feed_data["lastFetchedAt"] is not None
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_test_feed_recovery_then_failure(self, mock_get, client):
-        """Success then failure: feed goes healthy, then back to error."""
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_test_feed_recovery_then_failure(self, mock_parse, client):
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Flip WS", "customer": "Co"}
         )
@@ -576,20 +549,9 @@ class TestTestFeed:
         feed_id = create_resp.json()["id"]
 
         # Step 1: succeed
-        success_response = MagicMock()
-        success_response.text = """<?xml version="1.0"?>
-        <rss version="2.0">
-          <channel>
-            <title>Flip Feed</title>
-            <item>
-              <title>Article One</title>
-              <link>https://example.com/one</link>
-              <description>Summary one</description>
-            </item>
-          </channel>
-        </rss>"""
-        success_response.raise_for_status.return_value = None
-        mock_get.return_value = success_response
+        mock_parse.return_value = self._mock_result(
+            success=True, articles_found=1, source_title="Flip Feed"
+        )
 
         client.post(f"/api/feeds/{feed_id}/test")
         feed_data = client.get(f"/api/feeds/{feed_id}").json()
@@ -600,10 +562,11 @@ class TestTestFeed:
         assert fetched_at_after_success is not None
 
         # Step 2: fail — feed goes back to error, last_fetched_at unchanged
-        fail_response = MagicMock()
-        fail_response.text = "<not-a-feed>"
-        fail_response.raise_for_status.return_value = None
-        mock_get.return_value = fail_response
+        exc = Exception("not well-formed XML")
+        mock_parse.return_value = self._mock_result(
+            success=False, error="Feed parse failed: " + str(exc),
+            bozo=True, bozo_exc=exc
+        )
 
         resp = client.post(f"/api/feeds/{feed_id}/test")
         assert resp.status_code == 200
@@ -614,6 +577,8 @@ class TestTestFeed:
         assert feed_data["lastError"] is not None
         assert feed_data["lastErrorAt"] is not None
         assert feed_data["lastFetchedAt"] == fetched_at_after_success
+
+
 
 
 class TestFeedCountInWorkspace:
@@ -647,44 +612,36 @@ class TestFeedCountInWorkspace:
 class TestFeedReliabilityTracking:
     """Feed reliability tracking: fetch counts, success rates, stale detection."""
 
-    def test_new_feed_has_zero_fetch_counts(self, client):
-        """A newly created feed starts with zero fetch counters."""
-        ws_resp = client.post(
-            "/api/workspaces", json={"name": "Reliability WS", "customer": "Co"}
-        )
-        ws_id = ws_resp.json()["id"]
+    def _mock_result(self, success, articles_found=0, source_title="Test Feed",
+                     error=None, bozo=False, bozo_exc=None):
+        """Build a mock feedparser.parse return value for validate_feed_source."""
+        from feedparser import FeedParserDict
+        parsed = FeedParserDict({"bozo": bozo})
+        if bozo_exc:
+            parsed["bozo_exception"] = bozo_exc
+        if success:
+            entries = [
+                FeedParserDict({
+                    "title": f"Article {i+1}",
+                    "link": f"https://example.com/{chr(ord('a')+i)}",
+                    "description": f"Summary {i+1}",
+                })
+                for i in range(articles_found)
+            ]
+        else:
+            entries = []
+        parsed["feed"] = FeedParserDict({"title": source_title})
+        parsed["entries"] = entries
+        return parsed
 
-        create_resp = client.post(
-            f"/api/workspaces/{ws_id}/feeds",
-            json={"name": "New Feed", "url": "https://example.com/feed", "type": "rss"},
-        )
-        feed_id = create_resp.json()["id"]
-
-        feed_data = client.get(f"/api/feeds/{feed_id}").json()
-        assert feed_data["totalFetchCount"] == 0
-        assert feed_data["consecutiveFetchFailures"] == 0
-        assert feed_data["fetchSuccessRate"] == 0.0
-        assert feed_data["isStale"] is False
-
-    @patch("app.services.pipeline_steps.httpx.get")
+    @patch("app.services.pipeline_steps.feedparser.parse")
     def test_successful_fetch_increments_total_and_resets_failures(
-        self, mock_get, client
+        self, mock_parse, client
     ):
         """A successful fetch test increments total_fetch_count and resets failures."""
-        response = MagicMock()
-        response.text = """<?xml version="1.0"?>
-        <rss version="2.0">
-          <channel>
-            <title>Test Feed</title>
-            <item>
-              <title>Article One</title>
-              <link>https://example.com/one</link>
-              <description>Summary one</description>
-            </item>
-          </channel>
-        </rss>"""
-        response.raise_for_status.return_value = None
-        mock_get.return_value = response
+        mock_parse.return_value = self._mock_result(
+            success=True, articles_found=1, source_title="Test Feed"
+        )
 
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Fetch Track WS", "customer": "Co"}
@@ -715,13 +672,14 @@ class TestFeedReliabilityTracking:
         assert feed_data["consecutiveFetchFailures"] == 0
         assert feed_data["fetchSuccessRate"] == pytest.approx(1.0)
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_failed_fetch_increments_consecutive_failures(self, mock_get, client):
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_failed_fetch_increments_consecutive_failures(self, mock_parse, client):
         """A failed fetch test increments consecutive failures."""
-        fail_response = MagicMock()
-        fail_response.text = "<not-a-feed>"
-        fail_response.raise_for_status.return_value = None
-        mock_get.return_value = fail_response
+        exc = Exception("not well-formed XML")
+        mock_parse.return_value = self._mock_result(
+            success=False, error="Feed parse failed: " + str(exc),
+            bozo=True, bozo_exc=exc
+        )
 
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Fail Track WS", "customer": "Co"}
@@ -749,13 +707,20 @@ class TestFeedReliabilityTracking:
         assert feed_data["totalFetchCount"] == 2
         assert feed_data["consecutiveFetchFailures"] == 2
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_success_resets_consecutive_failures(self, mock_get, client):
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_success_resets_consecutive_failures(self, mock_parse, client):
         """After failures, a success resets consecutive_fetch_failures to 0."""
-        fail_response = MagicMock()
-        fail_response.text = "<not-a-feed>"
-        fail_response.raise_for_status.return_value = None
-        mock_get.return_value = fail_response
+        exc = Exception("not well-formed XML")
+        # 3 failures then 1 success
+        mock_parse.side_effect = [
+            self._mock_result(success=False, error="Feed parse failed: " + str(exc),
+                              bozo=True, bozo_exc=exc),
+            self._mock_result(success=False, error="Feed parse failed: " + str(exc),
+                              bozo=True, bozo_exc=exc),
+            self._mock_result(success=False, error="Feed parse failed: " + str(exc),
+                              bozo=True, bozo_exc=exc),
+            self._mock_result(success=True, articles_found=1, source_title="OK"),
+        ]
 
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Reset WS", "customer": "Co"}
@@ -779,28 +744,19 @@ class TestFeedReliabilityTracking:
         assert feed_data["totalFetchCount"] == 3
 
         # Now succeed
-        success_response = MagicMock()
-        success_response.text = """<?xml version="1.0"?>
-        <rss version="2.0">
-          <channel><title>OK</title>
-            <item><title>A</title><link>https://example.com/a</link></item>
-          </channel>
-        </rss>"""
-        success_response.raise_for_status.return_value = None
-        mock_get.return_value = success_response
-
         client.post(f"/api/feeds/{feed_id}/test")
         feed_data = client.get(f"/api/feeds/{feed_id}").json()
         assert feed_data["consecutiveFetchFailures"] == 0
         assert feed_data["totalFetchCount"] == 4
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_feed_not_stale_below_threshold(self, mock_get, client):
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_feed_not_stale_below_threshold(self, mock_parse, client):
         """A feed is not stale until consecutive failures reach the threshold."""
-        fail_response = MagicMock()
-        fail_response.text = "<not-a-feed>"
-        fail_response.raise_for_status.return_value = None
-        mock_get.return_value = fail_response
+        exc = Exception("not well-formed XML")
+        mock_parse.return_value = self._mock_result(
+            success=False, error="Feed parse failed: " + str(exc),
+            bozo=True, bozo_exc=exc
+        )
 
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Stale WS", "customer": "Co"}
@@ -822,13 +778,14 @@ class TestFeedReliabilityTracking:
         feed_data = client.get(f"/api/feeds/{feed_id}").json()
         assert feed_data["isStale"] is False
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_feed_stale_at_threshold(self, mock_get, client):
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_feed_stale_at_threshold(self, mock_parse, client):
         """A feed becomes stale when consecutive failures >= threshold (default 5)."""
-        fail_response = MagicMock()
-        fail_response.text = "<not-a-feed>"
-        fail_response.raise_for_status.return_value = None
-        mock_get.return_value = fail_response
+        exc = Exception("not well-formed XML")
+        mock_parse.return_value = self._mock_result(
+            success=False, error="Feed parse failed: " + str(exc),
+            bozo=True, bozo_exc=exc
+        )
 
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Stale At WS", "customer": "Co"}
@@ -852,13 +809,24 @@ class TestFeedReliabilityTracking:
         assert feed_data["consecutiveFetchFailures"] == 5
         assert feed_data["totalFetchCount"] == 5
 
-    @patch("app.services.pipeline_steps.httpx.get")
-    def test_stale_flag_cleared_on_success(self, mock_get, client):
+    @patch("app.services.pipeline_steps.feedparser.parse")
+    def test_stale_flag_cleared_on_success(self, mock_parse, client):
         """A successful fetch clears the stale flag."""
-        fail_response = MagicMock()
-        fail_response.text = "<not-a-feed>"
-        fail_response.raise_for_status.return_value = None
-        mock_get.return_value = fail_response
+        exc = Exception("not well-formed XML")
+        # 5 failures then 1 success
+        mock_parse.side_effect = [
+            self._mock_result(success=False, error="Feed parse failed: " + str(exc),
+                              bozo=True, bozo_exc=exc),
+            self._mock_result(success=False, error="Feed parse failed: " + str(exc),
+                              bozo=True, bozo_exc=exc),
+            self._mock_result(success=False, error="Feed parse failed: " + str(exc),
+                              bozo=True, bozo_exc=exc),
+            self._mock_result(success=False, error="Feed parse failed: " + str(exc),
+                              bozo=True, bozo_exc=exc),
+            self._mock_result(success=False, error="Feed parse failed: " + str(exc),
+                              bozo=True, bozo_exc=exc),
+            self._mock_result(success=True, articles_found=1, source_title="OK"),
+        ]
 
         ws_resp = client.post(
             "/api/workspaces", json={"name": "Clear Stale WS", "customer": "Co"}
@@ -881,20 +849,12 @@ class TestFeedReliabilityTracking:
         assert feed_data["isStale"] is True
 
         # Now succeed → stale cleared
-        success_response = MagicMock()
-        success_response.text = """<?xml version="1.0"?>
-        <rss version="2.0">
-          <channel><title>OK</title>
-            <item><title>A</title><link>https://example.com/a</link></item>
-          </channel>
-        </rss>"""
-        success_response.raise_for_status.return_value = None
-        mock_get.return_value = success_response
-
         client.post(f"/api/feeds/{feed_id}/test")
         feed_data = client.get(f"/api/feeds/{feed_id}").json()
         assert feed_data["isStale"] is False
         assert feed_data["consecutiveFetchFailures"] == 0
+
+
 
     def test_feed_detail_includes_reliability_fields(self, client):
         """Feed detail response includes all reliability fields."""

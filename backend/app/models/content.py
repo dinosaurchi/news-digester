@@ -24,6 +24,8 @@ class ContentItem(Base):
     title: Mapped[str] = mapped_column(String(1000), nullable=False)
     url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     source_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    publisher_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    publisher_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
     content_type: Mapped[str] = mapped_column(
         String(30), nullable=False
     )  # news, article, press_release, blog, competitor, social
