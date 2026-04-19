@@ -1,15 +1,15 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { ApiError } from '@/lib/api-client';
 import { toast } from '@/components/ui/toast';
 import { useParams } from 'react-router-dom';
 import {
-  Play, Info, Activity, ChevronDown, ChevronUp, ChevronRight,
+  Play, Info, Activity, ChevronRight,
   AlertTriangle, FileText, CheckCircle2, XCircle, Loader2,
-  ArrowUpDown, ExternalLink, Clock,
+  ExternalLink, Clock,
 } from 'lucide-react';
 import { formatDate, formatDuration, cn } from '@/lib/utils';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { PageHeader } from '@/components/ui/page-header';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -25,10 +25,7 @@ import type { RunFilters } from '@/types';
 
 type DatePreset = 'all' | 'today' | '7d' | '30d';
 
-const PAGE_SIZE = 10;
-
-type SortKey = 'startedAt' | 'durationMs' | 'status' | 'type';
-type SortDir = 'asc' | 'desc';
+const PAGE_SIZE = 20;
 
 const datePresets: { value: DatePreset; label: string }[] = [
   { value: 'all', label: 'All time' },
@@ -60,46 +57,6 @@ function getDateRange(preset: DatePreset): Partial<Pick<RunFilters, 'dateFrom' |
 /* ------------------------------------------------------------------ */
 /*  Sub-components                                                     */
 /* ------------------------------------------------------------------ */
-
-function SortableTh({
-  label,
-  column,
-  sortKey,
-  sortDir,
-  onSort,
-  className,
-}: {
-  label: string;
-  column: SortKey;
-  sortKey: SortKey;
-  sortDir: SortDir;
-  onSort: (k: SortKey) => void;
-  className?: string;
-}) {
-  const active = sortKey === column;
-  return (
-    <th
-      className={cn(
-        'px-3 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider select-none cursor-pointer hover:text-slate-700 transition-colors',
-        className,
-      )}
-      onClick={() => onSort(column)}
-    >
-      <span className="inline-flex items-center gap-1">
-        {label}
-        {active ? (
-          sortDir === 'asc' ? (
-            <ChevronUp className="w-3 h-3 text-indigo-500" />
-          ) : (
-            <ChevronDown className="w-3 h-3 text-indigo-500" />
-          )
-        ) : (
-          <ArrowUpDown className="w-3 h-3 text-slate-300" />
-        )}
-      </span>
-    </th>
-  );
-}
 
 function RunsTableSkeleton() {
   return (
@@ -146,13 +103,6 @@ export default function RunsPage() {
   const [statusFilter, setStatusFilter] = useState<RunStatus | 'all'>('all');
   const [datePreset, setDatePreset] = useState<DatePreset>('all');
 
-  /* ---- sort state ---- */
-  const [sortKey, setSortKey] = useState<SortKey>('startedAt');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
-
-  /* ---- pagination ---- */
-  const [page, setPage] = useState(1);
-
   /* ---- detail drawer ---- */
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set());
@@ -173,21 +123,28 @@ export default function RunsPage() {
     setTypeFilter('all');
     setStatusFilter('all');
     setDatePreset('all');
-    setPage(1);
   };
 
   /* ---- data ---- */
-  const { data: runs, isLoading } = useQuery({
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+  } = useInfiniteQuery({
     queryKey: ['runs', workspaceId, filters],
-    queryFn: () => api.runs.list(workspaceId, filters),
+    queryFn: ({ pageParam }) =>
+      api.runs.list(workspaceId, filters, { limit: PAGE_SIZE, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      const totalLoaded = allPages.reduce((sum, p) => sum + p.items.length, 0);
+      return totalLoaded < lastPage.total ? totalLoaded : undefined;
+    },
     refetchInterval: (query) => {
-      const data = query.state.data;
-      if (!data) return false;
-      return (data as Array<{ status: string }>).some(
-        (r) => r.status === 'running' || r.status === 'queued',
-      )
-        ? 3000
-        : false;
+      const pages = query.state.data?.pages;
+      if (!pages) return false;
+      return pages.some(p => p.has_active_run) ? 3000 : false;
     },
   });
 
@@ -202,7 +159,10 @@ export default function RunsPage() {
     },
   });
 
-  const hasActiveRun = runs?.some(r => r.status === 'running' || r.status === 'queued') ?? false;
+  /* ---- flattened data ---- */
+  const allRuns = data?.pages.flatMap(p => p.items) ?? [];
+  const totalCount = data?.pages[0]?.total ?? 0;
+  const hasActiveRun = data?.pages[0]?.has_active_run ?? false;
 
   /* ---- trigger mutation ---- */
   const triggerMutation = useMutation({
@@ -224,40 +184,25 @@ export default function RunsPage() {
     },
   });
 
-  /* ---- sort ---- */
-  const sorted = useMemo(() => {
-    if (!runs) return [];
-    return [...runs].sort((a, b) => {
-      let av: string | number | undefined;
-      let bv: string | number | undefined;
-      if (sortKey === 'durationMs') {
-        av = a.durationMs ?? -1;
-        bv = b.durationMs ?? -1;
-      } else {
-        av = a[sortKey];
-        bv = b[sortKey];
-      }
-      if (typeof av === 'string' && typeof bv === 'string') {
-        return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
-      }
-      if (typeof av === 'number' && typeof bv === 'number') {
-        return sortDir === 'asc' ? av - bv : bv - av;
-      }
-      return 0;
-    });
-  }, [runs, sortKey, sortDir]);
+  /* ---- infinite scroll observer ---- */
+  const loadMoreRef = useRef<HTMLDivElement>(null);
 
-  /* ---- pagination ---- */
-  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-  const paged = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  useEffect(() => {
+    const el = loadMoreRef.current;
+    if (!el) return;
 
-  const handleSort = (key: SortKey) => {
-    if (sortKey === key) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
-    else {
-      setSortKey(key);
-      setSortDir('desc');
-    }
-  };
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage) {
+          fetchNextPage();
+        }
+      },
+      { rootMargin: '200px' },
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   const toggleError = (id: string) => {
     setExpandedErrors(prev => {
@@ -323,7 +268,7 @@ export default function RunsPage() {
             {datePresets.map(p => (
               <button
                 key={p.value}
-                onClick={() => { setDatePreset(p.value); setPage(1); }}
+                onClick={() => { setDatePreset(p.value); }}
                 className={cn(
                   'px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
                   datePreset === p.value
@@ -338,7 +283,7 @@ export default function RunsPage() {
 
           <select
             value={typeFilter}
-            onChange={e => { setTypeFilter(e.target.value as RunType | 'all'); setPage(1); }}
+            onChange={e => { setTypeFilter(e.target.value as RunType | 'all'); }}
             className="text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           >
             <option value="all">All Types</option>
@@ -348,7 +293,7 @@ export default function RunsPage() {
 
           <select
             value={statusFilter}
-            onChange={e => { setStatusFilter(e.target.value as RunStatus | 'all'); setPage(1); }}
+            onChange={e => { setStatusFilter(e.target.value as RunStatus | 'all'); }}
             className="text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           >
             <option value="all">All Statuses</option>
@@ -368,13 +313,13 @@ export default function RunsPage() {
           )}
 
           <span className="ml-auto text-xs text-slate-400 tabular-nums">
-            {sorted.length} run{sorted.length !== 1 ? 's' : ''}
+            {totalCount} run{totalCount !== 1 ? 's' : ''}
           </span>
         </div>
       </div>
 
       {/* ---- Table or Empty ---- */}
-      {sorted.length === 0 ? (
+      {allRuns.length === 0 && !isLoading ? (
         <EmptyState
           icon={Activity}
           title="No runs found"
@@ -397,11 +342,11 @@ export default function RunsPage() {
             <table className="w-full text-left border-collapse min-w-[960px]">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200">
-                  <SortableTh label="Run ID" column="startedAt" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="min-w-[120px]" />
-                  <SortableTh label="Type" column="type" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                  <SortableTh label="Status" column="status" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                  <SortableTh label="Started" column="startedAt" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                  <SortableTh label="Duration" column="durationMs" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                  <th className="px-3 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider min-w-[120px]">Run ID</th>
+                  <th className="px-3 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">Type</th>
+                  <th className="px-3 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">Status</th>
+                  <th className="px-3 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">Started</th>
+                  <th className="px-3 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">Duration</th>
                   <th className="px-3 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">Feeds</th>
                   <th className="px-3 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">Articles</th>
                   <th className="px-3 py-2.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">Reports</th>
@@ -410,7 +355,7 @@ export default function RunsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {paged.map(run => {
+                {allRuns.map(run => {
                   const isExpanded = expandedErrors.has(run.id);
                   const hasError = !!run.error;
 
@@ -509,28 +454,20 @@ export default function RunsPage() {
             </table>
           </div>
 
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 bg-slate-50/50">
-              <span className="text-xs text-slate-500 tabular-nums">
-                Page {page} of {totalPages} &middot; {sorted.length} runs
-              </span>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setPage(p => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                  className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  Previous
-                </button>
-                <button
-                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                  disabled={page === totalPages}
-                  className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  Next
-                </button>
-              </div>
+          {/* Infinite scroll sentinel */}
+          <div ref={loadMoreRef} className="h-4" />
+
+          {/* Loading indicator */}
+          {isFetchingNextPage && (
+            <div className="flex justify-center py-4">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          )}
+
+          {/* End of list indicator */}
+          {!hasNextPage && allRuns.length > 0 && (
+            <div className="text-center text-xs text-muted-foreground py-4">
+              Showing all {totalCount} runs
             </div>
           )}
         </div>

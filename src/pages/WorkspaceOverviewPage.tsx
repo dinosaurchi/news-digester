@@ -43,19 +43,16 @@ export default function WorkspaceOverviewPage() {
     queryFn: () => api.content.list(workspaceId),
   });
 
-  const { data: runs, isLoading: runsLoading } = useQuery({
+  const { data: runsResponse, isLoading: runsLoading } = useQuery({
     queryKey: ['runs', workspaceId],
     queryFn: () => api.runs.list(workspaceId),
     refetchInterval: (query) => {
       const data = query.state.data;
       if (!data) return false;
-      return (data as Array<{ status: string }>).some(
-        (r) => r.status === 'running' || r.status === 'queued',
-      )
-        ? 3000
-        : false;
+      return data.has_active_run ? 3000 : false;
     },
   });
+  const runs = runsResponse?.items;
 
   const { data: reports, isLoading: reportsLoading } = useQuery({
     queryKey: ['reports', workspaceId],
@@ -81,7 +78,7 @@ export default function WorkspaceOverviewPage() {
   const _pendingContent = content?.filter((c) => c.status === 'pending').length || 0;
   const activeReports = reports?.filter((r) => r.status === 'published').length || 0;
   const lastRun = runs?.[0];
-  const hasActiveRun = runs?.some((r) => r.status === 'running' || r.status === 'queued') ?? false;
+  const hasActiveRun = runsResponse?.has_active_run ?? false;
 
   const runMutation = useMutation({
     mutationFn: () => api.runs.trigger(workspaceId),

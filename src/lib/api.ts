@@ -10,6 +10,7 @@ import type {
   ReportSummary,
   ReportMessage,
   RunSummary,
+  PaginatedRunsResponse,
   RunDetail,
   FeedbackEvent,
   FeedbackSummary,
@@ -110,15 +111,21 @@ const reports = {
 
 // Runs
 const runs = {
-  list: (workspaceId: string, filters?: RunFilters) => {
+  list: (
+    workspaceId: string,
+    filters?: RunFilters,
+    pagination?: { limit?: number; offset?: number },
+  ) => {
     const params = new URLSearchParams();
     if (filters) {
       Object.entries(filters).forEach(([k, v]) => {
         if (v !== undefined && v !== '') params.set(k, String(v));
       });
     }
+    if (pagination?.limit !== undefined) params.set('limit', String(pagination.limit));
+    if (pagination?.offset !== undefined) params.set('offset', String(pagination.offset));
     const qs = params.toString();
-    return apiClient.get<RunSummary[]>(
+    return apiClient.get<PaginatedRunsResponse>(
       `/workspaces/${workspaceId}/runs${qs ? `?${qs}` : ''}`,
     );
   },

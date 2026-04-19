@@ -52,6 +52,12 @@ export interface RunStep {
   metadata?: RunStepMetadata;
 }
 
+export interface PaginatedRunsResponse {
+  items: RunSummary[];
+  total: number;
+  has_active_run: boolean;
+}
+
 export interface RunDetail extends RunSummary {
   steps: RunStep[];
   logSnippets: string[];
