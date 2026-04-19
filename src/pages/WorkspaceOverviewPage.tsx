@@ -81,6 +81,7 @@ export default function WorkspaceOverviewPage() {
   const _pendingContent = content?.filter((c) => c.status === 'pending').length || 0;
   const activeReports = reports?.filter((r) => r.status === 'published').length || 0;
   const lastRun = runs?.[0];
+  const hasActiveRun = runs?.some((r) => r.status === 'running' || r.status === 'queued') ?? false;
 
   const runMutation = useMutation({
     mutationFn: () => api.runs.trigger(workspaceId),
@@ -284,20 +285,29 @@ export default function WorkspaceOverviewPage() {
             <div className="grid grid-cols-1 gap-2">
               <button
                 onClick={() => runMutation.mutate()}
-                disabled={runMutation.isPending}
+                disabled={runMutation.isPending || hasActiveRun}
+                title={
+                  hasActiveRun && !runMutation.isPending
+                    ? 'A run is already in progress'
+                    : undefined
+                }
                 className={cn(
                   'flex items-center gap-2.5 w-full p-3 text-white rounded-lg font-medium transition-all shadow-sm text-sm',
-                  runMutation.isPending
+                  runMutation.isPending || hasActiveRun
                     ? 'bg-indigo-400 cursor-wait'
                     : 'bg-indigo-600 hover:bg-indigo-700'
                 )}
               >
-                {runMutation.isPending ? (
+                {runMutation.isPending || hasActiveRun ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <Play className="w-4 h-4 fill-current" />
                 )}
-                {runMutation.isPending ? 'Triggering...' : 'Run Intelligence Cycle'}
+                {runMutation.isPending
+                  ? 'Triggering...'
+                  : hasActiveRun
+                    ? 'Run in Progress...'
+                    : 'Run Intelligence Cycle'}
               </button>
               <Link
                 to={`/workspaces/${workspaceId}/feeds`}

@@ -202,6 +202,8 @@ export default function RunsPage() {
     },
   });
 
+  const hasActiveRun = runs?.some(r => r.status === 'running' || r.status === 'queued') ?? false;
+
   /* ---- trigger mutation ---- */
   const triggerMutation = useMutation({
     mutationFn: () => api.runs.trigger(workspaceId),
@@ -286,20 +288,29 @@ export default function RunsPage() {
         actions={
           <button
             onClick={() => triggerMutation.mutate()}
-            disabled={triggerMutation.isPending}
+            disabled={triggerMutation.isPending || hasActiveRun}
+            title={
+              hasActiveRun && !triggerMutation.isPending
+                ? 'A run is already in progress'
+                : undefined
+            }
             className={cn(
               'flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-colors shadow-sm',
-              triggerMutation.isPending
+              triggerMutation.isPending || hasActiveRun
                 ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
                 : 'bg-indigo-600 hover:bg-indigo-700 text-white',
             )}
           >
-            {triggerMutation.isPending ? (
+            {triggerMutation.isPending || hasActiveRun ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
               <Play className="w-4 h-4 fill-current" />
             )}
-            {triggerMutation.isPending ? 'Triggering…' : 'Trigger Manual Run'}
+            {triggerMutation.isPending
+              ? 'Triggering…'
+              : hasActiveRun
+                ? 'Run in Progress…'
+                : 'Trigger Manual Run'}
           </button>
         }
       />
