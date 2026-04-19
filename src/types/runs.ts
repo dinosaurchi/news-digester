@@ -43,7 +43,7 @@ export interface RunSummary {
 export interface RunStep {
   id: string;
   name: string;
-  status: 'pending' | 'running' | 'success' | 'failed' | 'skipped';
+  status: 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'completed' | 'error';
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
