@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f2942"/>
+      <stop offset="100%" stop-color="#0d7377"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2dd4bf"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect x="10" y="10" width="180" height="180" rx="36" ry="36" fill="url(#bgGrad)"/>
+
+  <!-- Subtle inner border highlight -->
+  <rect x="12" y="12" width="176" height="176" rx="34" ry="34" fill="none" stroke="white" stroke-opacity="0.08" stroke-width="1.5"/>
+
+  <!-- Main document / newspaper body -->
+  <g>
+    <!-- Document shadow -->
+    <rect x="44" y="40" width="96" height="124" rx="8" fill="black" opacity="0.2"/>
+
+    <!-- Document body -->
+    <rect x="40" y="36" width="96" height="124" rx="8" fill="white" opacity="0.95"/>
+
+    <!-- Dog-ear fold -->
+    <path d="M 112 36 L 136 36 L 136 60 Z" fill="#e2e8f0"/>
+    <path d="M 112 36 L 136 60 L 112 60 Z" fill="#cbd5e1"/>
+
+    <!-- Newspaper header bar -->
+    <rect x="52" y="50" width="48" height="9" rx="2.5" fill="#0f2942" opacity="0.85"/>
+
+    <!-- Horizontal divider -->
+    <line x1="52" y1="67" x2="124" y2="67" stroke="#cbd5e1" stroke-width="1.2"/>
+
+    <!-- Content lines - left column -->
+    <rect x="52" y="75" width="34" height="4" rx="1.5" fill="#94a3b8" opacity="0.55"/>
+    <rect x="52" y="84" width="28" height="4" rx="1.5" fill="#94a3b8" opacity="0.45"/>
+    <rect x="52" y="93" width="34" height="4" rx="1.5" fill="#94a3b8" opacity="0.55"/>
+    <rect x="52" y="102" width="22" height="4" rx="1.5" fill="#94a3b8" opacity="0.45"/>
+
+    <!-- Content - right column (teal accent blocks) -->
+    <rect x="94" y="75" width="30" height="20" rx="3" fill="url(#accentGrad)" opacity="0.3"/>
+    <rect x="94" y="101" width="30" height="4" rx="1.5" fill="#94a3b8" opacity="0.45"/>
+    <rect x="94" y="110" width="24" height="4" rx="1.5" fill="#94a3b8" opacity="0.4"/>
+
+    <!-- Bottom row accent -->
+    <rect x="52" y="120" width="72" height="22" rx="4" fill="url(#accentGrad)" opacity="0.15"/>
+    <rect x="58" y="127" width="28" height="3" rx="1" fill="#0d7377" opacity="0.4"/>
+    <rect x="58" y="134" width="40" height="3" rx="1" fill="#0d7377" opacity="0.3"/>
+  </g>
+
+  <!-- Intelligence / broadcast signal arcs -->
+  <g filter="url(#glow)">
+    <!-- Signal origin dot -->
+    <circle cx="140" cy="44" r="6" fill="url(#accentGrad)"/>
+
+    <!-- Signal arc 1 (closest) -->
+    <path d="M 152 36 A 14 14 0 0 1 152 52" fill="none" stroke="#2dd4bf" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+
+    <!-- Signal arc 2 -->
+    <path d="M 160 30 A 22 22 0 0 1 160 58" fill="none" stroke="#2dd4bf" stroke-width="3" stroke-linecap="round" opacity="0.65"/>
+
+    <!-- Signal arc 3 (farthest) -->
+    <path d="M 168 24 A 30 30 0 0 1 168 64" fill="none" stroke="#2dd4bf" stroke-width="2.5" stroke-linecap="round" opacity="0.4"/>
+  </g>
+
+  <!-- Small AI intelligence node dots -->
+  <circle cx="56" cy="152" r="2.5" fill="#2dd4bf" opacity="0.6"/>
+  <circle cx="66" cy="152" r="2.5" fill="#2dd4bf" opacity="0.4"/>
+  <circle cx="76" cy="152" r="2.5" fill="#2dd4bf" opacity="0.25"/>
+</svg>
