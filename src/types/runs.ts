@@ -43,13 +43,19 @@ export interface RunSummary {
 export interface RunStep {
   id: string;
   name: string;
-  status: 'pending' | 'running' | 'success' | 'failed' | 'skipped';
+  status: 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'completed' | 'error';
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
   details?: string;
   error?: string;
   metadata?: RunStepMetadata;
+}
+
+export interface PaginatedRunsResponse {
+  items: RunSummary[];
+  total: number;
+  has_active_run: boolean;
 }
 
 export interface RunDetail extends RunSummary {

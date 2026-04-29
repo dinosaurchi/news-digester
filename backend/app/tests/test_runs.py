@@ -170,12 +170,15 @@ class TestListRuns:
     """GET /api/workspaces/{workspace_id}/runs"""
 
     def test_list_runs_empty(self, client):
-        """Workspace with no runs → empty list."""
+        """Workspace with no runs → empty items list."""
         ws_id = _create_workspace(client)
 
         resp = client.get(f"/api/workspaces/{ws_id}/runs")
         assert resp.status_code == 200
-        assert resp.json() == []
+        data = resp.json()
+        assert data["items"] == []
+        assert data["total"] == 0
+        assert data["has_active_run"] is False
 
     def test_list_runs_with_data(self, client):
         """Workspace with runs → returns list."""
@@ -186,8 +189,10 @@ class TestListRuns:
         resp = client.get(f"/api/workspaces/{ws_id}/runs")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 2
-        types = [r["type"] for r in data]
+        items = data["items"]
+        assert data["total"] == 2
+        assert len(items) == 2
+        types = [r["type"] for r in items]
         assert "manual" in types
         assert "scheduled" in types
 
@@ -201,8 +206,10 @@ class TestListRuns:
         resp = client.get(f"/api/workspaces/{ws_id}/runs?status=failed")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 1
-        assert data[0]["status"] == "failed"
+        items = data["items"]
+        assert data["total"] == 1
+        assert len(items) == 1
+        assert items[0]["status"] == "failed"
 
     def test_list_runs_filter_type(self, client):
         """Filter by type returns only matching runs."""
@@ -213,8 +220,10 @@ class TestListRuns:
         resp = client.get(f"/api/workspaces/{ws_id}/runs?type=manual")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 1
-        assert data[0]["type"] == "manual"
+        items = data["items"]
+        assert data["total"] == 1
+        assert len(items) == 1
+        assert items[0]["type"] == "manual"
 
     def test_list_runs_filter_date_range(self, client):
         """Filter by dateFrom and dateTo returns runs in range."""
@@ -237,7 +246,8 @@ class TestListRuns:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 1
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
 
     def test_runs_workspace_404(self, client):
         """Workspace doesn't exist → 404."""
@@ -373,7 +383,7 @@ class TestRunNow:
 
         list_resp = client.get(f"/api/workspaces/{ws_id}/runs")
         assert list_resp.status_code == 200
-        run_ids = [r["id"] for r in list_resp.json()]
+        run_ids = [r["id"] for r in list_resp.json()["items"]]
         assert run_id in run_ids
 
     def test_run_now_log_snippets(self, client):

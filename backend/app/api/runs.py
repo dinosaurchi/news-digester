@@ -25,9 +25,11 @@ def list_runs(
     status: str | None = Query(default=None),
     dateFrom: str | None = Query(default=None),
     dateTo: str | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1, le=100),
+    offset: int | None = Query(default=None, ge=0),
     db: Session = Depends(get_db),
 ):
-    """List processing runs for a workspace with optional filters."""
+    """List processing runs for a workspace with optional filters and pagination."""
     ws = ws_service.get_workspace(db, workspace_id)
     if ws is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -46,7 +48,7 @@ def list_runs(
         except (ValueError, TypeError):
             raise HTTPException(status_code=422, detail="Invalid dateTo format")
 
-    runs = run_service.list_runs(
+    total = run_service.count_runs(
         db,
         workspace_id,
         run_type=type,
@@ -54,7 +56,25 @@ def list_runs(
         date_from=dt_from,
         date_to=dt_to,
     )
-    return [_run_summary_to_out(r) for r in runs]
+
+    runs = run_service.list_runs(
+        db,
+        workspace_id,
+        run_type=type,
+        status=status,
+        date_from=dt_from,
+        date_to=dt_to,
+        limit=limit,
+        offset=offset,
+    )
+
+    has_active = run_service.has_active_runs(db, workspace_id)
+
+    return {
+        "items": [_run_summary_to_out(r) for r in runs],
+        "total": total,
+        "has_active_run": has_active,
+    }
 
 
 # ── Run-scoped endpoints ──────────────────────────────────────────────

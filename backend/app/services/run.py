@@ -16,6 +16,8 @@ def list_runs(
     status: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> list[ProcessingRun]:
     """Return processing runs for a workspace with optional filters, ordered by started_at desc."""
     q = db.query(ProcessingRun).filter(ProcessingRun.workspace_id == workspace_id)
@@ -29,7 +31,51 @@ def list_runs(
     if date_to is not None:
         q = q.filter(ProcessingRun.started_at <= date_to)
 
-    return q.order_by(ProcessingRun.started_at.desc()).all()
+    q = q.order_by(ProcessingRun.started_at.desc())
+
+    if offset is not None:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
+
+    return q.all()
+
+
+def count_runs(
+    db: Session,
+    workspace_id: str,
+    *,
+    run_type: str | None = None,
+    status: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+) -> int:
+    """Return the total count of processing runs matching the given filters."""
+    q = db.query(ProcessingRun).filter(ProcessingRun.workspace_id == workspace_id)
+
+    if run_type is not None:
+        q = q.filter(ProcessingRun.run_type == run_type)
+    if status is not None:
+        q = q.filter(ProcessingRun.status == status)
+    if date_from is not None:
+        q = q.filter(ProcessingRun.started_at >= date_from)
+    if date_to is not None:
+        q = q.filter(ProcessingRun.started_at <= date_to)
+
+    return q.count()
+
+
+def has_active_runs(db: Session, workspace_id: str) -> bool:
+    """Return True if any runs are currently running or queued for the workspace."""
+    return (
+        db.query(ProcessingRun)
+        .filter(
+            ProcessingRun.workspace_id == workspace_id,
+            ProcessingRun.status.in_(["running", "queued"]),
+        )
+        .first()
+        is not None
+    )
 
 
 def get_run(db: Session, run_id: str) -> ProcessingRun | None:

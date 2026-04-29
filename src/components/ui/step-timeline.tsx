@@ -12,6 +12,8 @@ const config = {
   success:  { Icon: CheckCircle2, color: 'text-emerald-500', bg: 'bg-emerald-50', ring: '',          line: 'bg-emerald-200' },
   failed:   { Icon: XCircle,      color: 'text-red-500',   bg: 'bg-red-50',    ring: 'ring-2 ring-red-200',   line: 'bg-red-200' },
   skipped:  { Icon: Minus,        color: 'text-slate-400', bg: 'bg-slate-50',  ring: '',            line: 'bg-slate-200' },
+  completed: { Icon: CheckCircle2, color: 'text-emerald-500', bg: 'bg-emerald-50', ring: '',          line: 'bg-emerald-200' },
+  error:     { Icon: XCircle,      color: 'text-red-500',   bg: 'bg-red-50',    ring: 'ring-2 ring-red-200',   line: 'bg-red-200' },
 } as const;
 
 function fmtDur(ms?: number): string {
