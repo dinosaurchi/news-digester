@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/logo.svg" alt="SME News Admin" width="150"></p>
 
-<h1 align="center">SME News Admin</h1>
+<h1 align="center">News Digester</h1>
 
 <p align="center">AI-powered news intelligence workspace admin dashboard</p>
 
@@ -11,7 +11,7 @@
 
 ---
 
-SME News Admin is a full-stack admin dashboard for managing AI-powered news intelligence workspaces. It provides tools to configure data sources, monitor intelligence cycle runs, review generated reports, and tune relevance scoring — all from a single interface. Built with React, FastAPI, PostgreSQL, and Celery for background processing.
+News Digester is a full-stack admin dashboard for managing AI-powered news intelligence workspaces. It provides tools to configure data sources, monitor intelligence cycle runs, review generated reports, and tune relevance scoring — all from a single interface. Built with React, FastAPI, PostgreSQL, and Celery for background processing.
 
 ## Features
 
@@ -36,8 +36,8 @@ SME News Admin is a full-stack admin dashboard for managing AI-powered news inte
 ### Docker (Recommended)
 
 ```bash
-git clone https://github.com/dinosaurchi/sme-news-admin.git
-cd sme-news-admin
+git clone https://github.com/dinosaurchi/news-digester.git
+cd news-digester
 cp .env.example .env   # Configure your environment
 make up                 # Start all services
 ```
